@@ -36,7 +36,7 @@ use crate::golden;
 use crate::h264::H264Stream;
 use crate::looper::{ControllerSlot, Loop, Output, Pacer, SceneController};
 use crate::output::{
-    expand_pattern, is_image_name, AlphaForm, FixedPacer, ImageSequence, RawStream, Scanout,
+    self, expand_pattern, is_image_name, AlphaForm, ImageSequence, RawStream, Scanout, Sinks,
 };
 use crate::overlay;
 use crate::procedural::process::{self, Program, SceneProcess};
@@ -424,19 +424,14 @@ fn file_sink(a: &Ns) -> Result<FileSink> {
     )))
 }
 
-/// Nothing paces a file or a pipe: that render runs as fast as it draws. A
-/// KMS present waits out the display refresh. An H264 stream holds a fixed
-/// rate for its timestamps.
+/// The pacer of the render: output::pacer() over what takes its frames.
 fn pacer(a: &Ns, panel: &Panel) -> Option<Box<dyn Pacer>> {
-    let fixed = a
-        .fps
-        .filter(|f| *f != 0.0)
-        .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>);
-    match panel {
-        Panel::Kms(_) => fixed,
-        Panel::None if given(&a.h264) => Some(Box::new(FixedPacer::new(f64::from(h264_fps(a))))),
-        Panel::None => None,
-    }
+    let sinks = match panel {
+        Panel::Kms(_) => Sinks::Display,
+        Panel::None if given(&a.h264) => Sinks::Stream(h264_fps(a)),
+        Panel::None => Sinks::Files,
+    };
+    output::pacer(a.fps, sinks)
 }
 
 fn h264_fps(a: &Ns) -> i32 {
@@ -789,9 +784,7 @@ fn my_scenes(a: &Ns) -> Result<String> {
 
 /// The console's frame rate cap: --fps, whatever takes the frames.
 fn console_pacer(a: &Ns) -> Option<Box<dyn Pacer>> {
-    a.fps
-        .filter(|f| *f != 0.0)
-        .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>)
+    output::pacer(a.fps, Sinks::Display)
 }
 
 /// A store for the single scene `render --serve` names. A bundled example

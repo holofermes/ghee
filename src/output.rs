@@ -217,6 +217,30 @@ impl Pacer for FixedPacer {
     }
 }
 
+/// What takes a render's frames, which sets what paces the render.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sinks {
+    /// Image files or a pipe. The render runs as fast as it draws.
+    Files,
+    /// An H264 stream with no display, at this many frames a second. Its
+    /// timestamps hold that rate.
+    Stream(i32),
+    /// A display, the console or a host's own loop. A display's refresh
+    /// paces the render.
+    Display,
+}
+
+/// The pacer of a render whose frames go to `sinks`, capped at `fps`. None
+/// and 0 cap nothing. A stream holds its own rate, and files take no cap.
+pub fn pacer(fps: Option<f64>, sinks: Sinks) -> Option<Box<dyn Pacer>> {
+    let fps = match sinks {
+        Sinks::Files => None,
+        Sinks::Stream(hz) => Some(f64::from(hz)),
+        Sinks::Display => fps.filter(|f| *f != 0.0),
+    };
+    fps.map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>)
+}
+
 /// KMS. The renderer page-flips the final buffer to the connector itself
 /// (Renderer::present). This sink holds nothing and never takes a frame. It
 /// names the destination and puts the loop on present().
@@ -765,6 +789,16 @@ mod tests {
     #[test]
     fn fixed_pacer_idle_period() {
         assert_eq!(FixedPacer::new(30.0).idle_period(), 1.0 / 30.0);
+    }
+
+    #[test]
+    fn a_render_takes_the_pace_of_what_takes_its_frames() {
+        let period = |fps, sinks| pacer(fps, sinks).map(|p| p.idle_period());
+        assert_eq!(period(Some(24.0), Sinks::Files), None);
+        assert_eq!(period(None, Sinks::Stream(25)), Some(1.0 / 25.0));
+        assert_eq!(period(Some(24.0), Sinks::Display), Some(1.0 / 24.0));
+        assert_eq!(period(Some(0.0), Sinks::Display), None);
+        assert_eq!(period(None, Sinks::Display), None);
     }
 
     #[test]

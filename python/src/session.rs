@@ -16,8 +16,8 @@ use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer, DEFAULT_
 use ghee::filters::apply_filters;
 use ghee::layer::Address;
 use ghee::live::Live;
-use ghee::looper::{Clock, Frame, Moment, Pacer, RenderTarget};
-use ghee::output::{encode_jpeg, encode_png_as, expand_pattern, AlphaForm, FixedPacer};
+use ghee::looper::{Clock, Frame, Moment, RenderTarget};
+use ghee::output::{encode_jpeg, encode_png_as, expand_pattern, pacer, AlphaForm, Sinks};
 use ghee::procedural::{load_scene, process, scene_name};
 use ghee::scene::{coerce, truthy, ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
@@ -418,9 +418,7 @@ impl Session {
             ),
         };
         let mut clock = Clock::new(timestep);
-        clock.pacer = fps
-            .filter(|f| *f != 0.0)
-            .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>);
+        clock.pacer = pacer(fps, Sinks::Display);
         Ok(Session {
             renderer,
             sink,

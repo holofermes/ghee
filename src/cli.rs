@@ -719,8 +719,8 @@ fn cmd_render(a: &Ns) -> Result<()> {
         // 0 is the endless run, so the frame budget spells no other count for
         // "render nothing". A negative --frames stops before the first frame.
         lp.frames = want.max(0) as u64;
-        lp.timestep = a.timestep;
-        lp.pacer = pace;
+        lp.clock.timestep = a.timestep;
+        lp.clock.pacer = pace;
         lp.stopping = Some(Box::new(move || {
             want < 0 || SIGNALLED.load(Ordering::SeqCst) != 0
         }));

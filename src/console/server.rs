@@ -1376,8 +1376,8 @@ pub fn render_loop(
         refs.push(&mut shot_sink);
         let mut render = Loop::new(&mut shared, refs);
         render.frames = console.frames;
-        render.timestep = console.timestep;
-        render.pacer = pacer;
+        render.clock.timestep = console.timestep;
+        render.clock.pacer = pacer;
         // the loop rests so the handler and encoder threads run
         render.rest = 0.003;
         let feed = provider(console);

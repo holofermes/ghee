@@ -1,9 +1,7 @@
 //! One scene, one renderer, one output. The host asks for each frame.
 //!
-//! The scene loading, the pacing and the console are ghee's own.
-//! A frame follows ghee::looper: `t` is the wall clock since the first frame,
-//! iTimeDelta is the period since the last frame drawn, and MAX_DT caps it.
-//! A tick's dt is the time since the tick before, which MAX_DT caps too.
+//! The scene loading, the console and the frame clock, ghee::looper::Clock,
+//! are ghee's own. `t` counts from the first frame.
 //!
 //! The engine is thread-affine, so a Session belongs to the thread that built
 //! it.
@@ -18,7 +16,7 @@ use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer};
 use ghee::filters::apply_filters;
 use ghee::layer::Address;
 use ghee::live::Live;
-use ghee::looper::{Frame, Pacer, MAX_DT};
+use ghee::looper::{Clock, Frame, Moment, Pacer, RenderTarget};
 use ghee::output::{encode_jpeg, encode_png_as, expand_pattern, AlphaForm, FixedPacer};
 use ghee::procedural::{load_scene, process, scene_name};
 use ghee::scene::{coerce, truthy, ArraySize, Scene};
@@ -95,11 +93,9 @@ pub struct Tick {
     pub params: Map<String, Value>,
 }
 
-/// An iteration that begin() opened: its clock, the period since the last
-/// frame drawn, and its tick.
+/// An iteration that begin() opened: its moment and its tick.
 struct Opened {
-    t0: f64,
-    period: Option<f64>,
+    moment: Moment,
     tick: Tick,
 }
 
@@ -178,7 +174,7 @@ pub struct Session {
     /// The scene's live state: what it declares, what the host set and what
     /// a console changed.
     live: Live,
-    pacer: Option<Box<dyn Pacer>>,
+    clock: Clock<'static>,
     console: Option<Console>,
     /// The console's hardware H264 lane. It issues GL calls, so it belongs to
     /// this thread, and it never outlives the renderer.
@@ -186,12 +182,6 @@ pub struct Session {
     pending: Vec<(String, Fed)>,
     buf: Vec<u8>,
     alpha: Option<AlphaForm>,
-    timestep: Option<f64>,
-    started: Option<f64>,
-    prev: Option<f64>,
-    period: Option<f64>,
-    /// The clock of the last tick, of a frame or of a skip.
-    ticked: Option<f64>,
     frame: u64,
     /// The tick of the frame drawn last, None before the first.
     drawn: Option<u64>,
@@ -434,23 +424,20 @@ impl Session {
                 .map_err(system_fault)?,
             ),
         };
+        let mut clock = Clock::new(timestep);
+        clock.pacer = fps
+            .filter(|f| *f != 0.0)
+            .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>);
         Ok(Session {
             renderer,
             sink,
             live,
-            pacer: fps
-                .filter(|f| *f != 0.0)
-                .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>),
+            clock,
             console,
             h264: HwLane::default(),
             pending: Vec::new(),
             buf: vec![0u8; (i64::from(h) * i64::from(w) * i64::from(components)) as usize],
             alpha,
-            timestep,
-            started: None,
-            prev: None,
-            period: None,
-            ticked: None,
             frame: 0,
             drawn: None,
             text_errors: u64::MAX,
@@ -478,33 +465,23 @@ impl Session {
     }
 
     /// Open this iteration, once: apply the console's sets, and give the tick
-    /// that the next frame() or skip() takes and returns. Its dt is the
-    /// pinned step, else the time since the tick before, which MAX_DT caps,
-    /// else the engine's first 1/60, so the ticks' dt add up to the time
-    /// passed while no gap passes MAX_DT. A frame drawn after a drawn one
-    /// draws with that dt.
+    /// that the next frame() or skip() takes and returns, as Clock::begin()
+    /// times it.
     pub fn begin(&mut self) -> Outcome<Tick> {
         if let Some(o) = &self.opened {
             return Ok(o.tick.clone());
         }
         self.drain()?;
         let params = self.live.tick_params();
-        let t0 = monotonic();
-        let t = self.clock(t0);
-        let period = self.prev.map(|prev| t0 - prev);
-        let since = self.ticked.replace(t0).map(|ticked| t0 - ticked);
+        let moment = self.clock.begin(self.frame, monotonic());
         let tick = Tick {
             frame: self.frame,
-            time: t,
-            dt: match self.timestep {
-                Some(step) => step,
-                None => since.map_or(1.0 / 60.0, |s| s.min(MAX_DT)),
-            },
+            time: moment.t,
+            dt: moment.dt,
             params,
         };
         self.opened = Some(Opened {
-            t0,
-            period,
+            moment,
             tick: tick.clone(),
         });
         Ok(tick)
@@ -518,46 +495,11 @@ impl Session {
         Ok(self.opened.take().expect("begin() opened the iteration"))
     }
 
-    /// This iteration's t. Unpinned it is the wall clock since the first frame:
-    /// a scene synced to outside time must not drift with the host's pace.
-    fn clock(&mut self, t0: f64) -> f64 {
-        let started = *self.started.get_or_insert(t0);
-        match self.timestep {
-            Some(step) => self.frame as f64 * step,
-            None => t0 - started,
-        }
-    }
-
-    /// How long a skipped frame waits.
-    fn idle(&self) -> f64 {
-        if let Some(p) = self.pacer.as_ref() {
-            return p.idle_period();
-        }
-        match self.period {
-            Some(p) if p != 0.0 => p,
-            _ => 1.0 / 60.0,
-        }
-    }
-
     pub fn frame(&mut self) -> Outcome<Tick> {
-        let Opened { t0, period, tick } = self.take_opened()?;
-        let t = tick.time;
+        let Opened { moment, tick } = self.take_opened()?;
         self.drain()?;
-        if period.is_some() {
-            self.period = period;
-        }
-        self.prev = Some(t0);
-        // The one place a frame feeds iTimeDelta: the measured period, or the
-        // pinned step. A draw after a skip stretch measures the whole gap, so
-        // MAX_DT caps it.
-        if let Some(step) = self.timestep {
-            self.renderer.set_dt(step);
-        } else if let Some(period) = self.period {
-            self.renderer.set_dt(period.min(MAX_DT));
-        }
-        if self.timestep.is_some() {
-            self.renderer.set_time(Some(t));
-        }
+        self.clock
+            .drawn(&moment, &self.renderer as &dyn RenderTarget);
         if self.drawn.is_none() {
             self.renderer.wait_for_words().map_err(system_fault)?;
         }
@@ -577,7 +519,7 @@ impl Session {
         self.frame += 1;
         let end = monotonic();
         if let Some(hub) = self.console.as_ref().map(Console::hub) {
-            hub.frame_done(end - t0);
+            hub.frame_done(end - moment.t0);
             let seq = self.renderer.text_errors_seq();
             if seq != self.text_errors {
                 self.text_errors = seq;
@@ -596,10 +538,7 @@ impl Session {
                 }
             }
         }
-        if let Some(pacer) = self.pacer.as_mut() {
-            let now = monotonic();
-            nap(pacer.sleep_for(now - drew, now - t0));
-        }
+        self.clock.pace(&moment, drew);
         Ok(tick)
     }
 
@@ -652,8 +591,8 @@ impl Session {
         let tick = self.begin()?;
         let wants = self.console.as_ref().is_some_and(|c| c.hub().wants_draw());
         if wants && self.frame().is_ok() {
-            if self.pacer.is_none() {
-                nap(self.idle());
+            if self.clock.pacer.is_none() {
+                nap(self.clock.idle());
             }
             return Ok(tick);
         }
@@ -662,7 +601,7 @@ impl Session {
         if let Some(c) = self.console.as_ref() {
             c.hub().skipped();
         }
-        nap(self.idle());
+        nap(self.clock.idle());
         Ok(tick)
     }
 

@@ -7161,7 +7161,7 @@ mod tests {
             {
                 let mut lp = crate::looper::Loop::new(&mut r, vec![&mut sink]);
                 lp.frames = 4;
-                lp.timestep = Some(0.1);
+                lp.clock.timestep = Some(0.1);
                 lp.run().unwrap();
             }
             let frames = sink.0;

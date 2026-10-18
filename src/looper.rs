@@ -447,6 +447,139 @@ fn sleep(seconds: f64) {
     }
 }
 
+/// The time of a host's frames: `t`, the period that iTimeDelta takes, a
+/// tick's dt, and the pace. `Loop` keeps one, and so does a host that asks
+/// for each frame itself.
+pub struct Clock<'a> {
+    /// Pin iTime to frame * timestep and iTimeDelta to timestep.
+    pub timestep: Option<f64>,
+    pub pacer: Option<Box<dyn Pacer + 'a>>,
+    /// The clock that `t` counts from.
+    started: Option<f64>,
+    /// The clock of the last frame drawn.
+    prev: Option<f64>,
+    /// The measured frame period, the iTimeDelta fed to a scene.
+    period: Option<f64>,
+    /// The clock of the last tick, drawn or skipped.
+    ticked: Option<f64>,
+}
+
+/// One iteration that Clock::begin() opened.
+#[derive(Clone, Copy, Debug)]
+pub struct Moment {
+    /// The clock when the iteration began.
+    pub t0: f64,
+    /// The time handed to the scene.
+    pub t: f64,
+    /// The tick's dt.
+    pub dt: f64,
+    /// The time since the last frame drawn.
+    period: Option<f64>,
+}
+
+impl Default for Clock<'_> {
+    fn default() -> Self {
+        Clock::new(None)
+    }
+}
+
+impl<'a> Clock<'a> {
+    pub fn new(timestep: Option<f64>) -> Clock<'a> {
+        Clock {
+            timestep,
+            pacer: None,
+            started: None,
+            prev: None,
+            period: None,
+            ticked: None,
+        }
+    }
+
+    /// Count `t` from `now`. Without it, `t` counts from the first begin().
+    pub fn start(&mut self, now: f64) {
+        self.started = Some(now);
+    }
+
+    /// The renderer started its clock again: the next frame draws with the
+    /// first dt.
+    pub fn restart(&mut self) {
+        self.prev = None;
+        self.period = None;
+        self.ticked = None;
+    }
+
+    /// Open iteration `frame` at the clock `now`. Unpinned, `t` is the wall
+    /// clock since the start: a scene synced to outside time (music) must
+    /// not drift with the host's own pace. The tick's dt is the pinned step,
+    /// else the time since the tick before, which MAX_DT caps, else the
+    /// engine's first 1/60, so the ticks' dt add up to the time passed while
+    /// no gap passes MAX_DT. A frame drawn after a drawn one draws with that
+    /// dt.
+    pub fn begin(&mut self, frame: u64, now: f64) -> Moment {
+        let started = *self.started.get_or_insert(now);
+        let t = match self.timestep {
+            Some(step) => frame as f64 * step,
+            None => now - started,
+        };
+        let since = self.ticked.replace(now).map(|ticked| now - ticked);
+        Moment {
+            t0: now,
+            t,
+            dt: match self.timestep {
+                Some(step) => step,
+                None => since.map_or(1.0 / 60.0, |s| s.min(MAX_DT)),
+            },
+            period: self.prev.map(|prev| now - prev),
+        }
+    }
+
+    /// Iteration `m` draws: hand `target` its iTimeDelta, the measured
+    /// period or the pinned step, and with a pinned step its time. Before
+    /// the first measurement the engine's default stands. A draw after a
+    /// skip stretch measures the whole gap, so MAX_DT caps it: one frame
+    /// must never step a simulation by seconds.
+    pub fn drawn(&mut self, m: &Moment, target: &dyn RenderTarget) {
+        if m.period.is_some() {
+            self.period = m.period;
+        }
+        self.prev = Some(m.t0);
+        if let Some(step) = self.timestep {
+            target.set_dt(step);
+            target.set_time(m.t);
+        } else if let Some(period) = self.period {
+            target.set_dt(period.min(MAX_DT));
+        }
+    }
+
+    /// The measured frame period.
+    pub fn period(&self) -> Option<f64> {
+        self.period
+    }
+
+    /// How long a skipped frame waits: the pacer's period, else the
+    /// measured one, else 1/60 s.
+    pub fn idle(&self) -> f64 {
+        if let Some(p) = self.pacer.as_ref() {
+            return p.idle_period();
+        }
+        match self.period {
+            Some(p) if p != 0.0 => p,
+            _ => 1.0 / 60.0,
+        }
+    }
+
+    /// Sleep what the pacer asks after the frame of `m`, whose render ended
+    /// at the clock `drew`. False without a pacer.
+    pub fn pace(&mut self, m: &Moment, drew: f64) -> bool {
+        let Some(pacer) = self.pacer.as_mut() else {
+            return false;
+        };
+        let now = monotonic();
+        sleep(pacer.sleep_for(now - drew, now - m.t0));
+        true
+    }
+}
+
 /// The destination buffer for this frame's readback.
 enum Target {
     /// no readback
@@ -476,9 +609,8 @@ pub struct Loop<'a> {
     /// (name, size, frame) -> this frame's data for one declared array
     pub provider: Option<LoopProvider<'a>>,
     pub frames: u64,
-    /// pin iTime to frame * timestep and iTimeDelta to timestep
-    pub timestep: Option<f64>,
-    pub pacer: Option<Box<dyn Pacer + 'a>>,
+    /// the time of the frames, and their pace
+    pub clock: Clock<'a>,
     /// frames drawn, counted into a rate a host may read from its own thread
     pub rate: Option<Arc<Mutex<FrameRate>>>,
     /// seconds yielded after a frame, for a host's threads
@@ -499,11 +631,6 @@ pub struct Loop<'a> {
     /// seconds from the start of run() to the end of its last iteration,
     /// skipped ones included
     pub elapsed: f64,
-    /// measured frame period, the iTimeDelta fed to a scene
-    pub period: Option<f64>,
-    prev: Option<f64>,
-    /// the clock of the last tick, drawn or skipped
-    ticked: Option<f64>,
     buf: Vec<u8>,
     buf_shape: (i32, i32, i32),
 }
@@ -516,8 +643,7 @@ impl<'a> Loop<'a> {
             controller: None,
             provider: None,
             frames: 0,
-            timestep: None,
-            pacer: None,
+            clock: Clock::default(),
             rate: None,
             rest: 0.0,
             poll: None,
@@ -529,9 +655,6 @@ impl<'a> Loop<'a> {
             frame: 0,
             drawn: 0,
             elapsed: 0.0,
-            period: None,
-            prev: None,
-            ticked: None,
             buf: Vec::new(),
             buf_shape: (0, 0, 0),
         }
@@ -548,16 +671,10 @@ impl<'a> Loop<'a> {
 
     /// How long a skipped (clean) frame sleeps before re-polling.
     pub fn idle(&mut self) -> f64 {
-        let period = self.period;
-        if let Some(f) = self.idle_hook.as_mut() {
-            return f(period);
-        }
-        if let Some(p) = self.pacer.as_ref() {
-            return p.idle_period();
-        }
-        match period {
-            Some(p) if p != 0.0 => p,
-            _ => 1.0 / 60.0,
+        let period = self.clock.period();
+        match self.idle_hook.as_mut() {
+            Some(f) => f(period),
+            None => self.clock.idle(),
         }
     }
 
@@ -569,7 +686,8 @@ impl<'a> Loop<'a> {
             self.frames == 0 && !self.sinks.is_empty() && self.sinks.iter().all(|s| s.persists());
         let mut lit = false;
         let started = monotonic();
-        let ran = self.pump(scanout, skippable, &mut lit, started);
+        self.clock.start(started);
+        let ran = self.pump(scanout, skippable, &mut lit);
         self.elapsed = monotonic() - started;
         let shut = self.shutdown();
         shut.and(ran)
@@ -583,9 +701,9 @@ impl<'a> Loop<'a> {
         Ok(())
     }
 
-    fn pump(&mut self, scanout: bool, skippable: bool, lit: &mut bool, started: f64) -> Result<()> {
+    fn pump(&mut self, scanout: bool, skippable: bool, lit: &mut bool) -> Result<()> {
         while (self.frames == 0 || self.frame < self.frames) && !self.done() {
-            if let Err(e) = self.step(scanout, skippable, lit, started) {
+            if let Err(e) = self.step(scanout, skippable, lit) {
                 let alive = match self.on_error.as_mut() {
                     Some(f) => f(&e),
                     None => false,
@@ -606,52 +724,27 @@ impl<'a> Loop<'a> {
         }
     }
 
-    fn step(&mut self, scanout: bool, skippable: bool, lit: &mut bool, started: f64) -> Result<()> {
+    fn step(&mut self, scanout: bool, skippable: bool, lit: &mut bool) -> Result<()> {
         let t0 = monotonic();
         let forced = match self.poll.as_mut() {
             Some(p) => p(),
             None => false,
         };
-        // the t handed to a controller. Unpinned it is the wall clock
-        // since run() started: a scene synced to outside time (music) must
-        // not drift with the loop's own pace.
-        let t = match self.timestep {
-            Some(step) => self.frame as f64 * step,
-            None => t0 - started,
-        };
         if self.renderer.clock_restarted() {
-            self.prev = None;
-            self.period = None;
-            self.ticked = None;
+            self.clock.restart();
         }
-        // The period since the last frame drawn, which iTimeDelta takes when
-        // this iteration draws.
-        let period = self.prev.map(|prev| t0 - prev);
-        let since = self.ticked.replace(t0).map(|ticked| t0 - ticked);
+        let m = self.clock.begin(self.frame, t0);
         // before the skip decision: a scene fed from outside says whether this
         // tick needs a frame
-        self.tick_controller(t, since)?;
-        if skippable && !self.should_draw_now(forced, t) {
+        self.tick_controller(m.t, m.dt)?;
+        if skippable && !self.should_draw_now(forced, m.t) {
             self.frame += 1;
             let idle = self.idle();
             sleep(idle);
             return Ok(());
         }
-        if period.is_some() {
-            self.period = period;
-        }
-        self.prev = Some(t0);
-        // The one place the loop feeds iTimeDelta: the measured frame period,
-        // or the pinned step for a reproducible render. Before the first
-        // measurement the engine's default stands.
-        if let Some(step) = self.timestep {
-            self.renderer.set_dt(step);
-        } else if let Some(period) = self.period {
-            // a draw after a skip stretch measures the whole gap: one frame
-            // must never step a simulation by seconds
-            self.renderer.set_dt(period.min(MAX_DT));
-        }
-        let drew = self.draw_frame(scanout, t)?;
+        self.clock.drawn(&m, &*self.renderer);
+        let drew = self.draw_frame(scanout, m.t)?;
         if !*lit {
             // the display now holds a frame to light
             *lit = true;
@@ -671,29 +764,19 @@ impl<'a> Loop<'a> {
             hook(self, end - t0);
             self.on_frame = Some(hook);
         }
-        if let Some(pacer) = self.pacer.as_mut() {
-            let now = monotonic();
-            sleep(pacer.sleep_for(now - drew, now - t0));
-        } else if self.rest != 0.0 {
+        if !self.clock.pace(&m, drew) && self.rest != 0.0 {
             sleep(self.rest);
         }
         Ok(())
     }
 
-    /// Hand the controller this iteration, drawn or skipped. Its dt is the
-    /// pinned step, else `since`, the time since the last tick, which MAX_DT
-    /// caps, else the engine's first 1/60, so the ticks' dt add up to the
-    /// time passed while no gap passes MAX_DT. A frame drawn after a drawn
-    /// one draws with that dt.
-    fn tick_controller(&mut self, t: f64, since: Option<f64>) -> Result<()> {
+    /// Hand the controller this iteration, drawn or skipped, with the dt
+    /// that Clock::begin() gave it.
+    fn tick_controller(&mut self, t: f64, dt: f64) -> Result<()> {
         let Some(cell) = self.controller else {
             return Ok(());
         };
         let frame = self.frame;
-        let dt = match self.timestep {
-            Some(step) => step,
-            None => since.map_or(1.0 / 60.0, |s| s.min(MAX_DT)),
-        };
         let mut slot = cell.borrow_mut();
         match (*slot).as_mut() {
             Some(c) => c.tick(frame, t, dt),
@@ -721,7 +804,6 @@ impl<'a> Loop<'a> {
     /// the clock at the end of the render, before the sink writes.
     fn draw_frame(&mut self, scanout: bool, t: f64) -> Result<f64> {
         let frame = self.frame;
-        let timestep = self.timestep;
         let Loop {
             renderer,
             sinks,
@@ -742,9 +824,6 @@ impl<'a> Loop<'a> {
         };
         if let Some(c) = ctrl.as_mut() {
             c.update(renderer, frame, t)?;
-        }
-        if timestep.is_some() {
-            renderer.set_time(t);
         }
         let readers: Vec<usize> = (0..sinks.len())
             .filter(|i| sinks[*i].wants(frame))
@@ -1378,7 +1457,7 @@ mod tests {
         {
             let mut lp = Loop::new(&mut r, vec![&mut s]);
             lp.frames = 3;
-            lp.timestep = Some(0.5);
+            lp.clock.timestep = Some(0.5);
             lp.run().unwrap();
         }
         assert_eq!(*r.dts.borrow(), vec![0.5, 0.5, 0.5]);
@@ -1596,8 +1675,12 @@ mod tests {
         let mut k = Sink::scanout();
         let mut lp = Loop::new(&mut r, vec![&mut k]);
         assert!((lp.idle() - 1.0 / 60.0).abs() < 1e-12);
-        lp.period = Some(0.02);
-        assert_eq!(lp.idle(), 0.02);
+        let target = Recorder::default();
+        for now in [1.0, 1.25] {
+            let m = lp.clock.begin(0, now);
+            lp.clock.drawn(&m, &target);
+        }
+        assert_eq!(lp.idle(), 0.25);
     }
 
     // the frame budget and what it publishes
@@ -1774,7 +1857,7 @@ mod tests {
         {
             let mut lp = Loop::new(&mut r, vec![&mut s]);
             lp.controller = Some(&ctrl);
-            lp.timestep = Some(0.25);
+            lp.clock.timestep = Some(0.25);
             lp.stopping = Some(Box::new(after(4)));
             lp.idle_hook = Some(Box::new(|_| 0.0));
             lp.run().unwrap();

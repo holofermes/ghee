@@ -38,7 +38,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `SceneController` gives the console its `ghee::live::Live` through
   `live()` instead of taking `on_param`. Set a `Console`'s frame size and
   its preview and stream settings on `console.hub`, and take the stream
-  types from `ghee::console::hub`.
+  types from `ghee::console::hub`. Set a `Loop`'s `timestep` and `pacer` on
+  its `clock`.
 
 ### Added
 

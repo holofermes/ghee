@@ -181,6 +181,12 @@ impl LayerWire {
         })
     }
 
+    /// The names of the scene's layers, those that the drawing added
+    /// included.
+    fn names(&self) -> Vec<String> {
+        self.index.layers.iter().map(|(n, _)| n.clone()).collect()
+    }
+
     /// The wire name and the type of each param that a set can name, as
     /// ghee addresses them.
     fn params(&self) -> Vec<(String, String)> {

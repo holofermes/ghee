@@ -45,7 +45,7 @@ from ghee._look import _call_look, _circle, _floats, _look, _plain  # noqa: F401
 from ghee._tick import Tick
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Iterator, Sequence
     from typing import SupportsFloat
 
     from ._native import Drawing
@@ -390,12 +390,16 @@ class Layers:
         layers.title.karaoke.sung = 12
         layers["title"]["karaoke"]["sung"] = 12
         layers.icon.image = "wifi_off"
+
+    Iterating gives the names of the scene's layers, those that a drawing
+    added included, and `in` tests a name.
     """
 
-    __slots__ = ("_set",)
+    __slots__ = ("_names", "_set")
 
-    def __init__(self, set_layer) -> None:
+    def __init__(self, set_layer, names) -> None:
         object.__setattr__(self, "_set", set_layer)
+        object.__setattr__(self, "_names", names)
 
     def __getattr__(self, name: str) -> _LiveLayer:
         if name.startswith("_"):
@@ -403,7 +407,21 @@ class Layers:
         return _LiveLayer(self._set, name)
 
     def __getitem__(self, name: str) -> _LiveLayer:
+        if not isinstance(name, str):
+            raise TypeError(f"a layer's name is a str, got {type(name).__name__}")
         return _LiveLayer(self._set, name)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._names())
+
+    def __len__(self) -> int:
+        return len(self._names())
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._names()
+
+    def __repr__(self) -> str:
+        return f"<layers {', '.join(self._names()) or 'none'}>"
 
 
 class _LiveLayer:
@@ -941,7 +959,7 @@ def _send(kind: int, wire: str, body, what: str = "") -> None:
 
 # The live fields of the layers of the scene that run() runs, set from a tick
 # or a feed: ghee.layers.title.x = 10.
-layers = Layers(_set_layer)
+layers = Layers(_set_layer, lambda: [] if _SCENE is None else _live().names())
 
 
 def _types() -> dict:

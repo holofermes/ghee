@@ -376,7 +376,12 @@ impl Handle {
         slf.py()
             .import("ghee._shim")?
             .getattr("Layers")?
-            .call1((slf.getattr("set_layer")?,))
+            .call1((slf.getattr("set_layer")?, slf.getattr("_layer_names")?))
+    }
+
+    /// The names of the scene's layers, those that a drawing added included.
+    fn _layer_names(&mut self) -> PyResult<Vec<String>> {
+        Ok(self.held.get()?.layer_names())
     }
 
     /// A drawing of one frame, for a `with` block: its calls write layers,

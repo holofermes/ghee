@@ -719,6 +719,16 @@ impl Session {
             .map_err(refusal)
     }
 
+    /// The names of the scene's layers, those that a drawing added included.
+    pub fn layer_names(&self) -> Vec<String> {
+        self.live
+            .index()
+            .layers
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
     /// What a drawing paints on in the scene, as drawing() gives it.
     pub fn drawing(&self) -> Drawing {
         self.renderer.with_scene(drawing).unwrap_or_default()

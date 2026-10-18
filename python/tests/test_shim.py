@@ -1233,3 +1233,20 @@ def test_open_without_the_native_module_names_it(monkeypatch):
     assert "ghee-render" in str(caught.value)
     # the shim itself is still there
     assert ghee.Scene(passes=[]).to_dict() == {"version": 1, "passes": []}
+
+
+def test_ghee_layers_list_their_names(monkeypatch):
+    shim = load()
+    seen = []
+
+    @shim.tick
+    def hook(tick):
+        seen.append((list(shim.layers), len(shim.layers), "icon" in shim.layers))
+        seen.append(repr(shim.layers))
+        with pytest.raises(TypeError, match="a layer's name is a str, got int"):
+            shim.layers[0]
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    drive(shim, layered(shim), ticks, monkeypatch)
+    assert seen == [(["title", "icon"], 2, True), "<layers title, icon>"]
+    assert list(shim.layers) == []

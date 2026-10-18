@@ -785,3 +785,28 @@ def test_an_empty_list_of_fonts_is_refused_as_the_scene_format_refuses_it():
     with pytest.raises(ValueError) as raised:
         ghee.open(scene, width=8, height=8)
     assert str(raised.value) == "scene: layer 'words' " + NO_FAMILY + "[]"
+
+
+def test_a_handles_layers_list_their_names():
+    scene = {
+        "version": 1,
+        "passes": [
+            {
+                "name": "main",
+                "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+                "layers": [
+                    {"name": "title", "text": "hi"},
+                    {"name": "bar", "shape": "rect"},
+                ],
+            }
+        ],
+    }
+    with ghee.open(scene, width=16, height=16) as h:
+        with h.draw() as d:
+            d.circle((8, 8), 4, name="dot")
+        assert list(h.layers) == ["title", "bar", "dot"]
+        assert len(h.layers) == 3
+        assert "bar" in h.layers and "nope" not in h.layers
+        assert repr(h.layers) == "<layers title, bar, dot>"
+        with pytest.raises(TypeError, match="a layer's name is a str, got int"):
+            h.layers[0]

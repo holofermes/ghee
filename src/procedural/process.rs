@@ -1430,6 +1430,32 @@ impl SceneController for SceneProcess {
             }
         }
     }
+
+    fn on_scene(&mut self, posted: &mut Scene, running: &dyn RenderTarget) {
+        let locks = self
+            .locks
+            .as_ref()
+            .map(|l| lock(l).clone())
+            .unwrap_or_default();
+        let names: Vec<String> = posted.layers().map(|l| l.name().to_string()).collect();
+        for name in names {
+            let (Some(now), Some(layer)) = (running.layer(&name), posted.layer(&name)) else {
+                continue;
+            };
+            let look = layer.to_dict();
+            let kept = self.tuned.applied(look.clone(), &now, &locks);
+            if kept == look {
+                continue;
+            }
+            let put = Layer::from_dict("the layer", &kept).and_then(|mut layer| {
+                posted.load_layer(&mut layer)?;
+                posted.replace_layer(layer)
+            });
+            if let Err(e) = put {
+                crate::report::warn(format!("{}: layer {name}: {e:#}", self.name));
+            }
+        }
+    }
 }
 
 /// How many numbers a param of type `ty` takes.
@@ -3354,6 +3380,82 @@ while IFS= read -r line; do :; done
         assert_eq!(
             lock(&locks).to_json()["fields"],
             serde_json::json!(["title.font_size", "title.text"])
+        );
+    }
+
+    #[test]
+    fn a_scene_that_a_console_sets_up_keeps_what_the_program_set_and_its_own_changes() {
+        let d = tmpdir("rebuilt");
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "main", "fragment": "void main(){}",
+                        "layers": [{"name": "title", "text": "hi"}]}],
+        });
+        let (first, then) = (
+            r#"{"name": "title", "text": "ho", "font_size": 9}"#,
+            r#"{"name": "title", "text": "hu"}"#,
+        );
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            message(7, "title", first.len() as u32, first.as_bytes()),
+            "read -r line\n".to_string(),
+            message(7, "title", then.len() as u32, then.as_bytes()),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "rebuilt", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        f.lock_into(Arc::new(Mutex::new(Locks::default())));
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            !f.incoming.is_empty()
+        }));
+        let mut stub = Stub {
+            now: serde_json::json!({"name": "title", "text": "hi"}),
+            ..Stub::default()
+        };
+        f.update(&mut stub, 0, 0.0).unwrap();
+        // the page read the scene before the program's look, and changes
+        // text_align
+        let mut posted = Scene::from_dict(
+            &serde_json::json!({
+                "version": 1,
+                "passes": [{"name": "main", "fragment": "void main(){}",
+                            "layers": [{"name": "title", "text": "hi", "font_size": 12,
+                                        "text_align": "center"}]}],
+            }),
+            None,
+            None,
+        )
+        .unwrap();
+        stub.now = serde_json::json!({"name": "title", "text": "ho", "font_size": 9});
+        f.on_scene(&mut posted, &stub);
+        let title = posted.layer("title").unwrap().to_dict();
+        assert_eq!(
+            (&title["text"], &title["font_size"], &title["text_align"]),
+            (
+                &Value::from("ho"),
+                &Value::from(9.0),
+                &Value::from("center")
+            )
+        );
+        stub.now = title;
+        f.tick(1, 0.0, 1.0 / 60.0).unwrap();
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            !f.incoming.is_empty()
+        }));
+        stub.log.borrow_mut().clear();
+        f.update(&mut stub, 1, 0.0).unwrap();
+        let given = stub.log.borrow()[0]
+            .strip_prefix("look ")
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            serde_json::from_str::<Value>(&given).unwrap(),
+            serde_json::json!({"name": "title", "text": "hu", "text_align": "center"})
         );
     }
 

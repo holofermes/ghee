@@ -599,14 +599,26 @@ def test_a_drawing_locks_the_keys_it_passes_through_either_host(host, tmp_path):
         sizes = []
 
         def text():
-            layer = json_of(port, "/scene")["passes"][0]["layers"][0]
-            if not sizes or sizes[-1] != layer["font_size"]:
-                sizes.append(layer["font_size"])
+            layer = json_of(port, "/scene")["passes"][0].get("layers", [{}])[0]
+            if not sizes or sizes[-1] != layer.get("font_size"):
+                sizes.append(layer.get("font_size"))
             return layer
 
         until(lambda: len(sizes) > 3, lambda: (step(), text()))
         got = text()
         assert (got["x"], got.get("opacity")) == (1, 0.5)
+        # font_family takes a rebuild under ghee serve; the page's x is stale
+        looked = json_of(port, "/scene")
+        looked["passes"][0]["layers"][0].update(font_family=["Pixel Operator 8"], x=6)
+        assert post_json(port, "/scene", looked)[0] == 200
+        del sizes[:]
+        until(lambda: len(sizes) > 3, lambda: (step(), text()))
+        got = text()
+        assert (got["x"], got.get("opacity"), got.get("font_family")) == (
+            1,
+            0.5,
+            "Pixel Operator 8",
+        )
 
 
 def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():

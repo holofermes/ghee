@@ -22,7 +22,7 @@ use anyhow::{bail, Result};
 use crate::draw::Call;
 use crate::engine::{Feed, Given, Provider, Refused, Renderer, Taken};
 use crate::layer::Address;
-use crate::scene::{ArraySize, ParamValue};
+use crate::scene::{ArraySize, ParamValue, Scene};
 use crate::stats::{monotonic, FrameRate};
 use serde_json::Value;
 
@@ -403,6 +403,12 @@ pub trait SceneController {
     /// scene format writes the key. The next tick carries a text layer's
     /// `text`.
     fn on_layer(&mut self, _at: &Address, _value: &Value) {}
+
+    /// A host sets `posted` up in place of the running scene, which
+    /// `running` draws. Each key of a layer that the program set goes back
+    /// into `posted` at its running value, and each other key of a layer
+    /// that `posted` changes counts as the host's, as on_layer() counts it.
+    fn on_scene(&mut self, _posted: &mut Scene, _running: &dyn RenderTarget) {}
 
     /// Per-frame hook before the draw (e.g. set live params).
     fn update(&mut self, _renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {

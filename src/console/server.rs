@@ -2182,6 +2182,9 @@ fn drain(
                         .scene
                         .as_ref()
                         .is_some_and(|running| keep_layers(&mut scene, running));
+                if let Some(c) = ctrl.borrow_mut().as_mut() {
+                    c.on_scene(&mut scene, &*renderer.borrow());
+                }
                 let built =
                     set_scene(console, renderer, st, scene, generation, None, !fresh).is_empty();
                 // a failed setup sets the last scene up again

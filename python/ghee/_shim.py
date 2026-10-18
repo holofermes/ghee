@@ -1172,7 +1172,7 @@ def run(scene: Scene | None = None) -> None:
     if scene is None:
         scene = Scene(passes=[Pass("main", _BLACK)])
     _PARAMS = None
-    _FILTERS = [f["name"] if isinstance(f, dict) else f for f in scene.filters]
+    _FILTERS = [f.get("name") if isinstance(f, dict) else f for f in scene.filters]
     _SCENE = scene
     _DRAWN = None
     try:

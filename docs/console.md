@@ -142,10 +142,10 @@ ssh -L 8090:localhost:8090 pi@raspberrypi.local
 
 Then open `http://localhost:8090/` on your computer.
 
-To open it to your network instead, pass `--host 0.0.0.0`, and open the
-Pi's address on port 8090. Over plain `http` from another computer, the
-browser shows the MJPEG stream: the H264 video needs `https` or
-`localhost`.
+To open it to your network instead, pass `--host 0.0.0.0`, and open one of
+the addresses that the console prints when it starts. Over plain `http`
+from another computer, the browser shows the MJPEG stream: the H264 video
+needs `https` or `localhost`.
 
 Careful: the console has no password, and anyone who reaches it can change
 your scenes and run any shader. Open it only on a network you trust.

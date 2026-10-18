@@ -27,7 +27,7 @@ use crate::console::core::{
     LayerSet, Scope,
 };
 use crate::console::hub::{
-    banner, bound_port, frame_format, gpu_caps, serve, spawn_encoders, url, Drawer, Hub, HwLane,
+    banner, bound_port, frame_format, gpu_caps, serve, spawn_encoders, urls, Drawer, Hub, HwLane,
     RawFrame, SceneStats, Shot,
 };
 use crate::console::state::{self, Edits, Item};
@@ -2116,7 +2116,7 @@ pub fn run(opts: Options) -> Result<()> {
         console.stop();
     }
     let server = Server::http((host.as_str(), port)).map_err(|e| anyhow!("{e}"))?;
-    let address = url(&host, bound_port(&server, port));
+    let address = urls(&host, bound_port(&server, port));
     spawn_encoders(&console);
     {
         let console = Arc::clone(&console);

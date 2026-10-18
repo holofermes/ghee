@@ -17,7 +17,9 @@ use std::thread::JoinHandle;
 
 use anyhow::{anyhow, Result};
 use ghee::console::core::{ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, LayerSet, Scope};
-use ghee::console::hub::{banner, bound_port, serve, spawn_encoders, url, Drawer, Hub, SceneStats};
+use ghee::console::hub::{
+    banner, bound_port, serve, spawn_encoders, urls, Drawer, Hub, SceneStats,
+};
 use ghee::console::server::leave_out;
 use ghee::console::state;
 use ghee::engine::Renderer;
@@ -211,7 +213,7 @@ impl Console {
             locks: serving.locks,
         });
         let server = Server::http((host, port)).map_err(|e| anyhow!("{e}"))?;
-        let address = url(host, bound_port(&server, port));
+        let address = urls(host, bound_port(&server, port));
         let api = ConsoleAPI::new(Host(Arc::clone(&shared)))
             .with_web(true)
             .listening_on(host);

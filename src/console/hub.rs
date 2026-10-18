@@ -15,6 +15,7 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -779,14 +780,88 @@ pub fn serve<D: Drawer, H: ConsoleHost + Send + Sync + 'static>(
     })
 }
 
-/// The console's address as a URL that a browser on this machine opens.
-pub fn url(host: &str, port: u16) -> String {
-    let host = match host.parse::<std::net::IpAddr>() {
-        Ok(ip) if ip.is_unspecified() => "localhost".to_string(),
-        Ok(std::net::IpAddr::V6(ip)) => format!("[{ip}]"),
-        _ => host.to_string(),
+/// The console's addresses as URLs. A host that names every interface gives
+/// one URL for each address of this machine that reaches it: every IPv4
+/// address for 0.0.0.0, and every IPv6 address but a link-local one, then
+/// every IPv4 address, for `::`.
+pub fn urls(host: &str, port: u16) -> Vec<String> {
+    let url = |ip: IpAddr| match ip {
+        IpAddr::V4(ip) => format!("http://{ip}:{port}/"),
+        IpAddr::V6(ip) => format!("http://[{ip}]:{port}/"),
     };
-    format!("http://{host}:{port}/")
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) if ip.is_unspecified() => interface_addresses()
+            .into_iter()
+            .filter(IpAddr::is_ipv4)
+            .map(url)
+            .collect(),
+        Ok(IpAddr::V6(ip)) if ip.is_unspecified() => {
+            let all = interface_addresses();
+            let v6 = all.iter().filter(|a| match a {
+                IpAddr::V6(a) => (a.segments()[0] & 0xffc0) != 0xfe80,
+                IpAddr::V4(_) => false,
+            });
+            v6.chain(all.iter().filter(|a| a.is_ipv4()))
+                .copied()
+                .map(url)
+                .collect()
+        }
+        Ok(ip) => vec![url(ip)],
+        Err(_) => vec![format!("http://{host}:{port}/")],
+    }
+}
+
+/// The addresses of this machine's interfaces that are up, in the kernel's
+/// order.
+fn interface_addresses() -> Vec<IpAddr> {
+    use std::ffi::{c_int, c_uint, c_void};
+
+    #[repr(C)]
+    struct IfAddrs {
+        next: *mut IfAddrs,
+        name: *const c_void,
+        flags: c_uint,
+        addr: *const u16,
+        netmask: *const c_void,
+        ifu: *const c_void,
+        data: *const c_void,
+    }
+    extern "C" {
+        fn getifaddrs(ifap: *mut *mut IfAddrs) -> c_int;
+        fn freeifaddrs(ifa: *mut IfAddrs);
+    }
+    const IFF_UP: c_uint = 1;
+    const AF_INET: u16 = 2;
+    const AF_INET6: u16 = 10;
+
+    let mut out = Vec::new();
+    let mut head: *mut IfAddrs = std::ptr::null_mut();
+    if unsafe { getifaddrs(&mut head) } != 0 {
+        return out;
+    }
+    let mut at = head;
+    while !at.is_null() {
+        let ifa = unsafe { &*at };
+        at = ifa.next;
+        if ifa.flags & IFF_UP == 0 || ifa.addr.is_null() {
+            continue;
+        }
+        // sockaddr_in holds the address at byte 4, sockaddr_in6 at byte 8.
+        let sa = ifa.addr.cast::<u8>();
+        match unsafe { ifa.addr.read_unaligned() } {
+            AF_INET => {
+                let a = unsafe { sa.add(4).cast::<[u8; 4]>().read_unaligned() };
+                out.push(IpAddr::from(a));
+            }
+            AF_INET6 => {
+                let a = unsafe { sa.add(8).cast::<[u8; 16]>().read_unaligned() };
+                out.push(IpAddr::from(a));
+            }
+            _ => {}
+        }
+    }
+    unsafe { freeifaddrs(head) };
+    out
 }
 
 /// The port that `server` listens on, else `port`.
@@ -796,7 +871,13 @@ pub fn bound_port(server: &Server, port: u16) -> u16 {
 
 /// The line that a console prints when it starts: its address, its scenes,
 /// where they come from, and the frame.
-pub fn banner(url: &str, names: &[String], from: &str, size: (i32, i32), format: &str) -> String {
+pub fn banner(
+    urls: &[String],
+    names: &[String],
+    from: &str,
+    size: (i32, i32),
+    format: &str,
+) -> String {
     let count = match names.len() {
         0 => "no scene".to_string(),
         1 => "1 scene".to_string(),
@@ -812,8 +893,10 @@ pub fn banner(url: &str, names: &[String], from: &str, size: (i32, i32), format:
         f => format!("{f}, "),
     };
     format!(
-        "ghee console: {url} {count} [{names}] ({from}preview {}x{} {format})",
-        size.0, size.1
+        "ghee console: {} {count} [{names}] ({from}preview {}x{} {format})",
+        urls.join(" "),
+        size.0,
+        size.1
     )
 }
 
@@ -1783,6 +1866,24 @@ fn frame_png<D: Drawer + ?Sized>(drawer: &D, request: Request) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_console_on_every_interface_prints_the_addresses_that_reach_it() {
+        let all = urls("0.0.0.0", 8090);
+        assert!(
+            all.contains(&"http://127.0.0.1:8090/".to_string()),
+            "{all:?}"
+        );
+        assert!(all
+            .iter()
+            .all(|u| !u.contains("localhost") && !u.contains('[')));
+        let v6 = urls("::", 8090);
+        assert!(v6.iter().all(|u| !u.starts_with("http://[fe80")), "{v6:?}");
+        assert!(v6.contains(&"http://127.0.0.1:8090/".to_string()), "{v6:?}");
+        assert_eq!(urls("127.0.0.1", 1), ["http://127.0.0.1:1/"]);
+        assert_eq!(urls("::1", 1), ["http://[::1]:1/"]);
+        assert_eq!(urls("pi.local", 1), ["http://pi.local:1/"]);
+    }
 
     const SC: &[u8] = &[0, 0, 0, 1];
 

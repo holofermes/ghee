@@ -35,6 +35,7 @@ use ghee::console::server::{
 };
 use ghee::console::state;
 use ghee::h264::{no_encoder, ColorSpace, SoftwareH264, SW_COLOR};
+use ghee::live::Index;
 use ghee::looper::Frame;
 use ghee::output::{encode_jpeg, encode_png};
 use ghee::procedural::locks::Locks;
@@ -42,8 +43,6 @@ use ghee::scene::{coerce, ParamValue, Scene};
 use ghee::stats::{monotonic, FrameRate, DEST_H264};
 use serde_json::{Map, Value};
 use tiny_http::{Header, Request, Server, StatusCode};
-
-use crate::session::Index;
 
 /// JPEG quality for the preview, as the ghee console encodes it.
 const PREVIEW_QUALITY: u8 = 75;
@@ -149,7 +148,7 @@ pub struct Shared {
     /// The live fields of layers queued by requests for the next frame.
     layers: Mutex<Vec<LayerSet>>,
     /// What the host set, which this console refuses to set.
-    locks: Mutex<Locks>,
+    locks: Arc<Mutex<Locks>>,
     rate: Mutex<FrameRate>,
     frame_ms: Mutex<f64>,
     /// The renderer's text_errors(), a line each.
@@ -301,7 +300,7 @@ impl ConsoleHost for Host {
         };
         let p = index
             .param(pass, name)
-            .map_err(|e| ConsoleError::bad_request(e.message))?;
+            .map_err(|e| ConsoleError::bad_request(e.0))?;
         if let Some(why) = lock(&self.0.locks).param_refusal(p.pass.as_deref(), &p.uniform) {
             return Err(ConsoleError::read_only(why));
         }
@@ -373,6 +372,7 @@ impl Console {
         name: &str,
         scene: &Scene,
         index: Arc<Index>,
+        locks: Arc<Mutex<Locks>>,
         size: (i32, i32),
         format: &str,
         rotate: i64,
@@ -398,7 +398,7 @@ impl Console {
             out,
             queue: Mutex::new(Vec::new()),
             layers: Mutex::new(Vec::new()),
-            locks: Mutex::new(Locks::default()),
+            locks,
             rate: Mutex::new(FrameRate::new()),
             frame_ms: Mutex::new(0.0),
             text_errors: Mutex::new(Vec::new()),
@@ -535,11 +535,6 @@ impl Console {
 
     pub fn take_params(&self) -> Vec<Queued> {
         std::mem::take(&mut lock(&self.shared.queue))
-    }
-
-    /// What the host set, which this console refuses to set.
-    pub fn locks(&self) -> MutexGuard<'_, Locks> {
-        lock(&self.shared.locks)
     }
 
     pub fn take_layers(&self) -> Vec<LayerSet> {

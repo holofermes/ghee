@@ -8,22 +8,21 @@
 //! The engine is thread-affine, so a Session belongs to the thread that built
 //! it.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
 use ghee::console::server::{gpu_caps, H264_FPS};
-use ghee::draw::{Arg, Call, CallKind};
+use ghee::draw::Call;
 use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer};
 use ghee::filters::apply_filters;
 use ghee::h264::{HardwareH264, HW_COLOR};
 use ghee::layer::Address;
-use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
+use ghee::live::{Changes, Live};
+use ghee::looper::{Frame, Pacer, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png_as, expand_pattern, AlphaForm, FixedPacer};
-use ghee::procedural::locks::{call_keys, look_keys, Tuned};
 use ghee::procedural::{load_scene, process, scene_name};
-use ghee::scene::{coerce, no_layer, no_param, short_floats, truthy, ArraySize, Scene};
+use ghee::scene::{coerce, short_floats, truthy, ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
 use serde_json::{Map, Value};
 
@@ -58,6 +57,12 @@ impl Fault {
             scene: false,
             message: message.into(),
         }
+    }
+}
+
+impl From<Refused> for Fault {
+    fn from(refused: Refused) -> Fault {
+        Fault::scene(refused.0)
     }
 }
 
@@ -122,157 +127,6 @@ pub fn array_count(size: ArraySize) -> usize {
     }
 }
 
-/// One live param, as a host addresses it.
-#[derive(Clone)]
-pub struct ParamRef {
-    /// the name on the wire: `pass.name`, or `name`
-    pub wire: String,
-    /// the pass that holds it. None is scene scope.
-    pub pass: Option<String>,
-    /// the uniform itself, without the pass
-    pub uniform: String,
-    pub ty: String,
-}
-
-/// What the scene declares. A host feeds the arrays, sets the params and the
-/// live fields of the layers, and a console addresses the passes by index.
-///
-/// A param answers to `pass.name` and to `name`. A bare name is the scene
-/// param, else the param of the first pass that declares it. This is the
-/// addressing of the procedural wire.
-pub struct Index {
-    pub arrays: Vec<(String, ArraySize)>,
-    pub params: Vec<ParamRef>,
-    pub passes: Vec<String>,
-    /// Each layer's name, and true for a text layer.
-    pub layers: Vec<(String, bool)>,
-    /// The place in `params` of each param, by its name on the wire.
-    wires: HashMap<String, usize>,
-    /// True for a text layer, by the layer's name.
-    texts: HashMap<String, bool>,
-}
-
-impl Index {
-    pub fn of(scene: &Scene) -> Index {
-        let mut arrays: Vec<(String, ArraySize)> = Vec::new();
-        for p in &scene.passes {
-            for a in &p.arrays {
-                match arrays.iter_mut().find(|(n, _)| *n == a.name) {
-                    Some(slot) => slot.1 = a.size,
-                    None => arrays.push((a.name.clone(), a.size)),
-                }
-            }
-        }
-        let layers: Vec<(String, bool)> = scene
-            .layers()
-            .map(|l| (l.name().to_string(), l.as_text().is_some()))
-            .collect();
-        let texts: HashMap<String, bool> = layers.iter().cloned().collect();
-        let mut params: Vec<ParamRef> = Vec::new();
-        let scoped = std::iter::once((None, &scene.params)).chain(
-            scene
-                .passes
-                .iter()
-                .map(|p| (Some(p.name.as_str()), &p.params)),
-        );
-        for (pass, map) in scoped {
-            for (name, p) in map.iter() {
-                if let Some(pass) = pass {
-                    params.push(ParamRef {
-                        wire: format!("{pass}.{name}"),
-                        pass: Some(pass.to_string()),
-                        uniform: name.clone(),
-                        ty: p.ty.clone(),
-                    });
-                }
-                if params.iter().any(|r| r.wire == *name) {
-                    continue;
-                }
-                params.push(ParamRef {
-                    wire: name.clone(),
-                    pass: pass.map(str::to_string),
-                    uniform: name.clone(),
-                    ty: p.ty.clone(),
-                });
-            }
-        }
-        Index {
-            wires: params
-                .iter()
-                .enumerate()
-                .map(|(k, r)| (r.wire.clone(), k))
-                .collect(),
-            texts,
-            arrays,
-            params,
-            passes: scene.passes.iter().map(|p| p.name.clone()).collect(),
-            layers,
-        }
-    }
-
-    /// True for a text layer named `name`, false for a layer of another
-    /// kind, None when the scene has no such layer.
-    pub fn text(&self, name: &str) -> Option<bool> {
-        self.texts.get(name).copied()
-    }
-
-    /// The param named `wire` on the wire.
-    fn wired(&self, wire: &str) -> Option<&ParamRef> {
-        self.wires.get(wire).map(|&k| &self.params[k])
-    }
-
-    /// The name that a tick gives the param `name` of pass `pass`, None for
-    /// the scene's: the bare name when it addresses that param, else
-    /// `pass.name`.
-    fn ticked(&self, pass: Option<&str>, name: &str) -> Option<&str> {
-        match (self.wired(name), pass) {
-            (Some(r), _) if r.pass.as_deref() == pass => Some(&r.wire),
-            (_, Some(pass)) => self
-                .wired(&format!("{pass}.{name}"))
-                .map(|r| r.wire.as_str()),
-            _ => None,
-        }
-    }
-
-    /// True for a text layer named `name`, false for a layer of another
-    /// kind. A layer that the scene lacks is a fault of the caller's.
-    pub fn layer(&self, name: &str) -> Outcome<bool> {
-        self.text(name).ok_or_else(|| {
-            Fault::scene(no_layer(name, self.layers.iter().map(|(n, _)| n.as_str())))
-        })
-    }
-
-    /// The param named by a host. `pass` addresses one pass, and a dotted name
-    /// carries its own.
-    pub fn param(&self, pass: Option<&str>, name: &str) -> Outcome<&ParamRef> {
-        let wire = match pass {
-            Some(pass) => format!("{pass}.{name}"),
-            None => name.to_string(),
-        };
-        self.wired(&wire).ok_or_else(|| {
-            Fault::scene(no_param(&wire, self.params.iter().map(|r| r.wire.as_str())))
-        })
-    }
-
-    fn array(&self, name: &str) -> Outcome<ArraySize> {
-        match self.arrays.iter().find(|(n, _)| n == name) {
-            Some((_, size)) => Ok(*size),
-            None => Err(Fault::scene(format!(
-                "feed '{name}' is not an array this scene declares ({})",
-                names(self.arrays.iter().map(|(n, _)| n.as_str()))
-            ))),
-        }
-    }
-}
-
-fn names<'a>(all: impl Iterator<Item = &'a str>) -> String {
-    let all: Vec<&str> = all.collect();
-    match all.is_empty() {
-        true => "none".to_string(),
-        false => all.join(", "),
-    }
-}
-
 /// Where the frames go.
 enum Sink {
     None,
@@ -322,7 +176,9 @@ pub struct Opening {
 pub struct Session {
     renderer: Renderer,
     sink: Sink,
-    index: Arc<Index>,
+    /// The scene's live state: what it declares, what the host set and what
+    /// a console changed.
+    live: Live,
     pacer: Option<Box<dyn Pacer>>,
     console: Option<Console>,
     /// The h264 cap for the longest side. 0 streams the render size.
@@ -347,52 +203,8 @@ pub struct Session {
     drawn: Option<u64>,
     /// The renderer's text_errors_seq() at the console's last look.
     text_errors: u64,
-    /// The value of each param, by the name that a tick gives it, as a scene
-    /// file writes it, and the words of each text layer as its `text`, such
-    /// as `title.text`.
-    values: Map<String, Value>,
-    /// Each value at the last tick.
-    sent: Map<String, Value>,
     /// The iteration that begin() opened, for the next frame() or skip().
     opened: Option<Opened>,
-    /// The layers that the host changed since the console last took them,
-    /// noted only while a console runs.
-    changed: Vec<String>,
-    /// The params that the host set since the console last took them: each
-    /// one's pass, None for the scene's, and its name.
-    set: Vec<(Option<String>, String)>,
-    /// The host changed which layers the scene holds, or a layer's kind,
-    /// since the console last took the scene.
-    grown: bool,
-    /// The keys of layers that a console changed.
-    tuned: Tuned,
-}
-
-/// The value of each param of `scene`, by the name that a tick gives it, and
-/// the words of each text layer as its `text`.
-fn param_values(scene: &Scene, index: &Index) -> Map<String, Value> {
-    let mut out = Map::new();
-    for l in scene.text_layers() {
-        out.insert(format!("{}.text", l.name), Value::from(l.text.clone()));
-    }
-    for r in index
-        .params
-        .iter()
-        .filter(|r| index.ticked(r.pass.as_deref(), &r.uniform) == Some(&r.wire))
-    {
-        let params = match &r.pass {
-            None => Some(&scene.params),
-            Some(p) => scene
-                .passes
-                .iter()
-                .find(|x| x.name == *p)
-                .map(|x| &x.params),
-        };
-        if let Some(p) = params.and_then(|ps| ps.get(&r.uniform)) {
-            out.insert(r.wire.clone(), p.value.to_json());
-        }
-    }
-    out
 }
 
 /// Load a scene as `ghee render` loads one, filters included.
@@ -584,8 +396,7 @@ impl Session {
             };
             return Err(Fault::scene(format!("{kind}{}", err.trim_end())));
         }
-        let index = Arc::new(Index::of(&scene));
-        let values = param_values(&scene, &index);
+        let live = Live::new(&scene);
         let out = match &sink {
             Sink::None => Vec::new(),
             Sink::Kms => vec![DEST_KMS.to_string()],
@@ -618,7 +429,8 @@ impl Session {
                     port,
                     &name,
                     &scene,
-                    Arc::clone(&index),
+                    Arc::clone(live.index()),
+                    live.locks(),
                     (w, h),
                     &format,
                     rotate,
@@ -638,7 +450,7 @@ impl Session {
             renderer,
             sink,
             stream_longest: longest,
-            index,
+            live,
             pacer: fps
                 .filter(|f| *f != 0.0)
                 .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>),
@@ -656,13 +468,7 @@ impl Session {
             frame: 0,
             drawn: None,
             text_errors: u64::MAX,
-            values,
-            sent: Map::new(),
             opened: None,
-            changed: Vec::new(),
-            set: Vec::new(),
-            grown: false,
-            tuned: Tuned::default(),
         })
     }
 
@@ -696,7 +502,7 @@ impl Session {
             return Ok(o.tick.clone());
         }
         self.drain()?;
-        let params = self.changed();
+        let params = self.live.tick_params();
         let t0 = monotonic();
         let t = self.clock(t0);
         let period = self.prev.map(|prev| t0 - prev);
@@ -724,23 +530,6 @@ impl Session {
             self.begin()?;
         }
         Ok(self.opened.take().expect("begin() opened the iteration"))
-    }
-
-    /// The values that changed since the last tick. The first tick holds
-    /// every value.
-    fn changed(&mut self) -> Map<String, Value> {
-        let mut out = Map::new();
-        for (k, v) in &self.values {
-            if self.sent.get(k) != Some(v) {
-                out.insert(k.clone(), v.clone());
-            }
-        }
-        // `sent` holds no key that `values` lacks, so the changed values
-        // bring it level.
-        for (k, v) in &out {
-            self.sent.insert(k.clone(), v.clone());
-        }
-        out
     }
 
     /// This iteration's t. Unpinned it is the wall clock since the first frame:
@@ -978,18 +767,11 @@ impl Session {
 
     /// Set one live param, with no recompile.
     pub fn set_param(&mut self, pass: Option<&str>, name: &str, value: &Value) -> Outcome<()> {
-        let p = self.index.param(pass, name)?.clone();
+        let p = self.live.index().param(pass, name)?.clone();
         let v = coerce(&p.wire, &p.ty, value).map_err(scene_fault)?;
-        RenderTarget::set_param(&self.renderer, p.pass.as_deref(), &p.uniform, &p.ty, &v)
-            .map_err(system_fault)?;
-        let (pass, uniform) = (p.pass.clone(), p.uniform.clone());
-        // The host set this value itself, so no tick reports it.
-        self.held(pass.as_deref(), &uniform, v.to_json(), true);
-        if let Some(c) = &self.console {
-            c.locks().set_param(pass.as_deref(), &uniform);
-            self.set.push((pass, uniform));
-        }
-        Ok(())
+        self.live
+            .set_param(&self.renderer, &p, v)
+            .map_err(system_fault)
     }
 
     /// Set the live field `field` of layer `layer`, or of its effect
@@ -1003,155 +785,55 @@ impl Session {
         field: &str,
         value: &Value,
     ) -> Outcome<()> {
-        let text = self.index.layer(layer)?;
+        self.live.index().layer(layer)?;
         let at = Address {
             layer,
             effect,
             field,
         };
-        self.renderer
-            .set_layer(&at, Given::Json(value))
-            .map_err(refusal)?;
-        // The host set these words itself, so no tick reports them.
-        if let (true, None, "text") = (text, effect, field) {
-            self.held_words(layer, value.clone(), true);
-        }
-        if let Some(c) = &self.console {
-            c.locks().set_field(&at);
-        }
-        self.note(layer);
-        Ok(())
+        self.live
+            .set_layer(&self.renderer, &at, Given::Json(value))
+            .map_err(refusal)
     }
 
     /// Add `layer`, a layer as a scene declares it, at `index` among the
     /// layers of pass `pass`, with no rebuild. Its words, when it has them,
     /// are the host's own, and so are its keys.
     pub fn add_layer(&mut self, pass: &str, index: usize, layer: &Value) -> Outcome<()> {
-        self.renderer
-            .add_layer(pass, index, layer)
-            .map_err(refusal)?;
-        self.took(layer);
-        if let Some(name) = layer.get("name").and_then(Value::as_str) {
-            self.lock(name, look_keys(layer));
-        }
-        self.grown = true;
-        Ok(())
+        self.live
+            .add_layer(&mut self.renderer, pass, index, layer)
+            .map_err(refusal)
     }
 
     /// Take layer `name` out of the scene, with no rebuild.
     pub fn remove_layer(&mut self, name: &str) -> Outcome<()> {
-        self.renderer.remove_layer(name).map_err(refusal)?;
-        if let Some(index) = self.renderer.with_scene(Index::of) {
-            self.index = Arc::new(index);
-        }
-        let text = format!("{name}.text");
-        self.values.remove(&text);
-        self.sent.remove(&text);
-        self.tuned.forget(name);
-        self.grown = true;
-        Ok(())
+        self.live
+            .remove_layer(&mut self.renderer, name)
+            .map_err(refusal)
     }
 
     /// Put layer `name` at `index` among the layers of its pass, with no
     /// rebuild.
     pub fn move_layer(&mut self, name: &str, index: usize) -> Outcome<()> {
-        self.renderer.move_layer(name, index).map_err(refusal)?;
-        self.grown = true;
-        Ok(())
+        self.live
+            .move_layer(&mut self.renderer, name, index)
+            .map_err(refusal)
     }
 
-    /// Give the layer of the name of `layer` its look, as
-    /// Renderer::update_layer() does, where each key that `layer` leaves out
-    /// and a console changed keeps the console's value. The keys of `layer`
-    /// are the host's own. False when the layer had that look already.
+    /// Give the layer of the name of `layer` its look, as Live::update_layer()
+    /// gives it. False when the layer had that look already.
     pub fn update_layer(&mut self, layer: &Value) -> Outcome<bool> {
-        let name = layer.get("name").and_then(Value::as_str);
-        let kept = self
-            .tuned
-            .look(layer, |n| RenderTarget::layer(&self.renderer, n));
-        let look = kept.as_ref().unwrap_or(layer);
-        let changed = self.renderer.update_layer(look).map_err(refusal)?;
-        if changed {
-            self.took(look);
-            if let Some(name) = name {
-                self.note(name);
-            }
-        }
-        if let Some(name) = name {
-            self.lock(name, look_keys(layer));
-        }
-        Ok(changed)
+        self.live
+            .update_layer(&mut self.renderer, layer)
+            .map_err(refusal)
     }
 
-    /// Give the layers of `calls` their looks, as Renderer::update_calls()
-    /// does, where a key that a call leaves out and a console changed keeps
-    /// the console's value, and hold the words of each text call that
-    /// changed its layer as the host's own. Returns the indexes of the calls
-    /// left for update_layer().
+    /// Give the layers of `calls` their looks, as Live::update_calls() gives
+    /// them. Returns the indexes of the calls left for update_layer().
     pub fn update_calls(&mut self, calls: &[Call]) -> Outcome<Vec<usize>> {
-        let kept = self
-            .tuned
-            .calls(calls, |n| RenderTarget::layer(&self.renderer, n));
-        let taken = self
-            .renderer
-            .update_calls(kept.as_deref().unwrap_or(calls))
-            .map_err(refusal)?;
-        for call in taken.changed.iter().map(|&k| &calls[k]) {
-            if let (CallKind::Text, Some(Arg::Str(words))) = (call.kind, call.args.first()) {
-                self.held_words(&call.layer, Value::from(words.as_str()), true);
-            }
-        }
-        for &k in &taken.changed {
-            self.note(&calls[k].layer);
-        }
-        for (k, call) in calls.iter().enumerate() {
-            if !taken.left.contains(&k) {
-                self.lock(&call.layer, call_keys(call));
-            }
-        }
-        Ok(taken.left)
-    }
-
-    /// Lock the keys `keys` of layer `name` in a console: the host gave
-    /// them.
-    fn lock(&self, name: &str, keys: Vec<&str>) {
-        if let Some(c) = &self.console {
-            c.locks().set_keys(name, keys);
-        }
-    }
-
-    /// Record that the host changed layer `name`, for a console to take.
-    fn note(&mut self, name: &str) {
-        if self.console.is_some() {
-            self.changed.push(name.to_string());
-        }
-    }
-
-    /// Index the scene again after the layer `layer` joined it or changed
-    /// its kind, and hold the words of a text layer as the host's own, which
-    /// no tick reports.
-    fn took(&mut self, layer: &Value) {
-        let Some(name) = layer.get("name").and_then(Value::as_str) else {
-            return;
-        };
-        let text = self.renderer.with_layer(name, |_, l| l.as_text().is_some());
-        if self.index.text(name) != text {
-            if let Some(index) = self.renderer.with_scene(Index::of) {
-                self.index = Arc::new(index);
-            }
-            self.grown = true;
-        }
-        let words = self
-            .renderer
-            .with_layer(name, |_, l| l.as_text().map(|l| l.text.clone()));
-        match words.flatten() {
-            Some(words) => self.held_words(name, Value::from(words), true),
-            None => {
-                let text = format!("{name}.text");
-                self.values.remove(&text);
-                self.sent.remove(&text);
-            }
-        }
+        self.live
+            .update_calls(&mut self.renderer, calls)
+            .map_err(refusal)
     }
 
     /// What a drawing paints on in the scene, as drawing() gives it.
@@ -1193,30 +875,9 @@ impl Session {
         self.renderer.set_brightness(level).map_err(refusal)
     }
 
-    /// Hold `value` for the param `name` of `pass`, under the name that a
-    /// tick gives it, and as already handed out when `sent`.
-    fn held(&mut self, pass: Option<&str>, name: &str, value: Value, sent: bool) {
-        if let Some(ticked) = self.index.ticked(pass, name).map(str::to_string) {
-            if sent {
-                self.sent.insert(ticked.clone(), value.clone());
-            }
-            self.values.insert(ticked, value);
-        }
-    }
-
-    /// Hold `words` as the words of text layer `layer`, under its `text`, and
-    /// as already handed out when `sent`.
-    fn held_words(&mut self, layer: &str, words: Value, sent: bool) {
-        let text = format!("{layer}.text");
-        if sent {
-            self.sent.insert(text.clone(), words.clone());
-        }
-        self.values.insert(text, words);
-    }
-
     /// Hold data for the next frame. That frame consumes it once.
     pub fn feed(&mut self, name: &str, data: Fed) -> Outcome<()> {
-        let want = array_count(self.index.array(name)?);
+        let want = array_count(self.live.index().array(name)?);
         if data.count() != want {
             return Err(Fault::scene(format!(
                 "array '{name}' takes {want} values, got {}",
@@ -1242,45 +903,40 @@ impl Session {
         let params = console.take_params();
         let edited = !(layers.is_empty() && looks.is_empty() && params.is_empty());
         for (pass, name, ty, value) in params {
-            RenderTarget::set_param(&self.renderer, pass.as_deref(), &name, &ty, &value)
+            self.live
+                .console_param(&self.renderer, pass.as_deref(), &name, &ty, &value)
                 .map_err(system_fault)?;
-            self.held(pass.as_deref(), &name, value.to_json(), false);
         }
         for set in layers {
-            self.renderer
-                .set_layer(&set.at(), Given::Json(&set.value))
+            self.live
+                .console_layer(&self.renderer, &set.at(), &set.value)
                 .map_err(system_fault)?;
-            self.tuned.set(&set.at());
-            // A text layer alone takes a `text`.
-            if let (None, "text") = (set.effect.as_deref(), set.field.as_str()) {
-                self.held_words(&set.layer, set.value.clone(), false);
-            }
         }
         let applied = !looks.is_empty();
         let mut failed = Vec::new();
         for look in looks {
-            let look = self.applied(look);
+            let look = self.live.console_look(&self.renderer, look);
             match self.renderer.replace_layer(&look) {
-                Ok(()) => self.took(&look),
+                Ok(()) => self.live.took(&look),
                 Err(e) => failed.push(e.to_string()),
             }
         }
         if let (true, Some(c)) = (applied, self.console.as_ref()) {
             c.look_error(&failed.join("\n"));
         }
-        let by_host = self.grown || !(self.changed.is_empty() && self.set.is_empty());
-        let (changed, set) = (
-            std::mem::take(&mut self.changed),
-            std::mem::take(&mut self.set),
-        );
-        if edited || self.grown {
+        let Changes {
+            layers,
+            params,
+            grown,
+        } = self.live.take_changes();
+        let by_host = grown || !(layers.is_empty() && params.is_empty());
+        if edited || grown {
             let scene = self.renderer.with_scene(Scene::to_dict);
             if let (Some(c), Some(scene)) = (self.console.as_ref(), scene) {
-                c.publish_scene(scene, Arc::clone(&self.index), by_host);
+                c.publish_scene(scene, Arc::clone(self.live.index()), by_host);
             }
-            self.grown = false;
         } else if by_host {
-            let (layers, params) = self.changes(changed, set);
+            let (layers, params) = self.changes(layers, params);
             if let Some(c) = self.console.as_ref() {
                 c.publish_changes(layers, params);
             }
@@ -1288,24 +944,11 @@ impl Session {
         Ok(())
     }
 
-    /// `look`, the look that an apply gives a layer, as Tuned::applied()
-    /// keeps it.
-    fn applied(&mut self, look: Value) -> Value {
-        let name = look.get("name").and_then(Value::as_str);
-        let (Some(console), Some(now)) = (
-            self.console.as_ref(),
-            name.and_then(|n| RenderTarget::layer(&self.renderer, n)),
-        ) else {
-            return look;
-        };
-        self.tuned.applied(look, &now, &console.locks())
-    }
-
     /// The layers named `changed`, whole, and the values of the params of
     /// `set`, as the renderer's scene holds them.
     fn changes(
         &self,
-        mut changed: Vec<String>,
+        changed: Vec<String>,
         set: Vec<(Option<String>, String)>,
     ) -> (Vec<Value>, Vec<ParamSet>) {
         let mut params = Vec::new();
@@ -1322,8 +965,6 @@ impl Session {
                 params.push((pass, name, value));
             }
         }
-        changed.sort_unstable();
-        changed.dedup();
         let layers = changed
             .iter()
             .filter_map(|name| {

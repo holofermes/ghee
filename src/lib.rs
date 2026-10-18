@@ -53,6 +53,7 @@ pub mod golden;
 pub mod h264;
 pub(crate) mod hinted;
 pub mod layer;
+pub mod live;
 pub mod looper;
 pub(crate) mod noise;
 pub mod output;

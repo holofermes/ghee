@@ -11,12 +11,13 @@ use std::collections::HashMap;
 
 use ghee::draw::{self, Call};
 use ghee::layer::{Address, Form, Layer, Rgb};
+use ghee::live::Index;
 use ghee::scene::Scene;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString};
 use serde_json::Value;
 
-use crate::session::{drawing, Fault, Index, Outcome};
+use crate::session::{drawing, Fault, Outcome};
 use crate::{drawing_dict, fault, to_json};
 
 /// A scene that a scene process runs under ghee, to check each live layer set

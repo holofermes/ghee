@@ -109,6 +109,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   flashes before the first frame.
 - The console refuses a scene with a filter that ghee doesn't know and
   names the filter, as `ghee render` does, instead of skipping the filter.
+- The console lists a scene folder that holds only its program, as
+  `ghee render` runs it.
 
 ## 0.4.0 - 2026-08-06
 

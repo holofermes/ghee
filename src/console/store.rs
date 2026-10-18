@@ -787,40 +787,23 @@ fn glsl_files(doc: &Value) -> Vec<String> {
     out
 }
 
-/// The scenes in a directory, JSON first: every .scene.json, every
-/// `name/name.scene.json` one level down, then every executable file. An
-/// executable beside its .scene.json is one scene.
+/// The scenes in a directory, as package() finds them, the documents first.
+/// An executable beside its .scene.json is one scene.
 fn scan(dir: &str) -> Vec<(String, String)> {
-    let names = entries(dir);
-    let mut out: Vec<(String, String)> = Vec::new();
-    for n in &names {
-        let Some(stem) = n.strip_suffix(SCENE_SUFFIX) else {
-            continue;
-        };
-        out.push((stem.to_string(), format!("{dir}/{n}")));
-    }
-    for (n, p) in scan_mine(dir) {
-        if !out.iter().any(|(o, _)| *o == n) {
-            out.push((n, p));
-        }
-    }
+    let found: Vec<Package> = entries(dir)
+        .iter()
+        .filter_map(|n| package(dir, n))
+        .collect();
+    let mut out: Vec<(String, String)> = found
+        .iter()
+        .filter(|p| p.document)
+        .map(|p| (p.name.clone(), p.path.clone()))
+        .collect();
     out.sort();
-    for n in &names {
-        if n.ends_with(SCENE_SUFFIX) {
-            continue;
+    for p in found.into_iter().filter(|p| !p.document) {
+        if !out.iter().any(|(name, _)| *name == p.name) {
+            out.push((p.name, p.path));
         }
-        let path = format!("{dir}/{n}");
-        // ghee runs a procedural scene as a process. A file without the
-        // execute bit is a module or data the scenes beside it use, not a
-        // scene.
-        if !process::runnable(&path) {
-            continue;
-        }
-        let stem = crate::procedural::scene_name(n);
-        if out.iter().any(|(name, _)| *name == stem) {
-            continue;
-        }
-        out.push((stem, path));
     }
     out
 }
@@ -828,12 +811,57 @@ fn scan(dir: &str) -> Vec<(String, String)> {
 /// Every `name/name.scene.json` in `dir`, by name.
 fn scan_mine(dir: &str) -> Vec<(String, String)> {
     entries(dir)
-        .into_iter()
-        .filter(|n| !n.starts_with('.'))
-        .map(|n| (format!("{dir}/{n}/{n}{SCENE_SUFFIX}"), n))
-        .filter(|(p, _)| Path::new(p).is_file())
-        .map(|(p, n)| (n, p))
+        .iter()
+        .filter(|n| Path::new(&format!("{dir}/{n}")).is_dir())
+        .filter_map(|n| package(dir, n))
+        .filter(|p| p.document)
+        .map(|p| (p.name, p.path))
         .collect()
+}
+
+/// A scene that an entry of a directory holds.
+struct Package {
+    name: String,
+    /// The scene's document, else the program that writes it.
+    path: String,
+    document: bool,
+}
+
+/// The scene of entry `n` of `dir`, as procedural::resolve() finds a
+/// package: a document, else an executable, a file or a member of a
+/// directory alike. A directory whose members resolve() refuses is a
+/// scene whose load says why. None for any other entry.
+fn package(dir: &str, n: &str) -> Option<Package> {
+    let path = format!("{dir}/{n}");
+    let found = |name: String, path: String, document| {
+        Some(Package {
+            name,
+            path,
+            document,
+        })
+    };
+    if Path::new(&path).is_dir() {
+        if n.starts_with('.') {
+            return None;
+        }
+        let found = |path, document| found(n.to_string(), path, document);
+        return match crate::procedural::resolve(&path) {
+            Ok((Some(json), _)) => found(json, true),
+            Ok((None, Some(exe))) => found(exe, false),
+            Ok((None, None)) => None,
+            Err(_) => found(path, false),
+        };
+    }
+    let name = crate::procedural::scene_name(n);
+    if n.ends_with(SCENE_SUFFIX) {
+        return found(name, path, true);
+    }
+    // A file without the execute bit is a module or data that the scenes
+    // beside it use.
+    match process::runnable(&path) {
+        true => found(name, path, false),
+        false => None,
+    }
 }
 
 /// The names in a directory, sorted. None when it does not read.
@@ -973,6 +1001,22 @@ mod tests {
         let store = SceneStore::new(&d, Vec::new());
         assert_eq!(store.names(), ["one", "two", "proc"]);
         assert_eq!(store.procedural_names(), ["proc"]);
+    }
+
+    #[test]
+    fn the_store_lists_a_directory_that_holds_only_its_program_as_ghee_render_runs_it() {
+        let (d, _) = scenes("program-package");
+        fs::create_dir(format!("{d}/pkg")).unwrap();
+        write_scene(&format!("{d}/pkg/pkg.py"), "#!/bin/sh\nexit 0\n");
+        fs::create_dir(format!("{d}/empty")).unwrap();
+        write_text(&format!("{d}/empty/notes.txt"), "");
+        let store = SceneStore::new(&d, Vec::new());
+        assert_eq!(store.names(), ["one", "two", "pkg"]);
+        assert_eq!(store.procedural_names(), ["pkg"]);
+        assert_eq!(
+            store.file("pkg").unwrap(),
+            process::executable(&format!("{d}/pkg/")).unwrap()
+        );
     }
 
     #[test]

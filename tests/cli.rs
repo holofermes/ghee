@@ -111,6 +111,32 @@ fn a_compile_error_prints_once_naming_the_pass_and_the_authors_line() {
 
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_compile_error_prints_every_error_of_the_log_at_the_authors_lines() {
+    let dir = Dir::new("compile-log");
+    // Enough errors that the GL's log runs to a few kilobytes.
+    let body: String = (2..=31)
+        .map(|n| format!("  gl_FragColor = vec4(undeclared{n});\\n"))
+        .collect();
+    let scene =
+        format!(r#"{{"passes": [{{"name": "main", "fragment": "void main() {{\n{body}}}"}}]}}"#);
+    let out = render(&dir.0, &scene, &[]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8(out.stderr).unwrap();
+    for n in 2..=31 {
+        let name = format!("undeclared{n}");
+        let line = err
+            .lines()
+            .find(|l| l.contains(&format!("{name}'")) || l.contains(&format!("{name}\"")))
+            .unwrap_or_else(|| panic!("no error names {name}: {err}"));
+        assert!(
+            line.contains(&format!(":{n}(")) || line.contains(&format!("({n})")),
+            "{name} is on line {n}: {line}"
+        );
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_refusal_other_than_a_compile_error_prints_alone() {
     let dir = Dir::new("refusal");
     let scene = r#"{"passes": [{"name": "main", "channels": [{"buffer": "typo"}],

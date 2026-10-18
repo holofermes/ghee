@@ -160,6 +160,10 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - `--rgb565`, and `opts={"rgb565": True}` in `ghee.open`, refuse a display
   that takes no RGB565 frames, such as an SSD1306, instead of drawing
   nothing and ending with status 0.
+- A compile error prints the GL's whole log, instead of its first 511
+  bytes, and each error in it names the line of the pass or of the common
+  block that the author wrote, instead of a line of the shader that ghee
+  assembled.
 
 ## 0.4.0 - 2026-08-06
 

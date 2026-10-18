@@ -365,7 +365,8 @@ struct GheeScene {
 
     char renderer[160];                  // GL_RENDERER and GL_VERSION, captured at create
     int compiled;                        // programs linked since create
-    char last_error[ERROR_BUFFER_SIZE];
+    char *last_error;                    // NULL when there is none
+    char *read_error;                    // what ghee_last_error last returned
     bool error_is_compile;               // last_error is a GLSL compile or link log
 };
 
@@ -441,10 +442,19 @@ static int pick_display_mode(int fd, uint32_t *conn_out, uint32_t *crtc_out,
 static bool plane_scales(GheeScene *g, int width, int height);
 static bool ensure_blit(GheeScene *g);
 
+// A GL's compile log runs to any length, so the error is sized to its text.
 static void keep_error(GheeScene *g, const char *fmt, va_list ap) {
-    vsnprintf(g->last_error, ERROR_BUFFER_SIZE, fmt, ap);
-    g->last_error[ERROR_BUFFER_SIZE - 1] = '\0';
+    va_list again;
+    va_copy(again, ap);
+    const int n = vsnprintf(NULL, 0, fmt, ap);
+    char *s = n < 0 ? NULL : malloc((size_t)n + 1);
+    if (s) vsnprintf(s, (size_t)n + 1, fmt, again);
+    va_end(again);
+    free(g->last_error);
+    g->last_error = s;
 }
+
+static const char *error_text(GheeScene *g) { return g->last_error ? g->last_error : ""; }
 
 static void set_error(GheeScene *g, const char *fmt, ...) {
     va_list ap;
@@ -452,7 +462,7 @@ static void set_error(GheeScene *g, const char *fmt, ...) {
     keep_error(g, fmt, ap);
     va_end(ap);
     g->error_is_compile = false;
-    fprintf(stderr, "ghee: %s\n", g->last_error);
+    fprintf(stderr, "ghee: %s\n", error_text(g));
 }
 
 // A compile or link log goes to the caller unprinted: the caller names the
@@ -463,7 +473,7 @@ static void set_shader_error(GheeScene *g, const char *fmt, ...) {
     va_start(ap, fmt);
     keep_error(g, fmt, ap);
     va_end(ap);
-    size_t n = strlen(g->last_error);
+    size_t n = g->last_error ? strlen(g->last_error) : 0;
     while (n > 0 && strchr(" \t\r\n", g->last_error[n - 1])) g->last_error[--n] = '\0';
     g->error_is_compile = true;
 }
@@ -477,12 +487,11 @@ static void make_current(GheeScene *g) {
 }
 
 const char *ghee_last_error(GheeScene *g) {
-    static char err[ERROR_BUFFER_SIZE];
     if (!g) return "null instance";
-    strncpy(err, g->last_error, ERROR_BUFFER_SIZE - 1);
-    err[ERROR_BUFFER_SIZE - 1] = '\0';
-    g->last_error[0] = '\0';
-    return err;
+    free(g->read_error);
+    g->read_error = g->last_error;
+    g->last_error = NULL;
+    return g->read_error ? g->read_error : "";
 }
 
 bool ghee_last_error_is_compile(GheeScene *g) { return g && g->error_is_compile; }
@@ -496,9 +505,13 @@ static GLuint create_shader(GheeScene *g, GLenum type, const char *source) {
     GLint ok;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
     if (!ok) {
-        char info[ERROR_BUFFER_SIZE];
-        glGetShaderInfoLog(shader, ERROR_BUFFER_SIZE, NULL, info);
-        set_shader_error(g, "%s%s", type == GL_VERTEX_SHADER ? "vertex shader: " : "", info);
+        GLint len = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
+        char *info = calloc(len > 0 ? (size_t)len : 1, 1);
+        if (info && len > 0) glGetShaderInfoLog(shader, len, NULL, info);
+        set_shader_error(g, "%s%s", type == GL_VERTEX_SHADER ? "vertex shader: " : "",
+                         info ? info : "");
+        free(info);
         glDeleteShader(shader);
         return 0;
     }
@@ -522,9 +535,12 @@ static GLuint create_program(GheeScene *g, const char *vertex_source, const char
     GLint ok;
     glGetProgramiv(program, GL_LINK_STATUS, &ok);
     if (!ok) {
-        char info[ERROR_BUFFER_SIZE];
-        glGetProgramInfoLog(program, ERROR_BUFFER_SIZE, NULL, info);
-        set_shader_error(g, "%s", info);
+        GLint len = 0;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &len);
+        char *info = calloc(len > 0 ? (size_t)len : 1, 1);
+        if (info && len > 0) glGetProgramInfoLog(program, len, NULL, info);
+        set_shader_error(g, "%s", info ? info : "");
+        free(info);
         glDeleteShader(vs);
         glDeleteShader(fs);
         glDeleteProgram(program);
@@ -1232,6 +1248,8 @@ void ghee_destroy(GheeScene *g) {
     if (g->gbm) gbm_device_destroy(g->gbm);
     if (g->gpu_fd >= 0) close(g->gpu_fd);
     if (g->drm_fd >= 0) close(g->drm_fd);
+    free(g->last_error);
+    free(g->read_error);
     free(g);
 }
 
@@ -2712,7 +2730,7 @@ static void mp_draw_batches(GheeScene *g, int p, GLuint target, float vflip, flo
             alone = ensure_fade(g, g->mp_w[p], g->mp_h[p]);
             glBindTexture(GL_TEXTURE_2D, (GLuint)unit0);
             if (!alone && !g->fade_failed) {
-                fprintf(stderr, "ghee: %s draws at full opacity: %s\n", l->name, g->last_error);
+                fprintf(stderr, "ghee: %s draws at full opacity: %s\n", l->name, error_text(g));
                 g->fade_failed = true;
             }
         }
@@ -3197,7 +3215,7 @@ static bool ensure_blit(GheeScene *g) {
     if (g->blit_prog) return true;
     g->blit_prog = create_shader_program(g, blit_fragment_source);
     if (!g->blit_prog) {
-        fprintf(stderr, "ghee: the blit program: %s\n", g->last_error);
+        fprintf(stderr, "ghee: the blit program: %s\n", error_text(g));
         return false;
     }
     g->blit_sampler = glGetUniformLocation(g->blit_prog, "tex");

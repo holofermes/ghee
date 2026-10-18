@@ -915,22 +915,77 @@ fn or_else(s: String, fallback: &str) -> String {
 /// error is read, when one does.
 fn error_line_number(err: &str) -> Option<i64> {
     let err = err.lines().find(|l| l.contains("error")).unwrap_or(err);
+    let (from, to) = line_number_span(err)?;
+    Some(err[from..to].parse::<i64>().unwrap_or(i64::MAX))
+}
+
+/// The byte range of the line number in `err`, read as error_line_number
+/// reads it.
+fn line_number_span(err: &str) -> Option<(usize, usize)> {
     let b = err.as_bytes();
     let digits_end = |i: usize| i + b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
-    let line = |from: usize, to: usize| Some(err[from..to].parse::<i64>().unwrap_or(i64::MAX));
     for (i, _) in err.match_indices(':') {
         let j = digits_end(i + 1);
         if j > i + 1 && b.get(j) == Some(&b'(') {
-            return line(i + 1, j);
+            return Some((i + 1, j));
         }
     }
     for (i, _) in err.match_indices('(') {
         let j = digits_end(i + 1);
         if i > 0 && b[i - 1].is_ascii_digit() && j > i + 1 && b.get(j) == Some(&b')') {
-            return line(i + 1, j);
+            return Some((i + 1, j));
         }
     }
     None
+}
+
+/// Where the author's code sits in an assembled shader, by line.
+struct Placement {
+    /// The lines ahead of the pass code.
+    at: i64,
+    /// The pass code's lines.
+    code: i64,
+    /// Whether the assembled source holds the pass code.
+    found: bool,
+    /// The lines ahead of the common block, or -1 without one.
+    common_at: i64,
+    /// The common block's lines.
+    common: i64,
+}
+
+impl Placement {
+    fn new(glsl: &str, code: &str, common: Option<&str>) -> Placement {
+        let pos = glsl.rfind(code); // The pass code is the tail of the assembled source.
+        let at = pos.map_or(0, |p| glsl[..p].matches('\n').count() as i64);
+        let c = common.filter(|c| !c.is_empty());
+        let cpos = c.and_then(|c| glsl[..pos.unwrap_or(glsl.len())].rfind(c));
+        Placement {
+            at,
+            code: code.lines().count() as i64,
+            found: pos.is_some(),
+            common_at: cpos.map_or(-1, |p| glsl[..p].matches('\n').count() as i64),
+            common: c.map_or(0, |c| c.lines().count() as i64),
+        }
+    }
+
+    fn in_common(&self, line: i64) -> bool {
+        let cat = self.common_at;
+        cat >= 0 && cat < line && line <= cat + self.common && line <= self.at
+    }
+
+    /// The author's line for `line` of the assembled source, and whether it
+    /// counts from the start of the common block.
+    fn author_line(&self, line: i64) -> (i64, bool) {
+        if self.in_common(line) {
+            return ((line - self.common_at).max(1), true);
+        }
+        ((line - self.at).max(1), false)
+    }
+
+    /// Whether `line` of the assembled source is a line that the author wrote.
+    fn authored(&self, line: i64) -> bool {
+        self.in_common(line) || (self.found && self.at < line && line <= self.at + self.code)
+    }
 }
 
 /// Map a GL compile-error line back to the author's own line.
@@ -942,17 +997,30 @@ fn user_line(err: &str, glsl: &str, code: &str, common: Option<&str>) -> (Option
     let Some(line) = error_line_number(err) else {
         return (None, false);
     };
-    let pos = glsl.rfind(code); // The pass code is the tail of the assembled source.
-    let at = pos.map_or(0, |p| glsl[..p].matches('\n').count() as i64);
-    if let Some(c) = common.filter(|c| !c.is_empty()) {
-        let cpos = glsl[..pos.unwrap_or(glsl.len())].rfind(c);
-        let cat = cpos.map_or(-1, |p| glsl[..p].matches('\n').count() as i64);
-        let lines = c.lines().count() as i64;
-        if cat >= 0 && cat < line && line <= cat + lines && line <= at {
-            return (Some((line - cat).max(1)), true);
-        }
-    }
-    (Some((line - at).max(1)), false)
+    let (line, in_common) = Placement::new(glsl, code, common).author_line(line);
+    (Some(line), in_common)
+}
+
+/// The GL's compile log `log` with the line number on each of its lines
+/// turned into the author's line, as user_line counts it. A line number
+/// outside the author's code stays the GL's.
+fn authors_log(log: &str, glsl: &str, code: &str, common: Option<&str>) -> String {
+    let place = Placement::new(glsl, code, common);
+    let lines: Vec<String> = log
+        .split('\n')
+        .map(|l| {
+            let Some((from, to)) = line_number_span(l) else {
+                return l.to_string();
+            };
+            match l[from..to].parse::<i64>() {
+                Ok(n) if place.authored(n) => {
+                    format!("{}{}{}", &l[..from], place.author_line(n).0, &l[to..])
+                }
+                _ => l.to_string(),
+            }
+        })
+        .collect();
+    lines.join("\n")
 }
 
 /// The refusal of pass `name` sampled trilinearly at `w` x `h`, on a GPU
@@ -1773,6 +1841,7 @@ impl Renderer {
                     .as_deref()
                     .map(|c| crate::scene::extensions(c).0);
                 let (line, in_common) = user_line(&err, &glsl, &code, common.as_deref());
+                let err = authors_log(&err, &glsl, &code, common.as_deref());
                 let pass = format!("pass '{}'", p.name);
                 self.error = match (line, in_common) {
                     (Some(n), true) => format!("{pass}, line {n} of the common block: {err}"),
@@ -5884,6 +5953,31 @@ mod tests {
             ),
         ] {
             assert_eq!(error_line_number(log), Some(line), "{log}");
+        }
+    }
+
+    #[test]
+    fn each_line_of_a_compile_log_names_the_authors_line() {
+        // Line 3 is the common block's line 1, and the pass is lines 5 to 7.
+        let glsl = "#version 100\nprecision mediump float;\nfloat sat(float x){ return x; }\n\nvoid main(){\n  nope();\n}";
+        let common = Some("float sat(float x){ return x; }");
+        let code = "void main(){\n  nope();\n}";
+        for (log, want) in [
+            (
+                "0:6(3): error: no function nope\n0:7(1): error: x",
+                "0:2(3): error: no function nope\n0:3(1): error: x",
+            ),
+            ("0:3(10): error: bad", "0:1(10): error: bad"),
+            (
+                "0(6) : error C1503: undefined variable \"nope\"",
+                "0(2) : error C1503: undefined variable \"nope\"",
+            ),
+            // A line of ghee's own preamble keeps the GL's number.
+            ("0:2(1): warning: x", "0:2(1): warning: x"),
+            ("0:4(1): error: x", "0:4(1): error: x"),
+            ("out of memory", "out of memory"),
+        ] {
+            assert_eq!(authors_log(log, glsl, code, common), want, "{log}");
         }
     }
 

@@ -65,7 +65,8 @@ void ghee_set_verbosity(int level);
 // The GL this renderer runs on: GL_RENDERER and GL_VERSION in one string.
 const char *ghee_renderer(GheeScene *g);
 
-// Last error message for this instance ("" if none). Cleared on read.
+// Last error message for this instance ("" if none). Cleared on read. The
+// text holds until the next read on this instance or its destroy.
 const char *ghee_last_error(GheeScene *g);
 // Whether the last error set on this instance is the GL's log of a GLSL
 // compile or link. A read of ghee_last_error leaves it.

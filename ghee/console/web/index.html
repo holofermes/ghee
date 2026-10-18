@@ -2667,10 +2667,10 @@ function layerCard(p, d){
   }), lockedField(d, "visible")));
   if (!proc) acts.appendChild(tbtn("×", `remove layer ${p.name} › ${d.name}`, "x", () => delLayer(p, d)));
   st.appendChild(tog);
-  const images = imageAssets(), look = n => hidden ? locked(n) : n;
+  const images = imageAssets();
   if (!u.open){
     // a closed shape shows its colour, the one control that fits beside its name on a phone
-    if (shape) st.appendChild(lockIf(look(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff"), "color")), lockedField(d, "color")));
+    if (shape) st.appendChild(lockIf(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x === "#ffffff" ? null : x), "#ffffff"), "color"), lockedField(d, "color")));
     else if (img){
       const s = pickFile(images, d.image, x => setKey(p, d, "image", x), IMAGES, n => { d.image = n; postScene(); redo(); });
       s.setAttribute("aria-label", "image");
@@ -2685,7 +2685,7 @@ function layerCard(p, d){
       st.appendChild(lockIf(w, lockedField(d, "text")));
     }
   }
-  st.append(look(sels), el("span", "lsp"));
+  st.append(sels, el("span", "lsp"));
   if (!proc){
     const list = p.layers, k = list.indexOf(d), mv = el("span", "lmv");
     const up = tbtn("↑", `move layer ${d.name} up`, "", () => moveLayer(d, 1));
@@ -2707,7 +2707,7 @@ function layerCard(p, d){
     if (d.shape === "line") rows.push(pairKV(p, d, "x", "y"), pointsKV(p, d, redo), numKV(p, d, "stroke_width"));
     else if (d.shape === "circle") rows.push(pairKV(p, d, "x", "y"), numKV(p, d, "radius"), borderKV(p, d, redo));
     else rows.push(pairKV(p, d, "x", "y"), pairKV(p, d, "width", "height"), borderKV(p, d, redo), numKV(p, d, "border_radius"));
-    kvs.append(...rows.map(look));
+    kvs.append(...rows);
   } else if (img){
     const {kv, v} = KV("image");
     markField(kv.firstChild, p, d, "image");
@@ -2715,8 +2715,8 @@ function layerCard(p, d){
     const tint = KV("color");
     markField(tint.kv.firstChild, p, d, "color");
     tint.v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x), "#ffffff", null), "color"));
-    kvs.append(lockIf(kv, lockedField(d, "image")), look(pairKV(p, d, "x", "y")), look(pairKV(p, d, "width", "height")),
-      look(lockIf(tint.kv, lockedField(d, "color"))));
+    kvs.append(lockIf(kv, lockedField(d, "image")), pairKV(p, d, "x", "y"), pairKV(p, d, "width", "height"),
+      lockIf(tint.kv, lockedField(d, "color")));
   } else {
     // a text layer's words are content: saved, and back to defaults restores
     // them, and never marked
@@ -2730,10 +2730,10 @@ function layerCard(p, d){
     const align = KV("text_align");
     markField(align.kv.firstChild, p, d, "text_align");
     align.v.appendChild(keyed(pick(ALIGNS, d.text_align || "left", x => setKey(p, d, "text_align", x === "left" ? null : x)), "text_align"));
-    kvs.append(kv, look(colorKV(p, d)), look(numKV(p, d, "font_size")), look(pairKV(p, d, "x", "y")), fam.kv, align.kv);
+    kvs.append(kv, colorKV(p, d), numKV(p, d, "font_size"), pairKV(p, d, "x", "y"), fam.kv, align.kv);
   }
   body.appendChild(kvs);
-  if (kind === "text") body.appendChild(look(fxBlock(p, d)));   // an image or a shape layer takes no effects
+  if (kind === "text") body.appendChild(fxBlock(p, d));   // an image or a shape layer takes no effects
   card.appendChild(body);
   return card;
 }

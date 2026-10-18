@@ -308,11 +308,7 @@ lands.
   dialog and the eye. A new kind of control needs a reason that none of them
   covers.
 - An eye hides a pass or a layer, or bypasses an effect. A hidden or bypassed
-  thing dims the same way everywhere. A hidden pass and a bypassed effect stay
-  editable. A hidden layer keeps its content editable: a text layer's words,
-  font_family and text_align, which shape `<name>_cover` and `<name>_size`,
-  and an image layer's image. Every setting that only changes how it draws
-  dims and locks.
+  thing dims the same way everywhere, and stays editable.
 - The most used things come first. A pass shows its layers before its shader,
   and the shader sits closed under a line.
 - A number field has no spin buttons in any browser. A colour shows its

@@ -380,6 +380,7 @@ def test_the_console_shows_the_layers_that_a_drawing_adds_and_changes():
             with h.draw() as d:
                 d.rect(x=1, y=2, width=width, height=3)
                 d.text("hi", name="label", font_size=8)
+            until(lambda w=width: first_width(json_of(port, "/scene")) == w, h.frame)
             layers = json_of(port, "/scene")["passes"][0]["layers"]
             drawn.append([(d["name"], d.get("width")) for d in layers])
             counts.append(json_of(port, "/stats")["layer_changes"])
@@ -387,13 +388,15 @@ def test_the_console_shows_the_layers_that_a_drawing_adds_and_changes():
         assert counts[0] < counts[1] < counts[2]
 
 
-def test_a_drawing_reaches_the_scene_with_its_frame():
+def test_a_drawing_reaches_the_scene_with_its_frame_and_the_next_one_soon_after():
     port = free_port()
     with ghee.open(width=32, height=16, serve=port) as h:
-        for width in (4, 9):
-            with h.draw() as d:
-                d.rect(x=1, y=2, width=width, height=3)
-        assert first_width(json_of(port, "/scene")) == 9
+        with h.draw() as d:
+            d.rect(x=1, y=2, width=4, height=3)
+        assert first_width(json_of(port, "/scene")) == 4
+        with h.draw() as d:
+            d.rect(x=1, y=2, width=9, height=3)
+        until(lambda: first_width(json_of(port, "/scene")) == 9, h.frame)
 
 
 def test_a_param_set_by_the_console_or_the_host_reaches_the_scene(served):
@@ -418,6 +421,7 @@ def test_the_console_locks_what_the_host_sets_and_the_rest_still_edits():
         h.set_layer("title", "x", 3)
         with h.draw() as d:
             d.text("12:00", font_size=8)
+        until(lambda: len(json_of(port, "/scene")["passes"][0]["layers"]) == 2, h.frame)
         assert json_of(port, "/stats")["locked"] == {
             "params": ["main.gain"],
             "fields": ["text.font_size", "text.text", "title.x"],
@@ -479,6 +483,7 @@ def test_a_drawing_locks_the_keys_it_passes_and_the_console_keeps_the_rest():
         assert post_json(port, "/scene", looked)[0] == 200
         for words in "cde":
             draw(words)
+        until(lambda: text()["text"] == "e", h.frame)
         got = text()
         assert (got["text"], got["x"], got["opacity"], got["text_align"]) == (
             "e",

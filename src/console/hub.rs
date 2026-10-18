@@ -64,6 +64,12 @@ pub const PING_INTERVAL: f64 = 3.0;
 /// Three intervals, so two lost pings are not a departure.
 pub const VIEWER_DEADLINE: f64 = 10.0;
 
+/// The shortest time in seconds between two publishes of the running
+/// document for the changes that a scene's own code makes to it. Writing the
+/// document takes time with each layer, and the code may change a layer
+/// every frame.
+pub const LAYERS_PUBLISH_EVERY: f64 = 0.2;
+
 /// Encodes with no output before the hardware lane is declared dead.
 const HW_STARVE_LIMIT: u32 = 90;
 
@@ -230,6 +236,9 @@ pub struct Hub {
     /// The rate that the hardware H264 lane encodes at.
     pub stream_hz: i32,
     pub bitrate: i64,
+    /// The shortest time in seconds between two publishes of the program's
+    /// changes.
+    pub publish_every: f64,
     /// Where the host puts every frame: the scanout and the host's sinks.
     pub dests: Vec<String>,
     /// Say on stderr why a stream changed lanes or ended.
@@ -238,6 +247,8 @@ pub struct Hub {
     // state
     stat: Mutex<Stat>,
     published: Mutex<Option<Published>>,
+    /// When the program's changes last went into the published document.
+    changes_published: Mutex<f64>,
     /// The times that the scene's own code changed its layers in the
     /// document: a layer added or given a new look, or a field set.
     layer_changes: AtomicU64,
@@ -289,6 +300,7 @@ impl Hub {
             stream_max: 0,
             stream_hz: H264_FPS,
             bitrate: 10_000_000,
+            publish_every: LAYERS_PUBLISH_EVERY,
             dests: Vec::new(),
             verbose: true,
             stat: Mutex::new(Stat {
@@ -297,6 +309,7 @@ impl Hub {
                 ..Stat::default()
             }),
             published: Mutex::new(None),
+            changes_published: Mutex::new(f64::NEG_INFINITY),
             layer_changes: AtomicU64::new(0),
             drawn: AtomicU64::new(0),
             skipped: AtomicU64::new(0),
@@ -518,9 +531,10 @@ impl Hub {
     /// Publish what changed in the scene that `renderer` runs as scene `name`
     /// of `generation`. The whole document goes when `whole` is true, or when
     /// the program added, removed or moved a layer. Else each layer and param
-    /// that the program changed goes, laid over the document. A change by the
-    /// program, or `by_host`, counts in /stats, so a page reads the scene
-    /// again.
+    /// that the program changed goes, laid over the document. Without
+    /// `whole`, the program's changes wait in `live` until `publish_every`
+    /// passed since they last went. A change by the program, or `by_host`,
+    /// counts in /stats, so a page reads the scene again.
     pub fn publish_live(
         &self,
         renderer: &Renderer,
@@ -530,6 +544,14 @@ impl Hub {
         name: Option<&str>,
         generation: u64,
     ) {
+        if !whole && live.as_deref().is_some_and(Live::changed) {
+            let now = monotonic();
+            let mut last = lock(&self.changes_published);
+            if now - *last < self.publish_every {
+                return;
+            }
+            *last = now;
+        }
         let Changes {
             layers,
             params,

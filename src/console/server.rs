@@ -3445,7 +3445,9 @@ mod tests {
         fs::write(&file, saved.to_string()).unwrap();
         let mut store = SceneStore::new(&d, Vec::new());
         store.state_dir = Some(std::path::PathBuf::from(&*states));
-        let console = Arc::new(Console::new(store));
+        let mut console = Console::new(store);
+        console.hub.publish_every = 0.0;
+        let console = Arc::new(console);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let renderer = Rc::new(RefCell::new(gpu(16, 8)));
         let st = Rc::new(RefCell::new(Running::default()));
@@ -3856,7 +3858,8 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn the_layers_that_a_scenes_code_changes_reach_the_running_document() {
         let renderer = Rc::new(RefCell::new(gpu(32, 24)));
-        let (_d, console) = tmp_console("drawn");
+        let (_d, mut console) = tmp_console("drawn");
+        Arc::get_mut(&mut console).unwrap().hub.publish_every = 0.0;
         let st = Rc::new(RefCell::new(Running::default()));
         let scene = Scene::from_dict(&serde_json::from_str(SCENE).unwrap(), None, None).unwrap();
         let ctrl: ControllerSlot = RefCell::new(Some(Box::new(Told(Live::new(&scene)))));
@@ -3945,6 +3948,47 @@ mod tests {
         // a frame with no change publishes nothing new
         publish(&console, &renderer, &st, &ctrl, false);
         assert_eq!(changes(&console), Value::from(steps.len()));
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_scenes_code_reaches_the_running_document_at_most_every_publish_every_and_an_edit_at_once()
+    {
+        let renderer = Rc::new(RefCell::new(gpu(32, 24)));
+        let (_d, mut console) = tmp_console("throttled");
+        Arc::get_mut(&mut console).unwrap().hub.publish_every = 3600.0;
+        let st = Rc::new(RefCell::new(Running::default()));
+        let scene = Scene::from_dict(&serde_json::from_str(SCENE).unwrap(), None, None).unwrap();
+        let ctrl: ControllerSlot = RefCell::new(Some(Box::new(Told(Live::new(&scene)))));
+        assert_eq!(
+            set_scene(&console, &renderer, &st, scene, 0, None, false),
+            ""
+        );
+        let mut target = SharedRenderer {
+            renderer: Rc::clone(&renderer),
+        };
+        let bar = |width: i32| serde_json::json!({"name": "bar", "shape": "rect", "width": width});
+        let live = || live_of(&ctrl).unwrap();
+        live().add_layer(&mut target, "main", 0, &bar(4)).unwrap();
+        publish(&console, &renderer, &st, &ctrl, false);
+        assert_eq!(
+            running_layers(&console),
+            floats(&serde_json::json!([bar(4)]))
+        );
+        assert_eq!(changes(&console), Value::from(1));
+        assert!(live().update_layer(&mut target, &bar(9)).unwrap());
+        publish(&console, &renderer, &st, &ctrl, false);
+        assert_eq!(
+            running_layers(&console),
+            floats(&serde_json::json!([bar(4)]))
+        );
+        assert_eq!(changes(&console), Value::from(1));
+        publish(&console, &renderer, &st, &ctrl, true);
+        assert_eq!(
+            running_layers(&console),
+            floats(&serde_json::json!([bar(9)]))
+        );
+        assert_eq!(changes(&console), Value::from(2));
     }
 
     /// A process stand-in: a scene with something in the controller slot is

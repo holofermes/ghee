@@ -6,6 +6,7 @@
 //! The engine is thread-affine, so a Session belongs to the thread that built
 //! it.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
@@ -14,13 +15,14 @@ use ghee::console::hub::{frame_format, gpu_caps, HwLane, RawFrame};
 use ghee::draw::Call;
 use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer, DEFAULT_SIZE};
 use ghee::filters::apply_filters;
-use ghee::layer::Address;
+use ghee::layer::{is_image_file, Address, Layer};
 use ghee::live::Live;
 use ghee::looper::{Clock, Frame, Moment, RenderTarget};
 use ghee::output::{encode_jpeg, encode_png_as, expand_pattern, pacer, AlphaForm, Sinks};
-use ghee::procedural::{load_scene, process, scene_name};
+use ghee::procedural::{load_scene, process, resolve, scene_name};
 use ghee::scene::{coerce, truthy, ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
+use ghee::text::is_font_file;
 use serde_json::{Map, Value};
 
 use crate::serve::{Console, Serving};
@@ -210,6 +212,50 @@ fn load(source: Source) -> Outcome<(Scene, String)> {
     let wanted = scene.filters.clone();
     apply_filters(&mut scene, &wanted, None).map_err(scene_fault)?;
     Ok((scene, name))
+}
+
+/// The scene file at `path`, or of the folder `path`, written as its file
+/// writes it, with its GLSL in place and each file that it names beside it
+/// by its absolute path, so that the document's files resolve anywhere.
+pub fn document(path: &str) -> Outcome<Value> {
+    if let Some(exe) = process::executable(path) {
+        return Err(Fault::scene(format!(
+            "{exe}: a procedural scene runs itself and feeds its own data; \
+             run a .scene.json"
+        )));
+    }
+    let mut scene = load_scene(path, &[], true).map_err(scene_fault)?;
+    let dir = match resolve(path) {
+        Ok((Some(json), _)) => Path::new(&json)
+            .canonicalize()
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf)),
+        _ => None,
+    };
+    let Some(dir) = dir else {
+        return Ok(scene.to_dict());
+    };
+    let beside = |file: &mut String| {
+        let at = dir.join(&*file);
+        if !Path::new(file.as_str()).is_absolute() && at.is_file() {
+            *file = at.to_string_lossy().into_owned();
+        }
+    };
+    for a in scene.assets.iter_mut().filter(|a| a.from_filter.is_empty()) {
+        beside(&mut a.file);
+    }
+    for layer in scene.passes.iter_mut().flat_map(|p| &mut p.layers) {
+        match layer {
+            Layer::Image(l) if is_image_file(&l.image) => beside(&mut l.image),
+            Layer::Text(l) => l
+                .font_family
+                .iter_mut()
+                .filter(|f| is_font_file(f))
+                .for_each(beside),
+            _ => {}
+        }
+    }
+    Ok(scene.to_dict())
 }
 
 /// The output named by `display`, with the options in `opts`.

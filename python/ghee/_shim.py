@@ -856,7 +856,7 @@ _PARAMS: dict | None = None
 _FILTERS: list = []
 # the scene of the run, under ghee the native check of its layer sets, and
 # what ghee.draw() keeps from one tick to the next
-_SCENE: Scene | None = None
+_SCENE: dict | None = None
 _LIVE = None
 _DRAWN = None
 # the tick that the wire handed this iteration
@@ -941,7 +941,7 @@ def _live():
     if _LIVE is None:
         from ghee import _ext
 
-        _LIVE = _ext()._LayerWire(_SCENE.to_dict())
+        _LIVE = _ext()._LayerWire(_SCENE)
     return _LIVE
 
 
@@ -1155,12 +1155,17 @@ def _tick_of(d: dict) -> Tick:
     )
 
 
-def _arrays(scene: Scene) -> dict:
-    """The declared arrays, keyed by name.
+def _arrays(scene: dict) -> dict:
+    """The declared arrays of `scene`, a scene as its file writes it, keyed by
+    name.
 
     A feed of an undeclared name stops the run here.
     """
-    arrays = {a.name: a for p in scene.passes for a in p.arrays}
+    arrays = {
+        a["name"]: ArrayInput(a["name"], a["size"])
+        for p in scene["passes"]
+        for a in p.get("arrays", [])
+    }
     for name in _FEEDS:
         if name not in arrays:
             raise ValueError(
@@ -1174,9 +1179,13 @@ def _arrays(scene: Scene) -> dict:
 _BLACK = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"
 
 
-def run(scene: Scene | None = None) -> None:
-    """Render the scene. With no scene, the scene is one pass, `main`, that
-    clears to black, for ghee.draw() to paint on.
+def run(
+    scene: Scene | dict | str | os.PathLike[str] | None = None,
+) -> None:
+    """Render the scene: a ghee.Scene, a dict, the JSON text of a scene, or
+    a path to a .scene.json, whose files resolve beside it, as ghee.open
+    takes them. With no scene, the scene is one pass, `main`, that clears to
+    black, for ghee.draw() to paint on.
 
     A run under ghee answers the wire.
     A run of its own renders the scene as `ghee render` renders it, and
@@ -1187,10 +1196,11 @@ def run(scene: Scene | None = None) -> None:
     traceback here would say a scene crashed, and it did what it was told.
     """
     global _PARAMS, _FILTERS, _SCENE, _LIVE, _DRAWN, _TICK
-    if scene is None:
-        scene = Scene(passes=[Pass("main", _BLACK)])
+    scene = _document(scene)
     _PARAMS = None
-    _FILTERS = [f.get("name") if isinstance(f, dict) else f for f in scene.filters]
+    _FILTERS = [
+        f.get("name") if isinstance(f, dict) else f for f in scene.get("filters", [])
+    ]
     _SCENE = scene
     _DRAWN = None
     try:
@@ -1204,7 +1214,19 @@ def run(scene: Scene | None = None) -> None:
         _PARAMS, _FILTERS, _SCENE, _LIVE, _TICK = None, [], None, None, None
 
 
-def _wire(scene: Scene) -> None:
+def _document(scene) -> dict:
+    """`scene` as its file writes it. A ghee.Scene and no scene need no
+    native half."""
+    if scene is None:
+        return Scene(passes=[Pass("main", _BLACK)]).to_dict()
+    if isinstance(scene, Scene):
+        return scene.to_dict()
+    from ghee import _ext
+
+    return json.loads(_ext()._scene_doc(scene))
+
+
+def _wire(scene: dict) -> None:
     """Write the handshake, then answer ticks until ghee closes stdin.
 
     Every answer ends with kind 5, as the handshake's `"lockstep": true`
@@ -1221,11 +1243,9 @@ def _wire(scene: Scene) -> None:
         out.flush()
 
 
-def _hello(scene: Scene) -> str:
+def _hello(scene: dict) -> str:
     """The handshake: the scene, which answers every tick in lockstep."""
-    hello = scene.to_dict()
-    hello["lockstep"] = True
-    return json.dumps(hello)
+    return json.dumps({**scene, "lockstep": True})
 
 
 def _answer(arrays: dict, line: str) -> bytes:
@@ -1269,7 +1289,7 @@ def _script_dir() -> str | None:
     return os.path.dirname(os.path.abspath(path)) if path else None
 
 
-def _direct(scene: Scene) -> None:
+def _direct(scene: dict) -> None:
     """Render the scene as `ghee render` renders a scene file that is a
     program, with the host flags. ghee asks this process for the scene, and
     for the answer to each tick, as it asks a process on the wire.

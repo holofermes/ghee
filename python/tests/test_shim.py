@@ -1250,3 +1250,40 @@ def test_ghee_layers_list_their_names(monkeypatch):
     drive(shim, layered(shim), ticks, monkeypatch)
     assert seen == [(["title", "icon"], 2, True), "<layers title, icon>"]
     assert list(shim.layers) == []
+
+
+def sampled(tmp_path):
+    """A scene file in a folder of its own, whose GLSL file samples its
+    image asset, a red pixel. Returns its path."""
+    from conftest import pillow
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    pillow().new("RGB", (1, 1), (255, 0, 0)).save(sub / "a.png")
+    (sub / "a.glsl").write_text(
+        "void main(){ gl_FragColor = texture2D(a_tex, vec2(0.5)); }"
+    )
+    scene = {
+        "version": 1,
+        "passes": [{"name": "main", "fragment": {"file": "a.glsl"}}],
+        "assets": {"a": {"file": "a.png"}},
+    }
+    path = sub / "a.scene.json"
+    path.write_text(json.dumps(scene))
+    return path
+
+
+def test_run_takes_what_open_takes(tmp_path, monkeypatch):
+    path = sampled(tmp_path)
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    hello, _ = drive(load(), str(path), ticks, monkeypatch)
+    assert hello["passes"][0]["fragment"].startswith("void main()")
+    assert hello["assets"]["a"]["file"] == str(path.parent.resolve() / "a.png")
+    assert drive(load(), path, ticks, monkeypatch)[0] == hello
+    shim = load()
+    plain = shim.Scene(passes=[shim.Pass("main", "void main(){}")]).to_dict()
+    for scene in (plain, json.dumps(plain)):
+        assert drive(load(), scene, ticks, monkeypatch)[0] == {
+            **plain,
+            "lockstep": True,
+        }

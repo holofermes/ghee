@@ -272,7 +272,7 @@ you can list with `./clock.py --help`.
 
 | Call | What it does |
 | --- | --- |
-| `ghee.run(scene)` | runs a [`ghee.Scene`](#building-a-scene-in-python), or a black frame with none |
+| `ghee.run(scene)` | runs a scene, given as `ghee.open` takes it ([Opening a scene](#opening-a-scene)), or a black frame with none |
 | `@ghee.tick` | runs the function before each frame, with the frame's tick |
 | `@ghee.feed("levels")` | runs the function before each frame, with the tick, and feeds what it returns to the array `levels`. None leaves the array as it is |
 | `ghee.draw()` | in a tick, a `with` block for this frame's calls ([Drawing](#drawing)) |

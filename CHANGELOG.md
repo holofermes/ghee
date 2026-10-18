@@ -89,6 +89,7 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   kinds 6 to 10.
 - Run a scene program in lockstep with `"lockstep": true` in its scene
   ([Procedural scenes](docs/procedural.md)).
+- Pass `ghee.run` a path, a dict or JSON text, as `ghee.open` takes them.
 - Try the new bundled demos: assets, bars, feedback, lens, neon, passes,
   tiltshift, hero, karaoke, nowplaying, spectrum and stats.
 - Stop or pause a console from any thread of a Rust host with a

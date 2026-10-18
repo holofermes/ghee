@@ -250,6 +250,16 @@ fn source_of(scene: Option<&Bound<'_, PyAny>>, base_dir: Option<PathBuf>) -> PyR
     )))
 }
 
+/// The JSON text of the scene that ghee.run() runs, from what open() takes.
+#[pyfunction]
+fn _scene_doc(scene: &Bound<'_, PyAny>) -> PyResult<String> {
+    let doc = match source_of(Some(scene), None)? {
+        Source::Path(path) => session::document(&path).map_err(fault)?,
+        Source::Doc { doc, .. } => doc,
+    };
+    Ok(doc.to_string())
+}
+
 /// The caller's stream cap: pixels (an int >= 2), or a fraction of the render
 /// size.
 fn stream_max_of(v: &Bound<'_, PyAny>) -> PyResult<StreamMax> {
@@ -874,6 +884,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.setattr("_render_flags", wrap_pyfunction!(_render_flags, m)?)?;
     m.setattr("_render_check", wrap_pyfunction!(_render_check, m)?)?;
     m.setattr("_direct", wrap_pyfunction!(_direct, m)?)?;
+    m.setattr("_scene_doc", wrap_pyfunction!(_scene_doc, m)?)?;
     m.add_function(wrap_pyfunction!(open, m)?)?;
     Ok(())
 }

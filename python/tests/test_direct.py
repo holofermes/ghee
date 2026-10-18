@@ -538,3 +538,15 @@ def test_a_scene_file_draws_its_words_where_its_layer_places_them(tmp_path):
     first = ink(pixels(tmp_path / "f.0000.png"), 64)
     assert max(first.values()) == 255
     assert min(x for x, _ in first) >= 4 and min(y for _, y in first) >= 4
+
+
+def test_a_scene_file_run_by_path_finds_its_files_beside_it(tmp_path, monkeypatch):
+    from test_shim import sampled
+
+    sampled(tmp_path)
+    out = tmp_path / "f.png"
+    monkeypatch.chdir(tmp_path)
+    host(monkeypatch, ["-o", str(out), "--size", "4x4", "--frames", "1"]).run(
+        "sub/a.scene.json"
+    )
+    assert pixels(out)[:4] == bytes([255, 0, 0, 255])

@@ -213,6 +213,9 @@ class Drawing:
         """Draw a line through `points`, each (x, y), two or more. `x` and
         `y` shift every point."""
 
+def _scene_doc(scene: Scene | dict[str, Any] | str | os.PathLike[str]) -> str:
+    """The JSON text of the scene that ghee.run() runs."""
+
 def _colour_name(text: str) -> bool:
     """True for a CSS colour name, in any case, transparent too."""
 

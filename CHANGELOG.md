@@ -149,6 +149,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - ghee refuses a frame or a pass past the GPU's texture size, 2048 pixels a
   side on a Pi Zero to Pi 3, and names the cap, instead of failing with a
   GL error.
+- `--rgb565` and `ghee.open`'s `rgb565` refuse a display that takes no
+  RGB565 frames, such as an SSD1306, instead of drawing nothing and ending
+  with status 0.
 
 ## 0.4.0 - 2026-08-06
 

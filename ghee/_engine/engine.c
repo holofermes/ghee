@@ -435,6 +435,9 @@ static void settle_flips(GheeScene *g);
 static void stop_flipper(GheeScene *g);
 static bool start_flipper(GheeScene *g, char *eb, size_t n);
 static uint32_t primary_plane(int fd, uint32_t crtc_id);
+static bool display_takes(int fd, uint32_t format);
+static int pick_display_mode(int fd, uint32_t *conn_out, uint32_t *crtc_out,
+                             drmModeModeInfo *mode_out);
 static bool plane_scales(GheeScene *g, int width, int height);
 static bool ensure_blit(GheeScene *g);
 
@@ -804,6 +807,10 @@ static GheeScene *create_impl(int width, int height, int components, const char 
         EGL_SAMPLES, 0,
         EGL_NONE
     };
+    if (scanout && rgb565 && !display_takes(g->drm_fd, DRM_FORMAT_RGB565)) {
+        snprintf(early_err, sizeof(early_err), "this display takes no RGB565 frames, so render without rgb565");
+        goto fail;
+    }
     EGLConfig configs[64];
     EGLConfig config = NULL;
     EGLint numConfigs = 0;
@@ -2851,6 +2858,22 @@ static uint32_t primary_plane(int fd, uint32_t crtc_id) {
     }
     drmModeFreePlaneResources(pr);
     return found;
+}
+
+// Whether the primary plane of the display that create drives takes frames
+// of `format`. A card with no connected display answers true, and the open
+// then fails on the display.
+static bool display_takes(int fd, uint32_t format) {
+    uint32_t conn, crtc;
+    drmModeModeInfo mode;
+    if (pick_display_mode(fd, &conn, &crtc, &mode)) return true;
+    const uint32_t plane = primary_plane(fd, crtc);
+    drmModePlane *p = plane ? drmModeGetPlane(fd, plane) : NULL;
+    bool takes = false;
+    for (uint32_t i = 0; p && i < p->count_formats; i++)
+        takes = takes || p->formats[i] == format;
+    if (p) drmModeFreePlane(p);
+    return takes;
 }
 
 // Whether this card will scan a width x height buffer across the whole mode.

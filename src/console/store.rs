@@ -981,7 +981,8 @@ fn into_files(
     for (n, patch) in values("layers") {
         let l = raw_layer_mut(&mut doc, n)
             .ok_or_else(|| format!("the scene file has no layer '{n}'"))?;
-        state::merge(l, patch);
+        let patch = as_written(Some(l), patch);
+        state::merge(l, &patch);
     }
     for (n, v) in values("assets") {
         if !doc["assets"].is_object() {
@@ -1020,7 +1021,8 @@ fn put_filter(doc: &mut Value, name: &str, v: &Value) -> Result<(), String> {
         .into_iter()
         .flatten()
     {
-        filter.values.insert(n.clone(), pv.clone());
+        let pv = as_written(filter.values.get(n), pv);
+        filter.values.insert(n.clone(), pv);
     }
     if let Some(visible) = v.get("visible").and_then(Value::as_bool) {
         filter.visible = visible;
@@ -1087,8 +1089,32 @@ fn set_or_drop(o: &mut Value, k: &str, v: &Value) {
 /// it has no such param.
 fn set_value(owner: &mut Value, name: &str, v: &Value) -> Option<()> {
     let p = owner.get_mut("params")?.get_mut(name)?.as_object_mut()?;
-    p.insert("value".to_string(), v.clone());
+    let v = as_written(p.get("value"), v);
+    p.insert("value".to_string(), v);
     Some(())
+}
+
+/// `new` in the form that `old` has in the scene file: a whole number is an
+/// integer, unless `old` wrote that place with a fraction.
+fn as_written(old: Option<&Value>, new: &Value) -> Value {
+    match new {
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, v)| (k.clone(), as_written(old.and_then(|o| o.get(k)), v)))
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .enumerate()
+                .map(|(i, v)| as_written(old.and_then(|o| o.get(i)), v))
+                .collect(),
+        ),
+        Value::Number(n) if n.is_f64() && !old.is_some_and(|o| o.is_f64()) => match n.as_f64() {
+            Some(f) if f.fract() == 0.0 && f.abs() < 9.0e15 => Value::from(f as i64),
+            _ => new.clone(),
+        },
+        _ => new.clone(),
+    }
 }
 
 /// A pass's name as a scene file holds it: `main` when it names none.
@@ -1713,7 +1739,7 @@ mod tests {
             serde_json::from_str::<Value>(&text).unwrap()["filters"].clone()
         };
         let written = save(&|doc| doc["passes"][1]["params"]["calm"]["value"] = json!(8.0));
-        assert_eq!(written, json!([{"name": "frc", "calm": 8.0}]));
+        assert_eq!(written, json!([{"name": "frc", "calm": 8}]));
         let written = save(&|doc| {
             doc["passes"][1]["params"]["calm"]["value"] = json!(3.0);
             doc["passes"][1]["visible"] = json!(false);
@@ -1721,13 +1747,46 @@ mod tests {
         });
         assert_eq!(
             written,
-            json!([{"name": "frc", "calm": 3.0, "visible": false}, "dither"])
+            json!([{"name": "frc", "calm": 3, "visible": false}, "dither"])
         );
         let back = store.resolve("own", SIZE).unwrap();
         let frc = &back.passes[1];
         assert_eq!(frc.params.get("calm").unwrap().value.to_json(), json!(3.0));
         assert!(!frc.visible);
         assert_eq!(back.passes[2].filter, "dither");
+    }
+
+    #[test]
+    fn a_save_writes_a_whole_number_as_the_scene_file_wrote_that_place() {
+        let (_d, m, store) = mine("own-whole");
+        let file = format!("{m}/own/own{SCENE_SUFFIX}");
+        write_text(
+            &file,
+            r#"{"version": 1, "passes": [{"name": "main",
+                "fragment": "void main(){ gl_FragColor = vec4(gain); }",
+                "params": {"gain": {"type": "float", "value": 1.0}},
+                "layers": [{"name": "word", "text": "hi", "font_size": 8, "x": 6}]}]}"#,
+        );
+        let scene = store.resolve("own", SIZE).unwrap();
+        let defaults = scene.to_dict();
+        let mut doc = defaults.clone();
+        doc["passes"][0]["params"]["gain"]["value"] = json!(2.0);
+        doc["passes"][0]["layers"][0]["font_size"] = json!(16.0);
+        doc["passes"][0]["layers"][0]["x"] = json!(10.5);
+        doc["passes"][0]["layers"][0]["y"] = json!(4.0);
+        let working = scene_of(&scene, &doc, "own").unwrap().to_dict();
+        store
+            .write("own", &defaults, &state::diff(&defaults, &working, false))
+            .unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        for written in [
+            r#""value": 2.0"#,
+            r#""font_size": 16,"#,
+            r#""x": 10.5"#,
+            r#""y": 4"#,
+        ] {
+            assert!(text.contains(written), "{written} in {text}");
+        }
     }
 
     #[test]

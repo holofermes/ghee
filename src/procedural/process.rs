@@ -2451,14 +2451,15 @@ cat > ticks.jsonl
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
         let num = |t: &Value, k: &str| t[k].as_f64().unwrap();
-        assert!(seen
-            .windows(2)
-            .any(|w| num(&w[1], "frame") - num(&w[0], "frame") > 1.0));
-        // each tick's dt is the time since the tick before it in the file
+        assert!(seen.len() < 3000, "no tick dropped");
+        // each tick's dt is the time since the tick before it in the file,
+        // and the dt of them all is the time of the 3000 ticks
         for w in seen.windows(2) {
             let gap = num(&w[1], "time") - num(&w[0], "time");
             assert!((num(&w[1], "dt") - gap).abs() < 1e-9, "{w:?}");
         }
+        let total: f64 = seen.iter().map(|t| num(t, "dt")).sum();
+        assert!((total - 3.0).abs() < 1e-9, "{total}");
     }
 
     /// A process in lockstep. It answers each tick 0.2 s late with the frame

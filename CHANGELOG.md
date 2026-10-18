@@ -56,6 +56,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Change a layer at runtime with `screen.layers`, `ghee.layers` or `/set`.
 - Name a pass's param in `/set` as `name=main.tile`, as `set_param` takes
   it.
+- Reach a console on loopback through a proxy such as `tailscale serve`:
+  pass the proxy's host names to `--allow-hosts`.
 - Sample image and `.raw` data assets in a shader.
 - Read `iFrame`, `iChannelResolution` and `iOutputResolution` in a pass.
 - Run a Shadertoy pass as it is: a pass that defines `mainImage` instead of

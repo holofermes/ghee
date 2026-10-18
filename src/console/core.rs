@@ -250,20 +250,27 @@ pub fn binds_loopback(addr: &str) -> bool {
 /// address of 127.0.0.0/8 or [::1], with or without a port. A page served
 /// from any other name reaches a loopback console only through DNS rebinding.
 pub fn loopback_host(host: &str) -> bool {
+    host_name(host).is_some_and(|name| {
+        name.eq_ignore_ascii_case("localhost")
+            || name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    })
+}
+
+/// The name of `host`, a request's Host header, without its port. None when
+/// the header is malformed.
+fn host_name(host: &str) -> Option<&str> {
     let h = host.trim();
-    let name = match h.strip_prefix('[') {
+    match h.strip_prefix('[') {
         Some(rest) => match rest.split_once(']') {
-            Some((addr, port)) if is_port(port) => addr,
-            _ => return false,
+            Some((addr, port)) if is_port(port) => Some(addr),
+            _ => None,
         },
         None => match h.rsplit_once(':') {
-            Some((name, port)) if is_port(&format!(":{port}")) => name,
-            Some(_) => return false,
-            None => h,
+            Some((name, port)) if is_port(&format!(":{port}")) => Some(name),
+            Some(_) => None,
+            None => Some(h),
         },
-    };
-    name.eq_ignore_ascii_case("localhost")
-        || name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    }
 }
 
 /// Nothing, or `:` and a port number.
@@ -682,6 +689,9 @@ pub struct ConsoleAPI<H: ConsoleHost> {
     /// a request that names any host. On loopback it answers a request that
     /// names loopback alone.
     pub open: bool,
+    /// The host names that a console on loopback answers beside loopback's
+    /// own.
+    pub hosts: Vec<String>,
     /// An open console takes uploads too.
     pub uploads: bool,
     /// The GPU's engine times at the last /stats that asked for usage.
@@ -707,6 +717,7 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             max_body: MAX_BODY,
             max_upload: MAX_UPLOAD,
             open: false,
+            hosts: Vec::new(),
             uploads: false,
             engines: Mutex::new(None),
         }
@@ -723,6 +734,23 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     pub fn listening_on(mut self, addr: &str) -> ConsoleAPI<H> {
         self.open = !binds_loopback(addr);
         self
+    }
+
+    /// Answer a Host of each of `names` on loopback too, for a proxy in
+    /// front of the console that passes its own name on.
+    pub fn answering(mut self, names: Vec<String>) -> ConsoleAPI<H> {
+        self.hosts = names
+            .into_iter()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .collect();
+        self
+    }
+
+    /// Whether a console on loopback answers `host`, a request's Host header.
+    fn answers(&self, host: &str) -> bool {
+        loopback_host(host)
+            || host_name(host).is_some_and(|n| self.hosts.iter().any(|h| h.eq_ignore_ascii_case(n)))
     }
 
     pub fn with_web(mut self, web: bool) -> ConsoleAPI<H> {
@@ -782,12 +810,18 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     /// this again, so a transport that skips it still gets the refusal.
     pub fn precheck(&self, method: &str, path: &str, headers: &Headers) -> Option<Response> {
         let host = headers.get("Host");
-        if !self.open && !host.is_some_and(loopback_host) {
+        if !self.open && !host.is_some_and(|h| self.answers(h)) {
+            let names = ["localhost", "127.0.0.1", "[::1]"]
+                .into_iter()
+                .chain(self.hosts.iter().map(String::as_str))
+                .collect::<Vec<_>>();
+            let (last, rest) = names.split_last().unwrap_or((&"", &[]));
             return Some(Response::text(
                 403,
                 &format!(
-                    "this console listens on loopback and answers a Host of localhost, \
-                     127.0.0.1 or [::1], got {}",
+                    "this console listens on loopback and answers a Host of {} or {last}, \
+                     got {}",
+                    rest.join(", "),
                     host.map_or("none".to_string(), |h| py_repr(&Value::from(h)))
                 ),
             ));
@@ -2701,6 +2735,32 @@ mod tests {
                 "this console listens on loopback and answers a Host of localhost, \
                  127.0.0.1 or [::1], got 'rebind.example:8095'"
             )
+        );
+    }
+
+    #[test]
+    fn a_loopback_console_answers_the_names_that_it_is_given_too() {
+        let api = api().answering(vec!["pi.tail.ts.net".to_string()]);
+        for (host, ok) in [
+            ("pi.tail.ts.net", true),
+            ("PI.tail.ts.net:443", true),
+            ("localhost:8090", true),
+            ("pi.tail.ts.net.rebind.example", false),
+            ("other.ts.net", false),
+        ] {
+            let headers = Headers::from([("Host", host)]);
+            assert_eq!(
+                api.precheck("POST", "/save", &headers).is_none(),
+                ok,
+                "{host}"
+            );
+        }
+        let headers = Headers::from([("Host", "other.ts.net")]);
+        let r = api.precheck("GET", "/stats", &headers).unwrap();
+        assert_eq!(
+            body(&r),
+            "this console listens on loopback and answers a Host of localhost, \
+             127.0.0.1, [::1] or pi.tail.ts.net, got 'other.ts.net'"
         );
     }
 

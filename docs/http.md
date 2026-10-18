@@ -48,7 +48,7 @@ bad /set: param 'nope' is not a param this scene declares (main.tile, tile, main
 | Status | When |
 | --- | --- |
 | 400 | a bad query or value. The text names what's wrong, and lists the names that work |
-| 403 | a param or a layer key that the scene's program sets ([Locked](#locked)), a change that a [Python console](#from-python) refuses, a `Host` header other than `localhost`, a `127.x.x.x` address or `[::1]`, with or without a port ([From another computer](console.md#from-another-computer)), or a POST from another site's web page |
+| 403 | a param or a layer key that the scene's program sets ([Locked](#locked)), a change that a [Python console](#from-python) refuses, a `Host` header other than `localhost`, a `127.x.x.x` address, `[::1]` or a name passed to `--allow-hosts`, with or without a port ([From another computer](console.md#from-another-computer)), or a POST from another site's web page |
 | 404 | an unknown path, scene or item |
 | 405 | a GET to a path that changes something. Those take POST alone |
 | 409 | an edit for a scene other than the open one, or a scene name that's taken |

@@ -1906,6 +1906,9 @@ pub struct Options {
     /// Loopback by default. The console has no auth, and it compiles POSTed
     /// GLSL. Pass "0.0.0.0" only on a network you trust.
     pub host: String,
+    /// The host names that a console on loopback answers beside loopback's
+    /// own, for a proxy that passes its own name on.
+    pub allowed_hosts: Vec<String>,
     /// The KMS display that the frames scan out to, from Card::open().
     pub display: Option<Card>,
     pub rgb565: bool,
@@ -1967,6 +1970,7 @@ impl Default for Options {
             size: None,
             port: 8090,
             host: "127.0.0.1".to_string(),
+            allowed_hosts: Vec::new(),
             display: None,
             rgb565: false,
             drop: false,
@@ -2025,6 +2029,7 @@ pub fn run(opts: Options) -> Result<()> {
         size,
         port,
         host,
+        allowed_hosts,
         display,
         rgb565,
         drop,
@@ -2120,6 +2125,7 @@ pub fn run(opts: Options) -> Result<()> {
     let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)))
         .with_web(console.web)
         .listening_on(&host)
+        .answering(allowed_hosts)
         .with_uploads(uploads);
     let serving = serve(Arc::new(server), Arc::clone(&console), Arc::new(api));
 

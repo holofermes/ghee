@@ -750,6 +750,7 @@ fn serve(
         brightness: a.brightness,
         port: a.port,
         host: a.host.clone(),
+        allowed_hosts: a.allow_hosts.clone(),
         preview_max: a.preview_max,
         preview_fps: f64::from(a.preview_fps),
         stream_max: a.stream_max,
@@ -1194,6 +1195,16 @@ struct ConsoleFlags {
 
     #[arg(
         long,
+        value_name = "NAMES",
+        value_delimiter = ',',
+        help = "comma-separated host names that a console on loopback answers \
+                beside localhost, 127.0.0.1 and [::1], for a proxy such as \
+                tailscale serve"
+    )]
+    allow_hosts: Vec<String>,
+
+    #[arg(
+        long,
         default_value_t = 480,
         help = "longest side of the browser preview in px (downscaled, default 480)"
     )]
@@ -1432,6 +1443,7 @@ pub struct Ns {
     dri: Option<String>,
     port: u16,
     host: String,
+    allow_hosts: Vec<String>,
     state_dir: Option<std::path::PathBuf>,
     /// Draw the scene without the edits that a console saved for it.
     original: bool,
@@ -1494,6 +1506,7 @@ impl RenderArgs {
             dri: self.render.dri,
             port: self.console.port,
             host: self.console.host,
+            allow_hosts: self.console.allow_hosts,
             state_dir: self.console.state_dir,
             original: self.original,
             my_scenes: None,
@@ -1541,6 +1554,7 @@ impl ServeArgs {
             dri: self.render.dri,
             port: self.console.port,
             host: self.console.host,
+            allow_hosts: self.console.allow_hosts,
             state_dir: self.console.state_dir,
             original: false,
             my_scenes: self.my_scenes,
@@ -2364,6 +2378,8 @@ mod tests {
             "--rgb565",
             "--state-dir",
             "/srv/state",
+            "--allow-hosts",
+            "pi.tail.ts.net,pi.local",
             "--",
             "--text",
             "hi",
@@ -2373,6 +2389,7 @@ mod tests {
             (9, "0.0.0.0", Some((80, 60)))
         );
         assert_eq!(a.state_dir, Some(std::path::PathBuf::from("/srv/state")));
+        assert_eq!(a.allow_hosts, ["pi.tail.ts.net", "pi.local"]);
         assert_eq!((a.preview_fps, a.preview_max, a.stream_max), (5, 120, 320));
         assert_eq!((a.bitrate, a.rgb565), (123, true));
         assert_eq!(a.scene_args, argv(&["--text", "hi"]));

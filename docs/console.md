@@ -151,9 +151,17 @@ Careful: the console has no password, and anyone who reaches it can change
 your scenes and run any shader. Open it only on a network you trust.
 Uploads stay off on a network until you pass `--allow-uploads`.
 
-A proxy in front of a console that listens on its own machine, such as
-`tailscale serve`, must send a `Host` of `localhost`, `127.0.0.1` or
-`[::1]`. The console refuses any other.
+To reach a console that listens on loopback through a proxy on the same
+machine, such as `tailscale serve`, pass the names that the proxy sends as
+the `Host` to `--allow-hosts`, comma-separated. For a Pi that `tailscale
+serve` publishes as `raspberrypi.example.ts.net`, run:
+
+```shell
+ghee serve --allow-hosts raspberrypi.example.ts.net
+```
+
+The console still listens on loopback alone. It refuses a `Host` other than
+`localhost`, `127.0.0.1`, `[::1]` and the names that you pass.
 
 To set the H264 video's and the MJPEG stream's size and frame rate, see
 `ghee serve --help`. To drive the console from a program, see [HTTP

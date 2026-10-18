@@ -6,85 +6,48 @@
 //! display, files, a pipe. This module attaches the console to that loop.
 //!
 //! The console serves the HTTP API (`docs/http.md`) and the web page on a
-//! thread of its own. A request handler never touches the renderer: it
-//! queues a command, a param set, a scene switch, an edited scene, and the
-//! render thread applies the queue between frames.
+//! thread of its own, through the hub (console::hub). A request handler never
+//! touches the renderer: it queues a command, a param set, a scene switch, an
+//! edited scene, and the render thread applies the queue between frames.
 
 use std::cell::{Cell, RefCell, RefMut};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
-use std::io::Write;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
-use tiny_http::{Header, Request, Server, StatusCode};
+use tiny_http::Server;
 
 use crate::console::core::{
-    other_reload, other_scene, parse_query, Aside, ConsoleAPI, ConsoleError, ConsoleHost,
-    ConsoleResult, Edit, Headers, LayerSet, Query, Response, Scope,
+    other_reload, other_scene, Aside, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, Edit,
+    LayerSet, Scope,
+};
+use crate::console::hub::{
+    banner, bound_port, frame_format, gpu_caps, serve, spawn_encoders, url, Drawer, Hub, HwLane,
+    RawFrame, SceneStats, Shot,
 };
 use crate::console::state::{self, Edits, Item};
 use crate::console::store::{self, Carried, Opened, SceneStore};
 use crate::console::{examples_dir, is_examples_dir};
 use crate::draw::Call;
-use crate::engine::{Card, ErrorPass, Feed, Given, Provider, Renderer, Taken};
+use crate::engine::{Card, Feed, Given, Provider, Renderer, Taken};
 use crate::feeds::demo_feed;
-use crate::h264::{
-    avcc, build_config, no_encoder, split_annexb, wire_frame, ColorSpace, HardwareH264,
-    SoftwareH264, HW_COLOR, NAL_IDR, NAL_PPS, NAL_SEI, NAL_SLICE, NAL_SPS, SW_COLOR, WIRE_ERROR,
-};
 use crate::layer::Address;
 use crate::live::Live;
 use crate::looper::{ControllerSlot, Frame, Loop, Output, Pacer, RenderTarget, SceneController};
-use crate::output::{encode_jpeg, encode_png, Scanout};
+use crate::output::Scanout;
 use crate::procedural::locks::Locks;
 use crate::scene::{coerce, ArraySize, ParamValue, Reach, Scene};
 use crate::sources::{collect, Snapshot};
-use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG};
-
-/// JPEG quality for the MJPEG preview
-pub const PREVIEW_QUALITY: u8 = 75;
-
-/// The producer and a viewer run at the same rate, so a backlog never drains on
-/// its own. Past this many queued frames the fanout drops the client, and the
-/// client resyncs at the next keyframe.
-pub const H264_LAG_FRAMES: usize = 10;
-
-/// The bits per pixel per frame the stream aims for.
-pub const H264_BPP: f64 = 0.15;
-pub const H264_BITRATE_CEILING: i64 = 80_000_000;
-/// The software encode cadence. Hardware follows the display or the loop.
-pub const H264_FPS: i32 = 30;
-
-/// How long GET /frame.png waits for the render loop to answer its request.
-pub const FRAME_TIMEOUT: f64 = 4.0;
+use crate::stats::{monotonic, DEST_KMS};
 
 /// How long GET /scene and GET /edits wait for the active scene's load. A
 /// procedural scene's program takes up to 30 s to hand over its scene.
 pub const LOAD_TIMEOUT: Duration = Duration::from_secs(35);
-
-/// A page opens /h264?vid=<id> or /stream?vid=<id>. It repeats POST
-/// /ping?vid=<id> while it watches. Consumption proves nothing: a page frozen in
-/// a browser's back/forward cache stays connected and keeps draining its socket.
-/// Only the ping stopping marks a departure. The deadline runs on its own clock,
-/// so a congested link never drops a viewer.
-///
-/// The cadence the console page pings at.
-#[allow(dead_code)]
-pub const PING_INTERVAL: f64 = 3.0;
-/// Three intervals, so two lost pings are not a departure.
-pub const VIEWER_DEADLINE: f64 = 10.0;
-
-/// The shortest time in seconds between two publishes of the running
-/// document for the changes that a scene's own code makes to its layers.
-/// Writing the document takes time with each layer, and the code may change
-/// a layer every frame.
-pub const LAYERS_PUBLISH_EVERY: f64 = 0.2;
 
 /// How long after a scene's last change its draft is written.
 pub const DRAFT_AFTER: Duration = Duration::from_secs(1);
@@ -113,16 +76,6 @@ pub fn set_item(scope: Scope, name: &str, value: Value) -> Command {
     match scope {
         Scope::Scene => Command::SceneParam(name.to_string(), value),
         Scope::Pass(i) => Command::Param(i, name.to_string(), value),
-    }
-}
-
-/// Round a float. A half goes to the even side.
-fn round_half_even(x: f64) -> f64 {
-    let r = x.round();
-    if (x - x.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
-        r - x.signum()
-    } else {
-        r
     }
 }
 
@@ -177,66 +130,6 @@ impl Commands {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
-}
-
-/// One readback from the render thread, row-major (height, width, components).
-pub struct RawFrame {
-    pub data: Vec<u8>,
-    pub width: i32,
-    pub height: i32,
-    pub components: i32,
-}
-
-impl RawFrame {
-    fn of(frame: Frame<'_>) -> RawFrame {
-        RawFrame {
-            data: frame.data.to_vec(),
-            width: frame.width,
-            height: frame.height,
-            components: frame.components,
-        }
-    }
-
-    fn view(&self) -> Frame<'_> {
-        Frame {
-            data: &self.data,
-            width: self.width,
-            height: self.height,
-            components: self.components,
-        }
-    }
-}
-
-/// The latest preview frame handed to the encoder thread.
-#[derive(Default)]
-struct Raw {
-    rgb: Option<Arc<RawFrame>>,
-    seq: u64,
-}
-
-/// The latest JPEG the console serves to the MJPEG viewers.
-#[derive(Default)]
-struct Latest {
-    jpg: Option<Arc<Vec<u8>>>,
-    seq: u64,
-}
-
-/// What /stats publishes about the running scene, minus the rates.
-#[derive(Default)]
-struct Stat {
-    frame_ms: f64,
-    error: String,
-    /// The renderer's text_errors(), a line each.
-    texts: Vec<String>,
-    display: Value,
-    error_line: Option<i64>,
-    error_pass: Option<ErrorPass>,
-    gpu: Value,
-}
-
-/// The /stats `gpu` object: what the renderer's GPU can do.
-pub fn gpu_caps(renderer: &Renderer) -> Value {
-    serde_json::json!({"trilinear_npot": renderer.trilinear_npot()})
 }
 
 /// The active scene: the one that the last switch asked for, which an edit
@@ -388,17 +281,12 @@ impl WorkingCopy {
     /// The document that a page reads and a /set checks against: the
     /// working copy, or for a procedural scene the document that runs, which
     /// holds what its program drew and set, once it carries this working copy.
-    fn live_doc(&self, name: &str, running: &Option<Published>) -> Value {
-        match running {
-            Some(p)
-                if self.opened.procedural
-                    && p.name.as_deref() == Some(name)
-                    && p.generation == self.generation =>
-            {
-                p.doc.clone()
-            }
-            _ => self.working_doc(),
-        }
+    fn live_doc(&self, name: &str, hub: &Hub) -> Value {
+        let running = match self.opened.procedural {
+            true => hub.scene_of(name, self.generation),
+            false => None,
+        };
+        running.unwrap_or_else(|| self.working_doc())
     }
 }
 
@@ -466,14 +354,6 @@ pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
     }
 }
 
-/// The document of the scene that the render thread set last.
-struct Published {
-    name: Option<String>,
-    /// The generation of the working copy behind it.
-    generation: u64,
-    doc: Value,
-}
-
 /// A source for one declared array: the host's data for this frame.
 pub type ArraySource = Box<dyn Fn(ArraySize, u64) -> Vec<f32> + Send + Sync>;
 
@@ -485,8 +365,6 @@ pub struct Console {
     // configuration: run() sets it before the threads start
     pub store: SceneStore,
     pub web: bool,
-    pub w: i32,
-    pub h: i32,
     /// Scan out to a connected KMS display as well.
     pub display: bool,
     /// Scan out in 16-bit color. This halves the GPU store and the scanout bytes.
@@ -497,14 +375,6 @@ pub struct Console {
     pub rotate: i64,
     /// The backlight level that the display takes at the start, 0 to 1.
     pub brightness: Option<f64>,
-    /// The longest side of the browser preview. The encoder thread downscales it.
-    pub preview_max: i32,
-    /// The browser preview refresh cap. The display stays at full speed.
-    pub preview_fps: f64,
-    /// The cap on the h264 stream's longest side. 0 means full size.
-    pub stream_max: i32,
-    pub stream_hz: i32,
-    pub bitrate: i64,
     /// The frame components the renderer reads back: 3 for RGB, 4 for RGBA.
     pub components: i32,
     /// The readback keeps the output pass's alpha.
@@ -515,15 +385,13 @@ pub struct Console {
     pub timestep: Option<f64>,
     /// The DRI device override. None probes for one.
     pub dri: Option<String>,
-    /// The /stats destinations of the caller's sinks. A sink itself belongs to
-    /// the render thread.
-    pub sink_dests: Vec<String>,
     /// The interval a stale check reads disk at. None takes the default window.
     pub stale_interval: Option<f64>,
     arrays: Vec<(String, ArraySource)>,
+    /// The frame's size, the preview, the streams and /stats.
+    pub hub: Hub,
 
     // state
-    stat: Mutex<Stat>,
     active: Mutex<Active>,
     /// A handler holds this over a switch, and over an edit's check of the
     /// active scene and the edit, so an edit queued behind a switch never
@@ -542,13 +410,6 @@ pub struct Console {
     drafts: Mutex<HashMap<String, Instant>>,
     /// What the process of the scene named beside it set, while it runs.
     locks: Mutex<Option<(String, Arc<Mutex<Locks>>)>>,
-    /// The document of the active scene as the render thread last set it,
-    /// under the scene's name. A scene that failed to compile is published
-    /// too, while the renderer keeps drawing the last one that compiled.
-    running: Mutex<Option<Published>>,
-    /// The times that the scene's own code changed its layers in the
-    /// document: a layer added or given a new look, or a field set.
-    layer_changes: AtomicU64,
     /// The scene_size() of the renderer that render_loop draws with, from the
     /// start of the loop.
     scene_size: Mutex<Option<(i32, i32)>>,
@@ -556,65 +417,28 @@ pub struct Console {
     /// this. An applied working copy leaves the scene stale when its files moved
     /// on.
     sources: Mutex<Option<Snapshot>>,
-    raw: Mutex<Raw>,
-    raw_ready: Condvar,
-    latest: Mutex<Latest>,
-    latest_ready: Condvar,
-    nclients: Mutex<i64>,
     q: Commands,
-    /// The loop iterations that drew.
-    frame_rate: Arc<Mutex<FrameRate>>,
-    /// The frames handed to viewers, whichever codec.
-    stream_rate: Arc<Mutex<FrameRate>>,
-    pub fanout: H264Fanout,
-    pub shot: Arc<Shot>,
-    pub viewers: Heartbeat,
-    stopping: Arc<AtomicBool>,
-    /// A failure the console cannot render through. run() returns it.
-    fatal: Mutex<String>,
-    /// The stream whose hardware encoding failed, which the software lane
-    /// owns. A stall or a busy codec belongs to the stream it happened in, so
-    /// the next stream tries hardware again, and the software lane costs a
-    /// readback.
-    h264_hw_dead: Mutex<Option<u64>>,
-    /// Why the hardware lane failed this stream.
-    h264_hw_why: Mutex<String>,
-    httpd: Mutex<Option<Arc<Server>>>,
 }
 
 impl Console {
     /// A console over a scene store, with the defaults run() overwrites.
     pub fn new(store: SceneStore) -> Console {
-        let stopping = Arc::new(AtomicBool::new(false));
-        let stream_rate = Arc::new(Mutex::new(FrameRate::new()));
         Console {
             store,
             web: true,
-            w: 320,
-            h: 240,
             display: false,
             rgb565: false,
             drop: false,
             rotate: 0,
             brightness: None,
-            preview_max: 480,
-            preview_fps: 15.0,
-            stream_max: 0,
-            stream_hz: 30,
-            bitrate: 10_000_000,
             components: 4,
             alpha: false,
             frames: 0,
             timestep: None,
             dri: None,
-            sink_dests: Vec::new(),
             stale_interval: None,
             arrays: Vec::new(),
-            stat: Mutex::new(Stat {
-                display: Value::Object(Map::new()),
-                gpu: Value::Object(Map::new()),
-                ..Stat::default()
-            }),
+            hub: Hub::new(),
             active: Mutex::new(Active::default()),
             editing: Mutex::new(()),
             loaded: Condvar::new(),
@@ -622,138 +446,34 @@ impl Console {
             revs: Mutex::new(HashMap::new()),
             drafts: Mutex::new(HashMap::new()),
             locks: Mutex::new(None),
-            running: Mutex::new(None),
-            layer_changes: AtomicU64::new(0),
             scene_size: Mutex::new(None),
             sources: Mutex::new(None),
-            raw: Mutex::new(Raw::default()),
-            raw_ready: Condvar::new(),
-            latest: Mutex::new(Latest::default()),
-            latest_ready: Condvar::new(),
-            nclients: Mutex::new(0),
             q: Commands::default(),
-            frame_rate: Arc::new(Mutex::new(FrameRate::new())),
-            fanout: H264Fanout::new(Arc::clone(&stream_rate)),
-            stream_rate,
-            shot: Shot::new(Arc::clone(&stopping)),
-            viewers: Heartbeat::new(VIEWER_DEADLINE),
-            stopping,
-            fatal: Mutex::new(String::new()),
-            h264_hw_dead: Mutex::new(None),
-            h264_hw_why: Mutex::new(String::new()),
-            httpd: Mutex::new(None),
         }
     }
 
     pub fn stopping(&self) -> bool {
-        self.stopping.load(Ordering::SeqCst)
+        self.hub.stopping()
     }
 
-    /// The MJPEG viewer count. A handler thread changes it. The render and
-    /// encoder threads read it.
-    pub fn count_clients(&self, delta: i64) -> i64 {
-        let mut n = lock(&self.nclients);
-        *n += delta;
-        *n
-    }
-
-    pub fn nclients(&self) -> i64 {
-        *lock(&self.nclients)
-    }
-
-    /// Where the frames go now: the scanout, the caller's sinks, and each stream
-    /// with a viewer.
-    fn out(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        if self.display {
-            out.push(DEST_KMS.to_string());
-        }
-        out.extend(self.sink_dests.iter().cloned());
-        if self.fanout.nclients() > 0 {
-            out.push(DEST_H264.to_string());
-        }
-        if self.nclients() > 0 {
-            out.push(DEST_MJPEG.to_string());
-        }
-        out
-    }
-
-    /// The /stats payload. Each rate computes on read, so an idle loop's number
-    /// falls with the clock.
+    /// The /stats payload.
     pub fn stats(&self) -> Value {
-        let mut d = Map::new();
-        {
-            let stat = lock(&self.stat);
-            d.insert("frame_ms".to_string(), Value::from(stat.frame_ms));
-            d.insert("error".to_string(), Value::from(stat.error.clone()));
-            d.insert("text_errors".to_string(), Value::from(stat.texts.clone()));
-            d.insert("display".to_string(), stat.display.clone());
-            d.insert(
-                "error_line".to_string(),
-                stat.error_line.map_or(Value::Null, Value::from),
-            );
-            d.insert(
-                "error_pass".to_string(),
-                stat.error_pass.map_or(Value::Null, ErrorPass::to_json),
-            );
-            d.insert("gpu".to_string(), stat.gpu.clone());
-        }
         // `rev` is the revision of the scene that `active` names.
         let active = lock(&self.active).name.clone();
-        d.insert(
-            "active".to_string(),
-            active.clone().map_or(Value::Null, Value::from),
-        );
         let stale = lock(&self.sources).as_mut().is_some_and(Snapshot::stale);
-        d.insert(
-            "fps".to_string(),
-            Value::from(lock(&self.frame_rate).value(None)),
-        );
-        d.insert(
-            "stream_fps".to_string(),
-            Value::from(lock(&self.stream_rate).value(None)),
-        );
-        d.insert("out".to_string(), Value::from(self.out()));
-        d.insert("stale".to_string(), Value::from(stale));
-        d.insert(
-            "layer_changes".to_string(),
-            Value::from(self.layer_changes.load(Ordering::SeqCst)),
-        );
         let locked = active
             .as_deref()
             .and_then(|name| self.with_locks(name, |locks| locks.map(Locks::to_json)));
-        d.insert(
-            "locked".to_string(),
-            locked.unwrap_or_else(|| Locks::default().to_json()),
-        );
-        let rev = active.and_then(|name| lock(&self.revs).get(&name).copied());
-        d.insert("rev".to_string(), rev.map_or(Value::Null, Value::from));
-        Value::Object(d)
+        let rev = active
+            .as_ref()
+            .and_then(|name| lock(&self.revs).get(name).copied());
+        self.hub.stats(SceneStats {
+            active,
+            stale,
+            locked: locked.unwrap_or_else(|| Locks::default().to_json()),
+            rev,
+        })
     }
-
-    /// Drop what the scene before published: the rate windows, the last frame's
-    /// cost, the compile error.
-    fn reset_stats(&self) {
-        lock(&self.frame_rate).reset(None);
-        lock(&self.stream_rate).reset(None);
-        let mut stat = lock(&self.stat);
-        stat.frame_ms = 0.0;
-        stat.error = String::new();
-        stat.error_line = None;
-        stat.error_pass = None;
-    }
-
-    /// Republish the running document of scene `name`, built from the
-    /// working copy of `generation`. The render thread calls this after a
-    /// load, an applied scene, or a /set that landed.
-    fn publish(&self, name: Option<&str>, generation: u64, scene: &Scene) {
-        *lock(&self.running) = Some(Published {
-            name: name.map(str::to_string),
-            generation,
-            doc: scene.to_dict(),
-        });
-    }
-
     /// Hold `opened` as the working copy of scene `name`, loaded for the page
     /// `vid`, with the next revision and generation, and return that
     /// generation.
@@ -871,8 +591,8 @@ impl Console {
         // before the render loop starts, the scene_size() of the renderer that
         // make_renderer() builds
         let size = lock(&self.scene_size).unwrap_or(match self.rotate {
-            90 | 270 => (self.h, self.w),
-            _ => (self.w, self.h),
+            90 | 270 => (self.hub.h, self.hub.w),
+            _ => (self.hub.w, self.hub.h),
         });
         let (opened, _) = self
             .store
@@ -911,39 +631,7 @@ impl Console {
     /// count, so a still joins only a frame that carries it.
     fn command(&self, item: Command) {
         self.q.put(item);
-        self.shot.touch();
-    }
-
-    /// Software H264 reads back the same frames as the MJPEG preview, so its
-    /// viewers count as readback consumers. Hardware samples the GPU texture
-    /// instead.
-    fn software_h264(&self) -> bool {
-        self.software_stream().is_some()
-    }
-
-    /// The stream that the software lane owns, while a viewer watches it.
-    fn software_stream(&self) -> Option<u64> {
-        let stream = self.fanout.stream();
-        let dead = *lock(&self.h264_hw_dead) == Some(stream);
-        (dead && self.fanout.nclients() > 0).then_some(stream)
-    }
-
-    /// True when hardware encoding failed for the current stream.
-    fn hardware_dead(&self) -> bool {
-        *lock(&self.h264_hw_dead) == Some(self.fanout.stream())
-    }
-
-    /// The hardware lane failed. Before the stream's first access unit the
-    /// software lane takes the stream, and after it the stream ends.
-    fn hardware_failed(&self, why: &str) {
-        if self.fanout.began() {
-            eprintln!("h264: {why}");
-            self.fanout.fail(why);
-            return;
-        }
-        *lock(&self.h264_hw_why) = why.to_string();
-        *lock(&self.h264_hw_dead) = Some(self.fanout.stream());
-        eprintln!("h264: {why}, using software encoder");
+        self.hub.shot.touch();
     }
 
     /// Shut the server down, and signal the render loop and the encode threads.
@@ -952,14 +640,24 @@ impl Console {
     /// and a signal handler both call it. It ends run()'s own loop, so run()
     /// closes its sinks before it returns.
     pub fn stop(&self) {
-        self.stopping.store(true, Ordering::SeqCst);
+        self.hub.stop();
         self.q.put(Command::Stop); // wake a render loop parked on the command queue
-        self.raw_ready.notify_all();
-        self.latest_ready.notify_all();
-        let httpd = lock(&self.httpd).take();
-        if let Some(server) = httpd {
-            server.unblock();
-        }
+    }
+}
+
+impl Drawer for Console {
+    fn hub(&self) -> &Hub {
+        &self.hub
+    }
+
+    /// Wake a scene that rests on the command queue, so it draws a frame.
+    fn wake(&self) {
+        self.q.put(Command::Preview);
+    }
+
+    /// The still rides the command queue, which forces a draw.
+    fn shot(&self) {
+        self.q.put(Command::Shot);
     }
 }
 
@@ -976,429 +674,6 @@ pub fn draft_loop(console: &Console) {
     while !console.stopping() {
         thread::sleep(Duration::from_millis(250));
         console.write_drafts(false);
-    }
-}
-
-// ---------------------------------------------------------------- preview
-
-/// Encode the preview JPEGs, off the render thread. The render loop drops its
-/// readback here. This downscales only a frame another consumer sized, so the
-/// display never waits. Raw frames also feed the h264 path, but a JPEG needs
-/// an attached viewer.
-pub fn encoder_loop(console: &Console) {
-    let mut last_seq = u64::MAX;
-    while !console.stopping() {
-        let rgb = {
-            let mut raw = lock(&console.raw);
-            if console.nclients() == 0 || raw.seq == last_seq {
-                raw = console
-                    .raw_ready
-                    .wait_timeout(raw, Duration::from_millis(250))
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .0;
-            }
-            let fresh = console.nclients() > 0 && raw.seq != last_seq;
-            let rgb = if fresh { raw.rgb.clone() } else { None };
-            last_seq = raw.seq;
-            rgb
-        };
-        let Some(rgb) = rgb else { continue };
-        let (w, h) = (rgb.width, rgb.height);
-        let mut pixels = to_rgb(&rgb);
-        let scale = f64::from(console.preview_max) / f64::from(w.max(h));
-        let (mut pw, mut ph) = (w, h);
-        if scale < 1.0 {
-            // the frame is sized for the software H264 stream, or for a bigger host
-            pw = 1.max(round_half_even(f64::from(w) * scale) as i32);
-            ph = 1.max(round_half_even(f64::from(h) * scale) as i32);
-            pixels = resize_rgb(&pixels, w, h, pw, ph);
-        }
-        let frame = Frame {
-            data: &pixels,
-            width: pw,
-            height: ph,
-            components: 3,
-        };
-        match encode_jpeg(frame, PREVIEW_QUALITY) {
-            Ok(jpg) => {
-                let mut latest = lock(&console.latest);
-                latest.jpg = Some(Arc::new(jpg));
-                latest.seq += 1;
-                console.latest_ready.notify_all();
-            }
-            Err(e) => eprintln!("preview: {e}"),
-        }
-        lock(&console.stream_rate).tick(None);
-    }
-}
-
-/// The RGB bytes of an RGB(A) readback, which is what a JPEG needs.
-fn to_rgb(frame: &RawFrame) -> Vec<u8> {
-    if frame.components == 3 {
-        return frame.data.clone();
-    }
-    frame
-        .data
-        .chunks(frame.components as usize)
-        .flat_map(|px| px.iter().take(3).copied())
-        .collect()
-}
-
-/// Box-average downscale of an RGB frame.
-fn resize_rgb(rgb: &[u8], w: i32, h: i32, nw: i32, nh: i32) -> Vec<u8> {
-    let (w, h, nw, nh) = (w as usize, h as usize, nw as usize, nh as usize);
-    let mut out = vec![0u8; nw * nh * 3];
-    for y in 0..nh {
-        let y0 = y * h / nh;
-        let y1 = (((y + 1) * h).div_ceil(nh)).max(y0 + 1).min(h);
-        for x in 0..nw {
-            let x0 = x * w / nw;
-            let x1 = (((x + 1) * w).div_ceil(nw)).max(x0 + 1).min(w);
-            let mut sums = [0u32; 3];
-            let mut n = 0u32;
-            for sy in y0..y1 {
-                for sx in x0..x1 {
-                    let i = (sy * w + sx) * 3;
-                    for (c, sum) in sums.iter_mut().enumerate() {
-                        *sum += u32::from(rgb[i + c]);
-                    }
-                    n += 1;
-                }
-            }
-            let o = (y * nw + x) * 3;
-            for c in 0..3 {
-                out[o + c] = (sums[c] / n.max(1)) as u8;
-            }
-        }
-    }
-    out
-}
-
-// ---------------------------------------------------------------- h264
-
-/// One viewer's queue of wire-framed access units.
-pub struct H264Client {
-    state: Mutex<ClientQueue>,
-    ready: Condvar,
-}
-
-#[derive(Default)]
-struct ClientQueue {
-    q: VecDeque<Arc<Vec<u8>>>,
-    started: bool,
-}
-
-impl H264Client {
-    fn new() -> H264Client {
-        H264Client {
-            state: Mutex::new(ClientQueue::default()),
-            ready: Condvar::new(),
-        }
-    }
-
-    /// The fanout wire-frames frame and config once, and every client shares
-    /// them.
-    fn offer(&self, frame: &Arc<Vec<u8>>, config: Option<&Arc<Vec<u8>>>) {
-        let mut state = lock(&self.state);
-        if state.started && state.q.len() >= H264_LAG_FRAMES {
-            state.started = false; // lagging: drop the rest of this GOP
-            state.q.clear();
-        }
-        if !state.started {
-            if let Some(config) = config {
-                state.q.push_back(Arc::clone(config));
-                state.q.push_back(Arc::clone(frame));
-                state.started = true;
-            }
-            self.ready.notify_all();
-            return;
-        }
-        if state.q.len() >= 32 {
-            state.started = false; // backstop: the lag check above fires first
-        } else {
-            state.q.push_back(Arc::clone(frame));
-        }
-        self.ready.notify_all();
-    }
-
-    /// The next blob for this viewer, or None when the wait runs out.
-    pub fn get(&self, timeout: Duration) -> Option<Arc<Vec<u8>>> {
-        let mut state = lock(&self.state);
-        if state.q.is_empty() {
-            state = self
-                .ready
-                .wait_timeout(state, timeout)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
-        }
-        state.q.pop_front()
-    }
-}
-
-/// One shared H264 stream for every /h264 viewer. A new viewer starts at a
-/// keyframe: hardware forces one on join, and software waits for the next GOP.
-///
-/// rate counts the pushes. A host that serves another codec as well passes the
-/// counter it publishes as stream_fps, so one number covers every viewer.
-pub struct H264Fanout {
-    clients: Mutex<Vec<Arc<H264Client>>>,
-    cfg: Mutex<Option<Vec<u8>>>,
-    /// The encoded dimensions. Whoever starts the encoder sets them.
-    size: Mutex<(i32, i32)>,
-    /// The decoder colorSpace hint (HW_COLOR or SW_COLOR). Same owner as size.
-    color: Mutex<Option<ColorSpace>>,
-    want_key: AtomicBool,
-    /// The reason this stream ends. Every viewer ends with it, and the last
-    /// viewer to leave clears it.
-    failure: Mutex<Option<String>>,
-    /// An access unit reached a viewer since the first one joined.
-    began: AtomicBool,
-    /// The number of the current stream. The last viewer to leave ends a
-    /// stream, and the next viewer joins the next number. It changes under
-    /// the clients lock.
-    stream: AtomicU64,
-    rate: Arc<Mutex<FrameRate>>,
-}
-
-impl H264Fanout {
-    pub fn new(rate: Arc<Mutex<FrameRate>>) -> H264Fanout {
-        H264Fanout {
-            clients: Mutex::new(Vec::new()),
-            cfg: Mutex::new(None),
-            size: Mutex::new((0, 0)),
-            color: Mutex::new(None),
-            want_key: AtomicBool::new(false),
-            failure: Mutex::new(None),
-            began: AtomicBool::new(false),
-            stream: AtomicU64::new(0),
-            rate,
-        }
-    }
-
-    /// End this stream for every viewer, with the reason. The first reason
-    /// stands. The next stream tries every lane again.
-    pub fn fail(&self, why: &str) {
-        lock(&self.failure).get_or_insert_with(|| why.to_string());
-        for c in lock(&self.clients).iter() {
-            let _queue = lock(&c.state);
-            c.ready.notify_all();
-        }
-    }
-
-    pub fn failure(&self) -> Option<String> {
-        lock(&self.failure).clone()
-    }
-
-    /// True once an access unit has reached a viewer of this stream. A lane
-    /// that fails after that ends the stream.
-    pub fn began(&self) -> bool {
-        self.began.load(Ordering::SeqCst)
-    }
-
-    pub fn nclients(&self) -> usize {
-        lock(&self.clients).len()
-    }
-
-    /// The number of the current stream.
-    pub fn stream(&self) -> u64 {
-        self.stream.load(Ordering::SeqCst)
-    }
-
-    #[allow(dead_code)]
-    pub fn stream_fps(&self) -> f64 {
-        lock(&self.rate).value(None)
-    }
-
-    pub fn add(&self) -> Arc<H264Client> {
-        let c = Arc::new(H264Client::new());
-        lock(&self.clients).push(Arc::clone(&c));
-        self.want_key.store(true, Ordering::SeqCst);
-        c
-    }
-
-    pub fn remove(&self, c: &Arc<H264Client>) {
-        let mut clients = lock(&self.clients);
-        clients.retain(|x| !Arc::ptr_eq(x, c));
-        if clients.is_empty() {
-            *lock(&self.failure) = None;
-            self.began.store(false, Ordering::SeqCst);
-            self.stream.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    /// The encoder that starts a stream states its size and its colorSpace
-    /// hint. push() puts them in the config a joining viewer decodes with.
-    pub fn opened(&self, w: i32, h: i32, color: ColorSpace) {
-        *lock(&self.size) = (w, h);
-        *lock(&self.color) = Some(color);
-    }
-
-    /// True once per keyframe request. Hardware forces one, and the software
-    /// lane waits for the next GOP.
-    pub fn wants_key(&self) -> bool {
-        self.want_key.swap(false, Ordering::SeqCst)
-    }
-
-    pub fn push(&self, au: &[u8]) {
-        self.push_in(None, au);
-    }
-
-    /// push() from a lane that encodes for one stream. An access unit that
-    /// outlives `stream` reaches no viewer of the next one, and the result is
-    /// false.
-    pub fn push_to(&self, stream: u64, au: &[u8]) -> bool {
-        self.push_in(Some(stream), au)
-    }
-
-    fn push_in(&self, stream: Option<u64>, au: &[u8]) -> bool {
-        let clients = lock(&self.clients);
-        if stream.is_some_and(|s| s != self.stream()) {
-            return false;
-        }
-        let nals = split_annexb(au);
-        let sps = nals.iter().find(|x| x[0] & 0x1F == NAL_SPS);
-        let pps = nals.iter().find(|x| x[0] & 0x1F == NAL_PPS);
-        if let (Some(sps), Some(pps)) = (sps, pps) {
-            let (w, h) = *lock(&self.size);
-            *lock(&self.cfg) = Some(build_config(sps, pps, w, h, *lock(&self.color)));
-        }
-        // Keep the VCL and SEI NALs. The config carries the parameter sets.
-        let keep: Vec<&[u8]> = nals
-            .iter()
-            .filter(|x| matches!(x[0] & 0x1F, NAL_SLICE | NAL_IDR | NAL_SEI))
-            .copied()
-            .collect();
-        let chunk = avcc(&keep);
-        if chunk.is_empty() {
-            return true;
-        }
-        let is_key = nals.iter().any(|x| x[0] & 0x1F == NAL_IDR);
-        let frame = Arc::new(wire_frame(u8::from(!is_key) + 1, &chunk));
-        let config = match (is_key, lock(&self.cfg).as_ref()) {
-            (true, Some(cfg)) => Some(Arc::new(wire_frame(0, cfg))),
-            _ => None,
-        };
-        for c in clients.iter() {
-            c.offer(&frame, config.as_ref());
-        }
-        if !clients.is_empty() {
-            self.began.store(true, Ordering::SeqCst);
-            lock(&self.rate).tick(None);
-        }
-        // A waiting client rejoins at the next keyframe. Keep asking for one
-        // until every client streams.
-        if clients.iter().any(|c| !lock(&c.state).started) {
-            self.want_key.store(true, Ordering::SeqCst);
-        }
-        true
-    }
-}
-
-/// The stream dimensions: fit the longest side and keep the aspect. yuv420 needs
-/// even dimensions.
-pub fn stream_size(w: i32, h: i32, longest: i32) -> (i32, i32) {
-    let s = if longest > 0 {
-        (f64::from(longest) / f64::from(w.max(h))).min(1.0)
-    } else {
-        1.0
-    };
-    let even = |v: i32| 2.max((round_half_even(f64::from(v) * s / 2.0) as i32) * 2);
-    (even(w), even(h))
-}
-
-pub fn stream_bitrate(w: i32, h: i32, fps: i32, floor: i64) -> i64 {
-    let derived = f64::from(w) * f64::from(h) * f64::from(fps.max(1)) * H264_BPP;
-    floor.max((derived as i64).min(H264_BITRATE_CEILING))
-}
-
-/// Software H264, for a board with no /dev/video11. It encodes the same readback
-/// frames as the MJPEG preview, off the render thread.
-pub fn h264_sw_loop(console: &Console) {
-    let mut enc: Option<SoftwareH264> = None;
-    let mut size = (0, 0);
-    // the stream that the encoder encodes for
-    let mut owned = 0;
-    let mut last_seq = u64::MAX;
-    while !console.stopping() {
-        let stream = console
-            .software_stream()
-            .filter(|_| console.fanout.failure().is_none());
-        let Some(stream) = stream else {
-            if let Some(mut e) = enc.take() {
-                let _ = e.close(Duration::from_secs(1));
-            }
-            let raw = lock(&console.raw);
-            let _ = console
-                .raw_ready
-                .wait_timeout(raw, Duration::from_millis(250));
-            continue;
-        };
-        let rgb = {
-            let mut raw = lock(&console.raw);
-            if raw.seq == last_seq {
-                raw = console
-                    .raw_ready
-                    .wait_timeout(raw, Duration::from_millis(250))
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .0;
-            }
-            let rgb = if raw.seq == last_seq {
-                None
-            } else {
-                raw.rgb.clone()
-            };
-            last_seq = raw.seq;
-            rgb
-        };
-        let Some(rgb) = rgb else { continue };
-        let (w, h) = (rgb.width, rgb.height);
-        if enc.is_some() && (size != (w, h) || owned != stream) {
-            if let Some(mut e) = enc.take() {
-                let _ = e.close(Duration::from_secs(1));
-            }
-        }
-        if enc.is_none() {
-            match SoftwareH264::new(
-                w,
-                h,
-                H264_FPS,
-                stream_bitrate(w, h, H264_FPS, console.bitrate) as i32,
-                rgb.components,
-            ) {
-                Ok(e) => {
-                    enc = Some(e);
-                    size = (w, h);
-                    owned = stream;
-                    console.fanout.opened(w, h, SW_COLOR);
-                }
-                Err(e) => {
-                    let why = no_encoder(&lock(&console.h264_hw_why), &e.to_string());
-                    eprintln!("h264: {why}");
-                    console.fanout.fail(&why);
-                    continue;
-                }
-            }
-        }
-        let e = enc.as_mut().expect("the encoder was just created");
-        if let Err(err) = e.feed(&rgb.data) {
-            let why = format!("software encoder died: {err}");
-            eprintln!("h264: {why}");
-            console.fanout.fail(&why);
-            if let Some(mut e) = enc.take() {
-                let _ = e.close(Duration::from_secs(1));
-            }
-            continue;
-        }
-        if let (Some(au), _) = e.get_au(Duration::from_secs(1)) {
-            if !console.fanout.push_to(owned, &au) {
-                if let Some(mut e) = enc.take() {
-                    let _ = e.close(Duration::from_secs(1));
-                }
-            }
-        }
-    }
-    if let Some(mut e) = enc.take() {
-        let _ = e.close(Duration::from_secs(1));
     }
 }
 
@@ -1426,110 +701,6 @@ pub fn skip_interval(
     Some(render_period)
 }
 
-/// One whole frame for a client that asks for a picture (GET /frame.png).
-///
-/// A request is a generation. request() hands one out, and the handler queues a
-/// token. The loop arms the shot where that token lands, and the next frame
-/// answers every generation asked for so far. A /set that returned before the
-/// request drains before the arm, so that frame carries it. A request made after
-/// the arm waits for the following draw.
-///
-/// A request made while another one waits joins it, so overlapping requests cost
-/// one frame. A command queued since the arm ends that sharing. The frame in
-/// flight is one command behind what the caller already saw land, so the request
-/// asks anew.
-pub struct Shot {
-    state: Mutex<ShotState>,
-    published: Condvar,
-    stopping: Arc<AtomicBool>,
-}
-
-#[derive(Default)]
-struct ShotState {
-    /// The generations handed out.
-    asked: u64,
-    /// The generations the next frame answers.
-    armed: u64,
-    /// The generations the published frame answers.
-    done: u64,
-    /// The requests that wait for an answer now.
-    holders: i64,
-    /// A command arrived after the arm.
-    moved: bool,
-    frame: Option<Arc<RawFrame>>,
-}
-
-impl Shot {
-    pub fn new(stopping: Arc<AtomicBool>) -> Arc<Shot> {
-        Arc::new(Shot {
-            state: Mutex::new(ShotState::default()),
-            published: Condvar::new(),
-            stopping,
-        })
-    }
-
-    pub fn request(&self) -> u64 {
-        let mut s = lock(&self.state);
-        if s.holders > 0 && !s.moved {
-            return s.asked;
-        }
-        s.asked += 1;
-        s.asked
-    }
-
-    /// Count a request until it has its answer. A request made meanwhile shares
-    /// its frame.
-    pub fn hold(&self) {
-        lock(&self.state).holders += 1;
-    }
-
-    pub fn release(&self) {
-        lock(&self.state).holders -= 1;
-    }
-
-    /// A command is on the queue, so the frame in flight predates it.
-    pub fn touch(&self) {
-        lock(&self.state).moved = true;
-    }
-
-    fn arm(&self) {
-        let mut s = lock(&self.state);
-        s.armed = s.asked;
-        s.moved = false;
-    }
-
-    /// The frame that answers this generation, or None when none arrives in
-    /// time. A shutdown wakes the wait, because nothing more publishes.
-    pub fn wait(&self, gen: u64, timeout: f64) -> Option<Arc<RawFrame>> {
-        let end = monotonic() + timeout;
-        let mut s = lock(&self.state);
-        while s.done < gen {
-            let left = end - monotonic();
-            if left <= 0.0 || self.stopping.load(Ordering::SeqCst) {
-                return None;
-            }
-            s = self
-                .published
-                .wait_timeout(s, Duration::from_secs_f64(left.min(0.25)))
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
-        }
-        s.frame.clone()
-    }
-
-    pub fn wants(&self) -> bool {
-        let s = lock(&self.state);
-        s.armed > s.done
-    }
-
-    fn write(&self, frame: Arc<RawFrame>) {
-        let mut s = lock(&self.state);
-        s.frame = Some(frame);
-        s.done = s.armed;
-        self.published.notify_all();
-    }
-}
-
 /// The shot as an output sink.
 struct FrameShot {
     shot: Arc<Shot>,
@@ -1537,7 +708,7 @@ struct FrameShot {
 
 impl Output for FrameShot {
     fn dest(&self) -> &str {
-        "" // a still is not a destination, see Console::out
+        "" // a still is not a destination, see Hub::out
     }
 
     fn persists(&self) -> bool {
@@ -1559,29 +730,18 @@ impl Output for FrameShot {
 }
 
 /// The console as an output sink. The browser preview and the software H264
-/// encoder share one throttled, downscaled readback, and the hardware H264 mirror
+/// encoder share one throttled, downscaled readback, and the hardware H264 lane
 /// runs here too. This reads the console's viewer counts every frame, so what it
 /// asks the loop for follows the viewers.
 struct ConsoleSink {
     console: Arc<Console>,
     renderer: Rc<RefCell<Renderer>>,
-    /// The hardware encoder. The render thread owns it, because it issues GL
-    /// calls.
-    enc: Option<HardwareH264>,
-    /// Encodes since the last access unit. An encoder can open at a size it
-    /// never emits for, with no error to catch.
-    starved: u32,
-    /// When the preview last refreshed.
-    last: Cell<f64>,
-    now: Cell<f64>,
+    lane: HwLane,
 }
-
-/// Encodes with no output before the hardware lane is declared dead.
-const HW_STARVE_LIMIT: u32 = 90;
 
 impl Output for ConsoleSink {
     fn dest(&self) -> &str {
-        "" // the console's destinations are its viewers, see Console::out
+        "" // the console's destinations are its viewers, see Hub::out
     }
 
     fn persists(&self) -> bool {
@@ -1589,119 +749,25 @@ impl Output for ConsoleSink {
     }
 
     fn wants(&self, _frame: u64) -> bool {
-        // Refresh the browser preview at preview_fps at most, and only while a
-        // viewer watches. The display still renders every frame.
-        // The software encoder has its own cadence (H264_FPS). The fastest
-        // active consumer wins.
-        if self.console.shot.wants() {
-            // The still reads this frame back whole. Taking it here resizes the
-            // software encoder to the render size and back again.
-            return false;
-        }
-        let mut rates: Vec<f64> = Vec::new();
-        if self.console.nclients() > 0 {
-            rates.push(self.console.preview_fps); // <= 0 means every frame
-        }
-        if self.console.software_h264() {
-            rates.push(f64::from(H264_FPS));
-        }
-        self.now.set(monotonic());
-        let fastest = rates.iter().copied().fold(f64::MIN, f64::max);
-        !rates.is_empty()
-            && (rates.iter().any(|r| *r <= 0.0)
-                || (self.now.get() - self.last.get()) >= 1.0 / fastest)
+        self.console.hub.wants_preview()
     }
 
     fn readback(&self) -> Option<(i32, i32)> {
-        // One readback feeds both consumers, so whoever is attached sizes it.
-        // The MJPEG preview downscales a bigger frame. The software encoder
-        // cannot recover a smaller one.
-        let (w, h) = (self.console.w, self.console.h);
-        let scale = (f64::from(self.console.preview_max) / f64::from(w.max(h))).min(1.0);
-        let pw = 1.max(round_half_even(f64::from(w) * scale) as i32);
-        let ph = 1.max(round_half_even(f64::from(h) * scale) as i32);
-        if self.console.software_h264() {
-            let (sw, sh) = stream_size(w, h, self.console.stream_max);
-            return Some((pw.max(sw), ph.max(sh)));
-        }
-        Some((pw, ph))
+        Some(self.console.hub.preview_size())
     }
 
     fn write(&mut self, frame: Frame<'_>) -> Result<()> {
-        self.last.set(self.now.get());
-        let mut raw = lock(&self.console.raw);
-        raw.rgb = Some(Arc::new(RawFrame::of(frame)));
-        raw.seq += 1;
-        self.console.raw_ready.notify_all();
+        self.console.hub.publish_frame(frame);
         Ok(())
     }
 
-    /// The hardware H264 mirror: encode the frame just drawn, with no readback.
-    /// The engine's keep_last holds the final pass in its FBO while the encoder
-    /// exists. encode_last always has a texture to sample.
     fn mirror(&mut self, _renderer: &dyn RenderTarget) -> Result<()> {
-        let console = Arc::clone(&self.console);
-        if console.fanout.nclients() == 0 {
-            if let Some(mut enc) = self.enc.take() {
-                enc.close(); // direct scanout returns while nobody watches
-            }
-            return Ok(());
-        }
-        if console.fanout.failure().is_some() {
-            if let Some(mut enc) = self.enc.take() {
-                enc.close();
-            }
-            return Ok(());
-        }
-        if self.enc.is_none() && !console.hardware_dead() {
-            let (w, h) = stream_size(console.w, console.h, console.stream_max);
-            // The stream encodes at its own rate, not the display's. A panel
-            // that asks for 63Hz asks the encoder for a rate it refuses at
-            // this size, and the input port then fails to enable: the whole
-            // stream drops to software for a rate that no viewer needed.
-            let hz = console.stream_hz.max(1);
-            let bitrate = stream_bitrate(w, h, hz, console.bitrate) as i32;
-            match HardwareH264::new(&self.renderer.borrow(), w, h, hz, bitrate) {
-                Ok(enc) => {
-                    console.fanout.opened(enc.w, enc.h, HW_COLOR);
-                    self.enc = Some(enc);
-                    self.starved = 0;
-                }
-                Err(e) => console.hardware_failed(&e.to_string()),
-            }
-        }
-        let Some(enc) = self.enc.as_mut() else {
-            return Ok(());
-        };
-        if console.fanout.wants_key() {
-            enc.force_keyframe();
-        }
-        let failed = match enc.encode_last() {
-            Ok((Some(au), _)) => {
-                self.starved = 0;
-                console.fanout.push(au);
-                None
-            }
-            Ok((None, _)) => {
-                self.starved += 1;
-                (self.starved >= HW_STARVE_LIMIT)
-                    .then(|| format!("hardware encoder gave no output in {HW_STARVE_LIMIT} frames"))
-            }
-            Err(e) => Some(e.to_string()),
-        };
-        if let Some(why) = failed {
-            if let Some(mut enc) = self.enc.take() {
-                enc.close();
-            }
-            console.hardware_failed(&why);
-        }
+        self.lane.mirror(&self.console.hub, &self.renderer.borrow());
         Ok(())
     }
 
     fn close(&mut self) -> Result<()> {
-        if let Some(mut enc) = self.enc.take() {
-            enc.close();
-        }
+        self.lane.close();
         Ok(())
     }
 }
@@ -1830,7 +896,7 @@ fn make_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
 fn open_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
     if console.display {
         if let Some(card) = card {
-            return Renderer::on_card(card, console.w, console.h, console.rgb565);
+            return Renderer::on_card(card, console.hub.w, console.hub.h, console.rgb565);
         }
         let dev = console
             .dri
@@ -1838,8 +904,8 @@ fn open_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
             .or_else(|| std::env::var("GHEE_DRI").ok().filter(|d| !d.is_empty()))
             .unwrap_or_else(|| "/dev/dri/card0".to_string());
         return Renderer::new(
-            console.w,
-            console.h,
+            console.hub.w,
+            console.hub.h,
             console.components,
             Some(&dev),
             true,
@@ -1853,8 +919,8 @@ fn open_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
     let mut errs: Vec<String> = Vec::new();
     for dev in devices {
         match Renderer::new(
-            console.w,
-            console.h,
+            console.hub.w,
+            console.hub.h,
             console.components,
             Some(&dev),
             false,
@@ -1919,20 +985,22 @@ fn set_scene(
     }
     if !err.is_empty() {
         {
-            let mut stat = lock(&console.stat);
-            stat.error = err.clone();
-            stat.error_line = renderer.borrow().error_line;
-            stat.error_pass = renderer.borrow().error_pass;
+            let r = renderer.borrow();
+            console.hub.set_error(&err, r.error_line, r.error_pass);
         }
         if let Some(last) = last {
             let _ = renderer.borrow_mut().rebuild(&last);
         }
-        console.publish(name.as_deref(), generation, &scene);
+        console
+            .hub
+            .publish_scene(name.as_deref(), generation, scene.to_dict());
         trim_heap();
         return err;
     }
-    console.reset_stats();
-    console.publish(name.as_deref(), generation, &scene);
+    console.hub.reset();
+    console
+        .hub
+        .publish_scene(name.as_deref(), generation, scene.to_dict());
     let mut held = st.borrow_mut();
     held.name = name;
     held.generation = generation;
@@ -1988,7 +1056,7 @@ fn load(
         }
         Err(e) => {
             let why = format!("load {name}: {e}");
-            lock(&console.stat).error = why.clone();
+            console.hub.set_error(&why, None, None);
             Some(why)
         }
     };
@@ -2010,7 +1078,7 @@ fn clear(
     *ctrl.borrow_mut() = None;
     *lock(&console.locks) = None;
     *lock(&console.sources) = None;
-    *lock(&console.running) = None;
+    console.hub.clear_scene();
     *st.borrow_mut() = Running::default();
     let black = serde_json::json!({"version": 1, "passes": [{"name": "main",
         "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"}]});
@@ -2019,7 +1087,7 @@ fn clear(
         Ok(err) => eprintln!("ghee console: no scene: {err}"),
         Err(e) => eprintln!("ghee console: no scene: {e}"),
     }
-    console.reset_stats();
+    console.hub.reset();
 }
 
 /// Apply every queued command, and report whether one landed. A queued command
@@ -2060,7 +1128,7 @@ fn drain(
                 }
             }
             // in queue order, so the armed frame carries a /set ahead of it
-            Command::Shot => console.shot.arm(),
+            Command::Shot => console.hub.shot.arm(),
             Command::SceneObj(scene, generation, fresh) => {
                 let mut scene = *scene;
                 // A procedural scene's code owns which layers exist, so an
@@ -2084,7 +1152,7 @@ fn drain(
                 }
                 if built && kept {
                     st.borrow_mut().changed = true;
-                    publish_changes(console, renderer, st, ctrl);
+                    publish(console, renderer, st, ctrl, false);
                 }
             }
             Command::Clear => clear(console, renderer, st, ctrl),
@@ -2092,7 +1160,7 @@ fn drain(
         }
     }
     if edited {
-        publish(console, renderer, st);
+        publish(console, renderer, st, ctrl, true);
     }
     force
 }
@@ -2122,34 +1190,32 @@ fn keep_layers(posted: &mut Scene, running: &Scene) -> bool {
     kept
 }
 
-/// Publish the running document: the renderer's scene.
-fn publish(console: &Console, renderer: &RefCell<Renderer>, st: &RefCell<Running>) {
-    let held = st.borrow();
-    renderer
-        .borrow()
-        .with_scene(|scene| console.publish(held.name.as_deref(), held.generation, scene));
-}
-
 /// The live state of the scene that the controller in `ctrl` runs.
 fn live_of(ctrl: &ControllerSlot) -> Option<RefMut<'_, Live>> {
     RefMut::filter_map(ctrl.borrow_mut(), |c| c.as_mut().and_then(|c| c.live())).ok()
 }
 
-/// Publish the running document when the scene's own code changed it, or an
-/// apply kept layers that the code added, and count the change for /stats.
-fn publish_changes(
+/// Publish the running document, the renderer's scene: whole with `whole`,
+/// else what the scene's own code changed in it. A change by that code, or
+/// an apply that kept layers that the code added, counts for /stats.
+fn publish(
     console: &Console,
     renderer: &RefCell<Renderer>,
     st: &RefCell<Running>,
     ctrl: &ControllerSlot,
+    whole: bool,
 ) {
     let kept = std::mem::take(&mut st.borrow_mut().changed);
-    let changed = live_of(ctrl).is_some_and(|mut live| !live.take_changes().is_empty());
-    if !(kept || changed) {
-        return;
-    }
-    publish(console, renderer, st);
-    console.layer_changes.fetch_add(1, Ordering::SeqCst);
+    let held = st.borrow();
+    let mut live = live_of(ctrl);
+    console.hub.publish_live(
+        &renderer.borrow(),
+        live.as_deref_mut(),
+        whole || kept,
+        kept,
+        held.name.as_deref(),
+        held.generation,
+    );
 }
 
 /// True when the scene's own code changed the running document since the
@@ -2252,7 +1318,7 @@ fn publish_text_errors(console: &Console, renderer: &Renderer, seen: &Cell<u64>)
     let seq = renderer.text_errors_seq();
     if seq != seen.get() {
         seen.set(seq);
-        lock(&console.stat).texts = renderer.text_errors();
+        console.hub.set_text_errors(renderer.text_errors());
     }
 }
 
@@ -2276,7 +1342,7 @@ pub fn render_loop(
         0
     };
     *lock(&console.scene_size) = Some(renderer.borrow().scene_size());
-    lock(&console.stat).gpu = gpu_caps(&renderer.borrow());
+    console.hub.set_gpu(gpu_caps(&renderer.borrow()));
     let st = Rc::new(RefCell::new(Running::default()));
     // what feeds the running scene, when the scene brings something
     let ctrl: ControllerSlot = RefCell::new(None);
@@ -2287,18 +1353,14 @@ pub fn render_loop(
     let mut console_sink = ConsoleSink {
         console: Arc::clone(console),
         renderer: Rc::clone(&renderer),
-        enc: None,
-        starved: 0,
-        last: Cell::new(0.0),
-        now: Cell::new(0.0),
+        lane: HwLane::default(),
     };
     let mut shot_sink = FrameShot {
-        shot: Arc::clone(&console.shot),
+        shot: Arc::clone(&console.hub.shot),
     };
     let mut reported = String::new();
     let times: RefCell<Vec<f64>> = RefCell::new(Vec::new());
     let text_errors = Cell::new(renderer.borrow().text_errors_seq());
-    let published = Cell::new(f64::NEG_INFINITY);
     let timed = on_stats.is_some();
     // A display or a sink of the caller's takes every frame. Without one, the
     // frames reach the viewers alone.
@@ -2315,7 +1377,6 @@ pub fn render_loop(
         let mut render = Loop::new(&mut shared, refs);
         render.frames = console.frames;
         render.timestep = console.timestep;
-        render.rate = Some(Arc::clone(&console.frame_rate));
         render.pacer = pacer;
         // the loop rests so the handler and encoder threads run
         render.rest = 0.003;
@@ -2324,10 +1385,12 @@ pub fn render_loop(
         render.controller = Some(&ctrl);
         render.poll = Some(Box::new(|| drain(console, &renderer, &st, &ctrl)));
         render.idle_hook = Some(Box::new(|period| {
+            let hub = &console.hub;
+            hub.skipped();
             let interval = skip_interval(
                 hz,
-                console.nclients() + console.fanout.nclients() as i64,
-                console.preview_fps,
+                hub.nclients() + hub.fanout.nclients() as i64,
+                hub.preview_fps,
                 period.unwrap_or(0.0),
             );
             match interval {
@@ -2339,15 +1402,13 @@ pub fn render_loop(
             }
         }));
         render.watched = Some(Box::new(move || {
-            drives || console.nclients() > 0 || console.fanout.nclients() > 0
+            drives || console.hub.nclients() > 0 || console.hub.fanout.nclients() > 0
         }));
         render.stopping = Some(Box::new(|| console.stopping()));
         render.on_frame = Some(Box::new(|_loop, cost| {
-            lock(&console.stat).frame_ms = cost * 1000.0;
-            let now = monotonic();
-            if now - published.get() >= LAYERS_PUBLISH_EVERY && changed(&st, &ctrl) {
-                publish_changes(console, &renderer, &st, &ctrl);
-                published.set(now);
+            console.hub.frame_done(cost);
+            if changed(&st, &ctrl) {
+                publish(console, &renderer, &st, &ctrl, false);
             }
             publish_text_errors(console, &renderer.borrow(), &text_errors);
             if timed {
@@ -2359,8 +1420,8 @@ pub fn render_loop(
             // keep rendering the last scene that worked. /stats reaches a
             // browser, so it repeats the stderr already on the terminal.
             let msg = format!("render: {e}");
-            lock(&console.stat).error =
-                format!("render: {}", crate::procedural::process::with_stderr(e));
+            let why = format!("render: {}", crate::procedural::process::with_stderr(e));
+            console.hub.set_error(&why, None, None);
             if msg != reported {
                 eprintln!("ghee console: {msg}");
                 reported = msg;
@@ -2536,11 +1597,11 @@ impl ConsoleHost for RenderLoopHost {
     }
 
     fn scene_doc(&self, name: Option<&str>, defaults: bool) -> ConsoleResult<(Value, Option<u64>)> {
-        let running = &self.console.running;
+        let hub = &self.console.hub;
         self.console.with_copy(name, |name, copy| {
             let doc = match defaults {
                 true => copy.defaults_doc.clone(),
-                false => copy.live_doc(name, &lock(running)),
+                false => copy.live_doc(name, hub),
             };
             (doc, Some(copy.rev))
         })
@@ -2613,9 +1674,9 @@ impl ConsoleHost for RenderLoopHost {
     /// The /set lands on the active scene, so it checks against the document
     /// that a page reads of it.
     fn live_doc(&self) -> ConsoleResult<Value> {
-        let running = &self.console.running;
+        let hub = &self.console.hub;
         self.console
-            .with_active(|name, copy| Ok(copy.live_doc(name, &lock(running))))
+            .with_active(|name, copy| Ok(copy.live_doc(name, hub)))
     }
 
     fn switch(&self, name: Option<&str>) -> ConsoleResult<String> {
@@ -2671,7 +1732,7 @@ impl ConsoleHost for RenderLoopHost {
     }
 
     fn apply_scene(&self, mut scene: Scene) -> ConsoleResult<()> {
-        let running = &self.console.running;
+        let hub = &self.console.hub;
         self.console.with_active(|name, copy| {
             // A posted scene names its asset files only. They resolve where
             // the scene's own files do, where GET /scene took them from.
@@ -2685,8 +1746,7 @@ impl ConsoleHost for RenderLoopHost {
             if copy.opened.procedural {
                 // The program's own drawings and sets stay its own: the
                 // working copy takes what the page changed in what runs.
-                let mut changed =
-                    state::diff(&copy.live_doc(name, &lock(running)), &scene.to_dict(), true);
+                let mut changed = state::diff(&copy.live_doc(name, hub), &scene.to_dict(), true);
                 self.console.with_locks(name, |locks| {
                     if let Some(locks) = locks {
                         leave_out(&mut changed.values, locks);
@@ -2727,7 +1787,7 @@ impl ConsoleHost for RenderLoopHost {
                 copy.opened.defaults = copy.opened.working.clone();
                 copy.defaults_doc = copy.opened.defaults.to_dict();
                 copy.opened.saved = None;
-                let size = lock(&console.scene_size).unwrap_or((console.w, console.h));
+                let size = lock(&console.scene_size).unwrap_or((console.hub.w, console.hub.h));
                 let (_, read) = collect(|| console.store.resolve(name, size));
                 *lock(&console.sources) = Some(console.snapshot(read));
                 return Ok(());
@@ -2851,342 +1911,6 @@ impl ConsoleHost for RenderLoopHost {
             Ok(())
         })
     }
-}
-
-// ---------------------------------------------------------------- heartbeat
-
-/// One stream connection, and when its client last reported in. A connection
-/// with no vid never expires, because nothing pings for it. That keeps
-/// `curl /h264` and a page older than the heartbeat streaming.
-pub struct Viewer {
-    vid: String,
-    last: Mutex<f64>,
-}
-
-/// The stream viewers that must report in.
-///
-/// This holds each connection, not one entry per vid. A page that reopens its
-/// stream leaves nothing behind that outlives the connection it belonged to.
-pub struct Heartbeat {
-    pub deadline: f64,
-    by_vid: Mutex<Vec<(String, Vec<Arc<Viewer>>)>>,
-}
-
-impl Heartbeat {
-    pub fn new(deadline: f64) -> Heartbeat {
-        Heartbeat {
-            deadline,
-            by_vid: Mutex::new(Vec::new()),
-        }
-    }
-
-    pub fn join(&self, vid: Option<&str>) -> Arc<Viewer> {
-        let v = Arc::new(Viewer {
-            vid: vid.unwrap_or_default().to_string(),
-            last: Mutex::new(monotonic()),
-        });
-        if !v.vid.is_empty() {
-            let mut groups = lock(&self.by_vid);
-            match groups.iter_mut().find(|(id, _)| *id == v.vid) {
-                Some((_, group)) => group.push(Arc::clone(&v)),
-                None => groups.push((v.vid.clone(), vec![Arc::clone(&v)])),
-            }
-        }
-        v
-    }
-
-    pub fn leave(&self, v: &Arc<Viewer>) {
-        if v.vid.is_empty() {
-            return;
-        }
-        let mut groups = lock(&self.by_vid);
-        let Some(i) = groups.iter().position(|(id, _)| *id == v.vid) else {
-            return;
-        };
-        groups[i].1.retain(|x| !Arc::ptr_eq(x, v));
-        if groups[i].1.is_empty() {
-            groups.remove(i);
-        }
-    }
-
-    /// Mark every connection under this vid alive. Returns how many. A page that
-    /// pings before its stream opens gets zero.
-    pub fn ping(&self, vid: Option<&str>) -> usize {
-        let now = monotonic();
-        let vid = vid.unwrap_or_default();
-        let group: Vec<Arc<Viewer>> = lock(&self.by_vid)
-            .iter()
-            .find(|(id, _)| id == vid)
-            .map(|(_, g)| g.clone())
-            .unwrap_or_default();
-        for v in &group {
-            *lock(&v.last) = now;
-        }
-        group.len()
-    }
-
-    pub fn gone(&self, v: &Viewer) -> bool {
-        !v.vid.is_empty() && (monotonic() - *lock(&v.last)) > self.deadline
-    }
-
-    #[allow(dead_code)]
-    fn is_empty(&self) -> bool {
-        lock(&self.by_vid).is_empty()
-    }
-}
-
-// ---------------------------------------------------------------- transport
-
-/// The first line only. A status body stays one line.
-fn line(msg: &str) -> &str {
-    msg.split('\n').next().unwrap_or("")
-}
-
-fn headers_of(request: &Request) -> Headers {
-    let mut headers = Headers::new();
-    for h in request.headers() {
-        headers.insert(h.field.as_str().as_str(), h.value.as_str());
-    }
-    headers
-}
-
-fn send(request: Request, resp: &Response) {
-    let mut out =
-        tiny_http::Response::from_data(resp.body.clone()).with_status_code(StatusCode(resp.status));
-    if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], resp.content_type.as_bytes()) {
-        out = out.with_header(h);
-    }
-    for (name, value) in &resp.headers {
-        if let Ok(h) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {
-            out = out.with_header(h);
-        }
-    }
-    let _ = request.respond(out);
-}
-
-/// The status line and headers a stream writes onto the socket itself. The
-/// stream frames the parts that follow.
-pub fn stream_head(w: &mut dyn Write, ctype: &str, extra: &[&str]) -> std::io::Result<()> {
-    let mut head = format!("HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\n");
-    for line in extra {
-        head.push_str(line);
-        head.push_str("\r\n");
-    }
-    head.push_str("\r\n");
-    w.write_all(head.as_bytes())?;
-    w.flush()
-}
-
-/// The blocking transport. It serves the streams itself, and it hands the rest
-/// to the API.
-fn handle(console: &Arc<Console>, api: &ConsoleAPI<RenderLoopHost>, mut request: Request) {
-    let method = request.method().as_str().to_string();
-    let url = request.url().to_string();
-    let (path, qs) = url.split_once('?').unwrap_or((url.as_str(), ""));
-    let headers = headers_of(&request);
-    if let Some(resp) = api.precheck(&method, path, &headers) {
-        return send(request, &resp);
-    }
-    let query = match parse_query(qs) {
-        Ok(q) => q,
-        Err(e) => return send(request, &Response::text(e.status, &e.message)),
-    };
-    if method == "GET" {
-        match path {
-            "/stream" => return stream(console, request, &query),
-            "/h264" => return h264(console, request, &query),
-            "/frame.png" => return frame_png(console, request),
-            _ => {}
-        }
-        let resp = api.dispatch("GET", path, &query, &headers, b"");
-        return send(request, &resp);
-    }
-    if method == "POST" && path == "/upload" {
-        let resp = api.upload(&query, request.as_reader());
-        return send(request, &resp);
-    }
-    let mut body: Vec<u8> = Vec::new();
-    if method == "POST" {
-        body = match api.read_body(request.as_reader()) {
-            Ok(body) => body,
-            Err(refused) => return send(request, &refused),
-        };
-        if path == "/ping" {
-            console.viewers.ping(query.get("vid").map(String::as_str));
-            return send(request, &Response::text(200, "ok"));
-        }
-    }
-    let resp = api.dispatch(&method, path, &query, &headers, &body);
-    send(request, &resp);
-}
-
-fn stream(console: &Arc<Console>, request: Request, query: &Query) {
-    let mut w = request.into_writer();
-    if stream_head(
-        &mut w,
-        "multipart/x-mixed-replace; boundary=frame",
-        &["Cache-Control: no-cache"],
-    )
-    .is_err()
-    {
-        return;
-    }
-    let viewer = console.viewers.join(query.get("vid").map(String::as_str));
-    console.count_clients(1);
-    console.q.put(Command::Preview); // wake an idle scene so it draws a frame
-    let mut last_seq = u64::MAX;
-    while !console.stopping() {
-        if console.viewers.gone(&viewer) {
-            break;
-        }
-        let (jpg, seq) = {
-            let mut latest = lock(&console.latest);
-            if latest.seq == last_seq {
-                latest = console
-                    .latest_ready
-                    .wait_timeout(latest, Duration::from_secs(1))
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .0;
-            }
-            (latest.jpg.clone(), latest.seq)
-        };
-        let Some(jpg) = jpg.filter(|_| seq != last_seq) else {
-            continue;
-        };
-        last_seq = seq;
-        let part = format!(
-            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-            jpg.len()
-        );
-        if w.write_all(part.as_bytes()).is_err()
-            || w.write_all(&jpg).is_err()
-            || w.write_all(b"\r\n").is_err()
-            || w.flush().is_err()
-        {
-            break;
-        }
-    }
-    console.count_clients(-1);
-    console.viewers.leave(&viewer);
-}
-
-/// One chunk of a chunked response.
-fn write_chunk(w: &mut dyn Write, blob: &[u8]) -> std::io::Result<()> {
-    w.write_all(format!("{:X}\r\n", blob.len()).as_bytes())?;
-    w.write_all(blob)?;
-    w.write_all(b"\r\n")?;
-    w.flush()
-}
-
-/// Serve one /h264 viewer from the fanout while `alive` holds. The status line
-/// waits for the viewer's first blob, so a stream that cannot start answers
-/// 503 with the reason. A stream that fails later ends on a WIRE_ERROR frame.
-pub fn serve_h264(request: Request, fanout: &H264Fanout, c: &H264Client, alive: &dyn Fn() -> bool) {
-    let first = loop {
-        if let Some(why) = fanout.failure() {
-            return send(request, &Response::text(503, &why));
-        }
-        if !alive() {
-            return send(
-                request,
-                &Response::text(503, "the stream closed before its first frame"),
-            );
-        }
-        if let Some(blob) = c.get(Duration::from_secs(1)) {
-            break blob;
-        }
-    };
-    let mut w = request.into_writer();
-    if stream_head(
-        &mut w,
-        "application/octet-stream",
-        &["Cache-Control: no-store", "Transfer-Encoding: chunked"],
-    )
-    .is_err()
-    {
-        return;
-    }
-    let mut next = Some(first);
-    loop {
-        let blob = match next.take() {
-            Some(blob) => blob,
-            None => {
-                if let Some(why) = fanout.failure() {
-                    let _ = write_chunk(&mut w, &wire_frame(WIRE_ERROR, why.as_bytes()));
-                    break;
-                }
-                if !alive() {
-                    break;
-                }
-                match c.get(Duration::from_secs(1)) {
-                    Some(blob) => blob,
-                    None => continue,
-                }
-            }
-        };
-        if write_chunk(&mut w, &blob).is_err() {
-            break;
-        }
-    }
-    // The terminal chunk ends the response. Without it, keep-alive parks the
-    // socket and a viewer waits forever on an abandoned stream. A clean end is
-    // what sends the client to its MJPEG fallback.
-    let _ = w.write_all(b"0\r\n\r\n");
-    let _ = w.flush();
-}
-
-fn h264(console: &Arc<Console>, request: Request, query: &Query) {
-    let c = console.fanout.add();
-    let viewer = console.viewers.join(query.get("vid").map(String::as_str));
-    console.q.put(Command::Preview); // wake an idle scene so the stream starts
-    let alive = || !console.stopping() && !console.viewers.gone(&viewer);
-    serve_h264(request, &console.fanout, &c, &alive);
-    console.fanout.remove(&c);
-    console.viewers.leave(&viewer);
-    // The encoder tears down on the next drawn frame, and a clean scene skips
-    // that frame. An open encoder holds keep_last, which costs the display its
-    // direct scanout while nobody watches.
-    console.q.put(Command::Preview);
-}
-
-fn frame_png(console: &Arc<Console>, request: Request) {
-    // A scene that does not compile has no frame. Say so, instead of answering
-    // with the scene before it.
-    let error = lock(&console.stat).error.clone();
-    if !error.is_empty() {
-        return send(
-            request,
-            &Response::text(409, &format!("scene error: {}", line(&error))),
-        );
-    }
-    let gen = console.shot.request();
-    console.shot.hold();
-    console.q.put(Command::Shot); // forces a draw, and wakes a loop parked on the queue
-    let frame = console.shot.wait(gen, FRAME_TIMEOUT);
-    let png = frame.as_ref().map(|f| encode_png(f.view()));
-    console.shot.release();
-    let png = match png {
-        Some(Ok(png)) => png,
-        other => {
-            let fatal = lock(&console.fatal).clone();
-            let why = match (other, fatal.is_empty()) {
-                (Some(Err(e)), _) => e.to_string(),
-                (_, false) => fatal,
-                _ => format!("nothing drawn in {FRAME_TIMEOUT}s"),
-            };
-            return send(
-                request,
-                &Response::text(503, &format!("no frame: {}", line(&why))),
-            );
-        }
-    };
-    let mut out = tiny_http::Response::from_data(png).with_status_code(StatusCode(200));
-    for (name, value) in [("Content-Type", "image/png"), ("Cache-Control", "no-store")] {
-        if let Ok(h) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {
-            out = out.with_header(h);
-        }
-    }
-    let _ = request.respond(out);
 }
 
 // ---------------------------------------------------------------- run
@@ -3316,16 +2040,6 @@ fn dir_store(
     Ok(store)
 }
 
-/// The console's address as a URL that a browser on this machine opens.
-fn url(host: &str, port: u16) -> String {
-    let host = match host.parse::<std::net::IpAddr>() {
-        Ok(ip) if ip.is_unspecified() => "localhost".to_string(),
-        Ok(std::net::IpAddr::V6(ip)) => format!("[{ip}]"),
-        _ => host.to_string(),
-    };
-    format!("http://{host}:{port}/")
-}
-
 /// Start the console and serve until stop() (or Ctrl-C).
 pub fn run(opts: Options) -> Result<()> {
     let Options {
@@ -3371,92 +2085,68 @@ pub fn run(opts: Options) -> Result<()> {
         .or_else(|| store.state_dir.take())
         .or_else(state::default_dir);
     let mut console = Console::new(store);
-    console.w = size.0;
-    console.h = size.1;
     console.display = display;
     console.rgb565 = rgb565;
     console.drop = drop;
     console.rotate = rotate;
     console.brightness = brightness;
-    console.preview_max = preview_max;
-    console.preview_fps = preview_fps;
-    console.stream_max = stream_max;
-    console.stream_hz = stream_fps;
-    console.bitrate = bitrate;
     console.components = components;
     console.alpha = alpha;
     console.frames = frames;
     console.timestep = timestep;
     console.dri = dri_device;
-    console.sink_dests = sinks
-        .iter()
-        .map(|s| s.dest().to_string())
-        .filter(|d| !d.is_empty())
-        .collect();
     console.arrays = arrays;
-    lock(&console.stat).display =
-        serde_json::json!({"w": size.0, "h": size.1, "format": "rgba", "rotation": rotate});
+    let hub = &mut console.hub;
+    (hub.w, hub.h) = size;
+    hub.preview_max = preview_max;
+    hub.preview_fps = preview_fps;
+    hub.stream_max = stream_max;
+    hub.stream_hz = stream_fps;
+    hub.bitrate = bitrate;
+    if display {
+        hub.dests.push(DEST_KMS.to_string());
+    }
+    hub.dests.extend(
+        sinks
+            .iter()
+            .map(|s| s.dest().to_string())
+            .filter(|d| !d.is_empty()),
+    );
+    let format = frame_format(display && rgb565, components);
+    hub.set_display(format, rotate);
     if let Some(first) = names.first() {
         console.ask(first);
     }
     let console = Arc::new(console);
-    console.reset_stats();
+    console.hub.reset();
     *lock(&CONSOLE) = Some(Arc::clone(&console));
     let server = Server::http((host.as_str(), port)).map_err(|e| anyhow!("{e}"))?;
-    let server = Arc::new(server);
-    *lock(&console.httpd) = Some(Arc::clone(&server));
-    for worker in [
-        encoder_loop as fn(&Console),
-        h264_sw_loop as fn(&Console),
-        draft_loop as fn(&Console),
-    ] {
+    let address = url(&host, bound_port(&server, port));
+    spawn_encoders(&console);
+    {
         let console = Arc::clone(&console);
-        thread::spawn(move || worker(&console));
+        thread::spawn(move || draft_loop(&console));
     }
-    let serving = {
-        let console = Arc::clone(&console);
-        let api = Arc::new(
-            ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)))
-                .with_web(console.web)
-                .listening_on(&host)
-                .with_uploads(uploads),
-        );
-        thread::spawn(move || {
-            for request in server.incoming_requests() {
-                let (console, api) = (Arc::clone(&console), Arc::clone(&api));
-                thread::spawn(move || handle(&console, &api, request));
-            }
-        })
-    };
+    let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)))
+        .with_web(console.web)
+        .listening_on(&host)
+        .with_uploads(uploads);
+    let serving = serve(Arc::new(server), Arc::clone(&console), Arc::new(api));
 
     match make_renderer(&console, card) {
         Ok(r) => {
-            let count = match names.len() {
-                0 => "no scene".to_string(),
-                1 => "1 scene".to_string(),
-                n => format!("{n} scenes"),
-            };
-            let mine = match console.store.mine.as_deref() {
-                Some(m) if m != console.store.dir => format!(", my scenes={m}"),
-                _ => String::new(),
-            };
-            println!(
-                "ghee console: {} {count} [{}] (scenes={}{mine}, preview {}x{} rgba)",
-                url(&host, port),
-                names
-                    .iter()
-                    .map(|n| format!("'{n}'"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                console.store.dir,
-                size.0,
-                size.1,
-            );
+            let mut from = format!("scenes={}", console.store.dir);
+            if let Some(m) = console.store.mine.as_deref() {
+                if m != console.store.dir {
+                    from.push_str(&format!(", my scenes={m}"));
+                }
+            }
+            println!("{}", banner(&address, &names, &from, size, format));
             render_loop(&console, Rc::new(RefCell::new(r)), sinks, pacer, on_stats);
         }
         Err(e) => {
-            lock(&console.stat).error = e.to_string();
-            *lock(&console.fatal) = e.to_string();
+            console.hub.set_error(&e.to_string(), None, None);
+            console.hub.set_fatal(&e.to_string());
         }
     }
     // The loop is done, so nothing is left to serve. stop() unblocks the accept
@@ -3464,7 +2154,7 @@ pub fn run(opts: Options) -> Result<()> {
     console.stop();
     let _ = serving.join();
     console.write_drafts(true);
-    let fatal = lock(&console.fatal).clone();
+    let fatal = console.hub.fatal();
     if !fatal.is_empty() {
         bail!("{fatal}");
     }
@@ -3476,11 +2166,11 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::console::core::{parse_query, Headers};
     use crate::scene::Param;
 
     const SCENE: &str = r#"{"version": 1,
         "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
-    const SC: &[u8] = &[0, 0, 0, 1];
 
     /// Make `scene` the working copy of the active scene `name`, as a load
     /// ends.
@@ -4015,7 +2705,9 @@ mod tests {
             },
         );
         // the program set title's x and drew bar
-        console.publish(Some("one"), 1, &scene(doc(20.0, None, Some(4.0))));
+        console
+            .hub
+            .publish_scene(Some("one"), 1, scene(doc(20.0, None, Some(4.0))).to_dict());
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let posted = doc(20.0, Some("#ff0000"), Some(9.0)).to_string();
         assert_eq!(ask(&api, "POST", "/scene", "name=one", &posted).0, 200);
@@ -4060,7 +2752,7 @@ mod tests {
 
     /// The running document, as the render thread published it last.
     fn running_doc(console: &Console) -> Value {
-        lock(&console.running).as_ref().unwrap().doc.clone()
+        console.hub.scene().unwrap()
     }
 
     /// A console over a directory of one scene, which lives as long as the
@@ -4086,19 +2778,6 @@ mod tests {
              RUSTFLAGS=\"--cfg ghee_no_gpu\", which reports them as ignored",
             errs.join("; ")
         );
-    }
-
-    fn key_au() -> Vec<u8> {
-        let mut au = Vec::new();
-        for nal in [
-            &[0x67, 0x42, 0x00, 0x1e][..],
-            &[0x68, 0xce, 0x06, 0xe2][..],
-            &[0x65, 0x88, 0x80][..],
-        ] {
-            au.extend_from_slice(SC);
-            au.extend_from_slice(nal);
-        }
-        au
     }
 
     // /set on the wire
@@ -4131,43 +2810,6 @@ mod tests {
         }
     }
 
-    // stream sizing
-
-    #[test]
-    fn a_panel_sized_stream_keeps_the_configured_rate() {
-        assert_eq!(stream_bitrate(128, 32, 30, 10_000_000), 10_000_000);
-        assert_eq!(stream_bitrate(320, 240, 30, 10_000_000), 10_000_000);
-    }
-
-    #[test]
-    fn a_2k_stream_is_lifted_off_its_pixel_rate() {
-        let bps = stream_bitrate(2048, 2048, 30, 10_000_000);
-        let want = f64::from(2048 * 2048) * 30.0 * H264_BPP;
-        assert!((bps as f64 - want).abs() < 1.0, "{bps}");
-        assert!(bps > 4_000_000);
-    }
-
-    #[test]
-    fn the_derived_rate_stops_at_the_ceiling() {
-        assert_eq!(
-            stream_bitrate(4096, 4096, 60, 10_000_000),
-            H264_BITRATE_CEILING
-        );
-    }
-
-    #[test]
-    fn a_configured_rate_above_the_ceiling_wins() {
-        assert_eq!(stream_bitrate(2048, 2048, 30, 100_000_000), 100_000_000);
-    }
-
-    #[test]
-    fn a_stream_keeps_its_aspect_and_stays_even() {
-        assert_eq!(stream_size(320, 240, 0), (320, 240));
-        assert_eq!(stream_size(320, 240, 160), (160, 120));
-        assert_eq!(stream_size(101, 33, 0), (100, 32));
-        assert_eq!(stream_size(2, 2, 1), (2, 2));
-    }
-
     #[test]
     fn the_skip_interval_follows_whoever_consumes_frames() {
         assert_eq!(skip_interval(60, 0, 15.0, 0.5), Some(1.0 / 60.0));
@@ -4176,271 +2818,10 @@ mod tests {
         assert_eq!(skip_interval(0, 1, 0.0, 0.5), Some(0.5));
     }
 
-    // the preview
-
-    fn test_frame(w: i32, h: i32) -> Arc<RawFrame> {
-        let mut data = vec![0u8; (w * h * 4) as usize];
-        for y in 0..h {
-            for x in 0..w {
-                let i = ((y * w + x) * 4) as usize;
-                data[i] = (x % 256) as u8;
-                data[i + 1] = (y % 256) as u8;
-                data[i + 2] = ((x * y) % 256) as u8;
-                data[i + 3] = 255;
-            }
-        }
-        Arc::new(RawFrame {
-            data,
-            width: w,
-            height: h,
-            components: 4,
-        })
-    }
-
-    /// (width, height) out of a baseline JPEG's frame header.
-    fn jpeg_size(jpg: &[u8]) -> (i32, i32) {
-        let mut i = 2;
-        while i + 9 < jpg.len() {
-            let marker = jpg[i + 1];
-            let len = usize::from(u16::from_be_bytes([jpg[i + 2], jpg[i + 3]]));
-            if (0xC0..=0xCF).contains(&marker) && marker != 0xC4 && marker != 0xC8 {
-                let h = i32::from(u16::from_be_bytes([jpg[i + 5], jpg[i + 6]]));
-                let w = i32::from(u16::from_be_bytes([jpg[i + 7], jpg[i + 8]]));
-                return (w, h);
-            }
-            i += 2 + len;
-        }
-        (0, 0)
-    }
-
-    fn feed_encoder(console: &Arc<Console>, frame: Arc<RawFrame>) -> Arc<Vec<u8>> {
-        {
-            let mut raw = lock(&console.raw);
-            raw.rgb = Some(frame);
-            raw.seq += 1;
-            console.raw_ready.notify_all();
-        }
-        let end = monotonic() + 5.0;
-        while monotonic() < end {
-            if let Some(jpg) = lock(&console.latest).jpg.clone() {
-                return jpg;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        panic!("the encoder produced no preview frame");
-    }
-
-    #[test]
-    fn a_frame_bigger_than_the_preview_cap_is_downscaled() {
-        let (_d, mut console) = tmp_console("preview");
-        Arc::get_mut(&mut console).unwrap().preview_max = 120;
-        console.count_clients(1); // the encoder only works while a viewer is counted
-        let worker = {
-            let console = Arc::clone(&console);
-            thread::spawn(move || encoder_loop(&console))
-        };
-        let jpg = feed_encoder(&console, test_frame(480, 240));
-        assert_eq!(jpeg_size(&jpg), (120, 60));
-        console.stop();
-        console.raw_ready.notify_all();
-        worker.join().unwrap();
-    }
-
-    #[test]
-    fn a_frame_inside_the_cap_keeps_its_size() {
-        let (_d, console) = tmp_console("preview-small");
-        console.count_clients(1);
-        let worker = {
-            let console = Arc::clone(&console);
-            thread::spawn(move || encoder_loop(&console))
-        };
-        let jpg = feed_encoder(&console, test_frame(96, 96));
-        assert_eq!(jpeg_size(&jpg), (96, 96));
-        console.stop();
-        console.raw_ready.notify_all();
-        worker.join().unwrap();
-    }
-
-    // the h264 fanout
-
-    #[test]
-    fn fanout_wires_each_frame_once() {
-        let fanout = H264Fanout::new(Arc::new(Mutex::new(FrameRate::new())));
-        let (a, b) = (fanout.add(), fanout.add());
-        fanout.push(&key_au());
-        let (a_cfg, a_key) = (
-            a.get(Duration::ZERO).unwrap(),
-            a.get(Duration::ZERO).unwrap(),
-        );
-        let (b_cfg, b_key) = (
-            b.get(Duration::ZERO).unwrap(),
-            b.get(Duration::ZERO).unwrap(),
-        );
-        assert!(Arc::ptr_eq(&a_cfg, &b_cfg) && Arc::ptr_eq(&a_key, &b_key));
-        let cfg = lock(&fanout.cfg).clone().unwrap();
-        assert_eq!(*a_cfg, wire_frame(0, &cfg));
-    }
-
-    #[test]
-    fn a_client_that_left_takes_no_more_frames() {
-        let fanout = H264Fanout::new(Arc::new(Mutex::new(FrameRate::new())));
-        let c = fanout.add();
-        fanout.remove(&c);
-        assert_eq!(fanout.nclients(), 0);
-        fanout.push(&key_au());
-        assert!(c.get(Duration::ZERO).is_none());
-    }
-
-    #[test]
-    fn the_fanout_counts_what_it_hands_to_viewers() {
-        let fanout = H264Fanout::new(Arc::new(Mutex::new(FrameRate::new())));
-        fanout.add();
-        for _ in 0..4 {
-            fanout.push(&key_au());
-        }
-        assert!(fanout.stream_fps() > 0.0);
-    }
-
-    #[test]
-    fn nothing_is_streamed_to_nobody() {
-        let fanout = H264Fanout::new(Arc::new(Mutex::new(FrameRate::new())));
-        fanout.push(&key_au());
-        assert_eq!(fanout.stream_fps(), 0.0);
-    }
-
-    #[test]
-    fn one_counter_covers_both_codecs() {
-        let shared = Arc::new(Mutex::new(FrameRate::new()));
-        let fanout = H264Fanout::new(Arc::clone(&shared));
-        fanout.add();
-        fanout.push(&key_au());
-        assert!(Arc::ptr_eq(&fanout.rate, &shared));
-        // the JPEG path ticks the counter published as stream_fps
-        let (_d, console) = tmp_console("one-counter");
-        assert!(Arc::ptr_eq(&console.fanout.rate, &console.stream_rate));
-    }
-
-    #[test]
-    fn a_lagging_client_is_dropped_to_the_next_keyframe() {
-        let fanout = H264Fanout::new(Arc::new(Mutex::new(FrameRate::new())));
-        let c = fanout.add();
-        fanout.push(&key_au());
-        let delta = [SC, &[0x41, 0x9a, 0x00]].concat();
-        for _ in 0..H264_LAG_FRAMES + 4 {
-            fanout.push(&delta);
-        }
-        let queued = lock(&c.state).q.len();
-        assert!(queued <= H264_LAG_FRAMES + 2, "{queued}");
-        assert!(!lock(&c.state).started);
-        assert!(fanout.want_key.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn a_failure_wakes_a_waiting_viewer_and_the_first_reason_stands() {
-        let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
-        let c = fanout.add();
-        let failer = {
-            let fanout = Arc::clone(&fanout);
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(100));
-                fanout.fail("first");
-                fanout.fail("second");
-            })
-        };
-        let t0 = monotonic();
-        assert!(c.get(Duration::from_secs(5)).is_none());
-        assert!(monotonic() - t0 < 2.0);
-        failer.join().unwrap();
-        assert_eq!(fanout.failure().as_deref(), Some("first"));
-    }
-
-    #[test]
-    fn the_last_viewer_to_leave_clears_the_failure_and_the_start() {
-        let fanout = H264Fanout::new(Arc::new(Mutex::new(FrameRate::new())));
-        let (a, b) = (fanout.add(), fanout.add());
-        assert!(!fanout.began());
-        fanout.push(&key_au());
-        assert!(fanout.began());
-        fanout.fail("gone");
-        fanout.remove(&a);
-        assert!(fanout.failure().is_some() && fanout.began());
-        fanout.remove(&b);
-        assert!(fanout.failure().is_none() && !fanout.began());
-    }
-
-    #[test]
-    fn a_late_unit_of_an_ended_stream_never_ends_the_next_one() {
-        let (_d, console) = tmp_console("late-au");
-        let first = console.fanout.add();
-        console.hardware_failed("no hardware encoder");
-        let owned = console.software_stream().unwrap();
-        console.fanout.remove(&first);
-        let next = console.fanout.add();
-        // the software encoder of the first stream hands over one more unit
-        assert!(!console.fanout.push_to(owned, &key_au()));
-        assert!(next.get(Duration::ZERO).is_none());
-        assert!(!console.fanout.began());
-        // the next stream tries hardware first, and the software lane takes it
-        // when hardware fails
-        assert!(!console.software_h264());
-        console.hardware_failed("no hardware encoder");
-        assert_eq!(console.fanout.failure(), None);
-        assert_eq!(console.software_stream(), Some(console.fanout.stream()));
-        assert!(console.fanout.push_to(console.fanout.stream(), &key_au()));
-        assert!(next.get(Duration::ZERO).is_some());
-    }
-
-    /// One GET /h264 served by serve_h264, as the raw bytes on the socket.
-    /// `run` drives the fanout while the request is served.
-    fn h264_exchange(
-        fanout: Arc<H264Fanout>,
-        run: impl FnOnce(&H264Fanout) + Send + 'static,
-    ) -> Vec<u8> {
-        use std::io::Read;
-        use std::net::TcpStream;
-        let server = Server::http("127.0.0.1:0").unwrap();
-        let port = server.server_addr().to_ip().unwrap().port();
-        let client = thread::spawn(move || {
-            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            s.write_all(b"GET /h264 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-                .unwrap();
-            let mut out = Vec::new();
-            let _ = s.read_to_end(&mut out); // the stream ends on its own terminal chunk
-            out
-        });
-        let request = server.recv().unwrap();
-        let c = fanout.add();
-        let driver = {
-            let fanout = Arc::clone(&fanout);
-            thread::spawn(move || run(&fanout))
-        };
-        serve_h264(request, &fanout, &c, &|| true);
-        fanout.remove(&c);
-        driver.join().unwrap();
-        client.join().unwrap()
-    }
-
-    /// The body of a chunked response, and whether its terminal chunk arrived.
-    fn dechunk(body: &[u8]) -> (Vec<u8>, bool) {
-        let mut out = Vec::new();
-        let mut at = 0;
-        while let Some(end) = find(body, b"\r\n", at) {
-            let n =
-                usize::from_str_radix(std::str::from_utf8(&body[at..end]).unwrap(), 16).unwrap();
-            if n == 0 {
-                return (out, true);
-            }
-            out.extend_from_slice(&body[end + 2..end + 2 + n]);
-            at = end + 2 + n + 2;
-        }
-        (out, false)
-    }
-
     /// One raw request through handle(), with a body cap of 10 bytes, and
     /// the raw answer.
     fn exchange(raw: &'static [u8]) -> String {
-        use std::io::Read;
+        use std::io::{Read, Write};
         use std::net::TcpStream;
         let (_d, console) = tmp_console("transport");
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console))).with_max_body(10);
@@ -4454,7 +2835,7 @@ mod tests {
             let _ = s.read_to_end(&mut out); // the server closes the connection
             out
         });
-        handle(&console, &api, server.recv().unwrap());
+        crate::console::hub::handle(&*console, &api, server.recv().unwrap());
         String::from_utf8_lossy(&client.join().unwrap()).into_owned()
     }
 
@@ -4479,195 +2860,6 @@ mod tests {
         assert!(out.ends_with("body over the limit of 10 bytes"), "{out}");
     }
 
-    fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-        hay.get(from..)?
-            .windows(needle.len())
-            .position(|w| w == needle)
-            .map(|i| i + from)
-    }
-
-    #[test]
-    fn a_stream_that_cannot_start_answers_503_with_the_reason() {
-        let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
-        let why = "no H264 encoder. hardware: none here. software: no ffmpeg";
-        let out = h264_exchange(fanout, move |f| {
-            thread::sleep(Duration::from_millis(100));
-            f.fail(why);
-        });
-        let text = String::from_utf8_lossy(&out);
-        assert!(text.starts_with("HTTP/1.1 503"), "{text}");
-        assert!(text.ends_with(why), "{text}");
-    }
-
-    #[test]
-    fn a_stream_that_fails_after_its_start_ends_on_an_error_frame() {
-        let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
-        let why = "hardware encode failed: stalled";
-        let out = h264_exchange(fanout, move |f| {
-            thread::sleep(Duration::from_millis(100));
-            f.opened(256, 64, HW_COLOR);
-            f.push(&key_au());
-            thread::sleep(Duration::from_millis(100));
-            f.fail(why);
-        });
-        let head_end = find(&out, b"\r\n\r\n", 0).unwrap();
-        let head = String::from_utf8_lossy(&out[..head_end]);
-        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
-        let (body, ended) = dechunk(&out[head_end + 4..]);
-        assert!(ended);
-        let mut msgs = Vec::new();
-        let mut at = 0;
-        while at < body.len() {
-            let n = u32::from_be_bytes(body[at + 1..at + 5].try_into().unwrap()) as usize;
-            msgs.push((body[at], body[at + 5..at + 5 + n].to_vec()));
-            at += 5 + n;
-        }
-        let types: Vec<u8> = msgs.iter().map(|m| m.0).collect();
-        assert_eq!(types, vec![0, 1, WIRE_ERROR]);
-        let cfg: Value = serde_json::from_slice(&msgs[0].1).unwrap();
-        assert_eq!(
-            (cfg["codedWidth"].as_i64(), cfg["codedHeight"].as_i64()),
-            (Some(256), Some(64))
-        );
-        assert_eq!(msgs[2].1, why.as_bytes());
-    }
-
-    #[test]
-    fn the_page_ends_its_stream_on_the_error_frame() {
-        let js = include_str!("../../ghee/console/web/h264client.js");
-        assert!(js.contains(&format!("type === {WIRE_ERROR}")));
-    }
-
-    // the still
-
-    #[test]
-    fn the_generations_answer_one_draw_each() {
-        let shot = Shot::new(Arc::new(AtomicBool::new(false)));
-        let frame = Arc::new(RawFrame {
-            data: vec![0; 16],
-            width: 2,
-            height: 2,
-            components: 4,
-        });
-        let (a, b) = (shot.request(), shot.request());
-        shot.arm();
-        assert!(shot.wants());
-        shot.write(Arc::clone(&frame));
-        assert!(!shot.wants());
-        assert!(Arc::ptr_eq(&shot.wait(a, 0.0).unwrap(), &frame));
-        assert!(Arc::ptr_eq(&shot.wait(b, 0.0).unwrap(), &frame));
-        let c = shot.request(); // asked after the frame published, so it gets no answer
-        assert!(shot.wait(c, 0.0).is_none());
-    }
-
-    #[test]
-    fn two_requests_in_flight_share_one_generation() {
-        let shot = Shot::new(Arc::new(AtomicBool::new(false)));
-        let a = shot.request();
-        shot.hold();
-        let b = shot.request();
-        assert_eq!(a, b);
-        shot.touch(); // a command landed, so the frame in flight is behind
-        assert_eq!(shot.request(), a + 1);
-        shot.release();
-    }
-
-    #[test]
-    fn a_shot_wait_gives_up_when_the_console_stops() {
-        let stopping = Arc::new(AtomicBool::new(true));
-        let shot = Shot::new(stopping);
-        let gen = shot.request();
-        assert!(shot.wait(gen, 5.0).is_none());
-    }
-
-    // viewers
-
-    #[test]
-    fn a_connection_that_named_no_vid_never_expires() {
-        let hb = Heartbeat::new(0.0);
-        let v = hb.join(None);
-        thread::sleep(Duration::from_millis(10));
-        assert!(!hb.gone(&v));
-    }
-
-    #[test]
-    fn a_named_connection_expires_once_its_pings_stop() {
-        let hb = Heartbeat::new(0.05);
-        let v = hb.join(Some("abc"));
-        assert!(!hb.gone(&v));
-        thread::sleep(Duration::from_millis(80));
-        assert!(hb.gone(&v));
-    }
-
-    #[test]
-    fn a_ping_puts_a_named_connection_back_inside_the_deadline() {
-        let hb = Heartbeat::new(0.05);
-        let v = hb.join(Some("abc"));
-        thread::sleep(Duration::from_millis(80));
-        assert_eq!(hb.ping(Some("abc")), 1);
-        assert!(!hb.gone(&v));
-    }
-
-    #[test]
-    fn every_connection_under_one_vid_is_kept_alive_together() {
-        // a page that falls back from h264 to MJPEG opens a second stream under
-        // its existing ping id
-        let hb = Heartbeat::new(0.05);
-        let (a, b) = (hb.join(Some("abc")), hb.join(Some("abc")));
-        thread::sleep(Duration::from_millis(80));
-        assert_eq!(hb.ping(Some("abc")), 2);
-        assert!(!hb.gone(&a) && !hb.gone(&b));
-    }
-
-    #[test]
-    fn a_connection_that_left_is_not_pinged_for_any_more() {
-        let hb = Heartbeat::new(0.05);
-        let (a, b) = (hb.join(Some("abc")), hb.join(Some("abc")));
-        hb.leave(&a);
-        assert_eq!(hb.ping(Some("abc")), 1);
-        hb.leave(&b);
-        assert_eq!(hb.ping(Some("abc")), 0);
-        assert!(hb.is_empty());
-    }
-
-    #[test]
-    fn a_ping_for_an_id_with_no_stream_matches_nothing() {
-        let hb = Heartbeat::new(0.05);
-        assert_eq!(hb.ping(Some("nobody")), 0);
-        assert_eq!(hb.ping(None), 0);
-    }
-
-    #[test]
-    fn the_deadline_leaves_room_for_lost_pings() {
-        let (deadline, interval) = (VIEWER_DEADLINE, PING_INTERVAL);
-        assert!(deadline >= 3.0 * interval);
-    }
-
-    // viewer counts
-
-    #[test]
-    fn client_count_is_atomic() {
-        let (_d, console) = tmp_console("counts");
-        let threads: Vec<_> = (0..8)
-            .map(|_| {
-                let console = Arc::clone(&console);
-                thread::spawn(move || {
-                    for _ in 0..200 {
-                        console.count_clients(1);
-                    }
-                })
-            })
-            .collect();
-        for t in threads {
-            t.join().unwrap();
-        }
-        assert_eq!(console.nclients(), 8 * 200);
-        for _ in 0..8 * 200 {
-            console.count_clients(-1);
-        }
-        assert_eq!(console.nclients(), 0);
-    }
-
     // what /stats publishes
 
     #[test]
@@ -4690,6 +2882,8 @@ mod tests {
             "rev",
             "locked",
             "gpu",
+            "frames",
+            "skipped",
         ] {
             assert!(stats.get(key).is_some(), "{key}");
         }
@@ -4737,12 +2931,12 @@ mod tests {
     #[test]
     fn a_stream_viewer_shows_up_in_the_destinations() {
         let (_d, console) = tmp_console("dests");
-        console.count_clients(1);
+        console.hub.count_clients(1);
         assert_eq!(console.stats()["out"], serde_json::json!(["mjpeg"]));
-        let c = console.fanout.add();
+        let c = console.hub.fanout.add();
         assert_eq!(console.stats()["out"], serde_json::json!(["h264", "mjpeg"]));
-        console.fanout.remove(&c);
-        console.count_clients(-1);
+        console.hub.fanout.remove(&c);
+        console.hub.count_clients(-1);
         assert_eq!(console.stats()["out"], serde_json::json!([]));
     }
 
@@ -5271,7 +3465,7 @@ mod tests {
             lp.poll = Some(Box::new(|| drain(&console, &renderer, &st, &ctrl)));
             lp.run().unwrap();
             drop(lp);
-            publish_changes(&console, &renderer, &st, &ctrl);
+            publish(&console, &renderer, &st, &ctrl, false);
             let px = got.borrow();
             let blue = px.as_chunks::<4>().0.iter().any(|p| p[2] > 200);
             (px[12 * 4], px[12 * 4 + 1], blue)
@@ -5404,7 +3598,7 @@ mod tests {
             lp.poll = Some(Box::new(|| drain(&console, &renderer, &st, &ctrl)));
             lp.run().unwrap();
             drop(lp);
-            publish_changes(&console, &renderer, &st, &ctrl);
+            publish(&console, &renderer, &st, &ctrl, false);
         };
         let locked = || console.stats()["locked"].clone();
         let none = serde_json::json!({"params": [], "fields": []});
@@ -5744,12 +3938,12 @@ mod tests {
         ];
         for (n, (what, step, layers)) in steps.iter().enumerate() {
             step(&mut target);
-            publish_changes(&console, &renderer, &st, &ctrl);
+            publish(&console, &renderer, &st, &ctrl, false);
             assert_eq!(running_layers(&console), floats(layers), "{what}");
             assert_eq!(changes(&console), Value::from(n + 1), "{what}");
         }
         // a frame with no change publishes nothing new
-        publish_changes(&console, &renderer, &st, &ctrl);
+        publish(&console, &renderer, &st, &ctrl, false);
         assert_eq!(changes(&console), Value::from(steps.len()));
     }
 
@@ -5900,7 +4094,7 @@ mod tests {
 
     impl Output for StatsAt {
         fn write(&mut self, _frame: Frame<'_>) -> Result<()> {
-            use std::io::Read;
+            use std::io::{Read, Write};
             if self.1.borrow().is_null() {
                 let mut s = std::net::TcpStream::connect(("127.0.0.1", self.0))?;
                 s.write_all(
@@ -6023,10 +4217,10 @@ mod tests {
             let d = crate::testing::TempDir::new("console-watched");
             fs::write(d.join("one.scene.json"), SCENE).unwrap();
             let mut console = Console::new(SceneStore::new(&d, Vec::new()));
-            (console.w, console.h) = (8, 8);
+            (console.hub.w, console.hub.h) = (8, 8);
             let console = Arc::new(console);
             console.ask("one");
-            console.count_clients(viewers);
+            console.hub.count_clients(viewers);
             let summary: Summary = Rc::new(RefCell::new(None));
             let got = Rc::clone(&summary);
             let stopper = {
@@ -6034,7 +4228,7 @@ mod tests {
                 thread::spawn(move || {
                     // the first frame, then time for many more
                     let deadline = Instant::now() + Duration::from_secs(10);
-                    while lock(&console.stat).frame_ms == 0.0 && Instant::now() < deadline {
+                    while console.stats()["frame_ms"] == 0.0 && Instant::now() < deadline {
                         thread::sleep(Duration::from_millis(5));
                     }
                     thread::sleep(Duration::from_millis(200));

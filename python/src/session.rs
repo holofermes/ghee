@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
-use ghee::console::server::{gpu_caps, H264_FPS};
+use ghee::console::hub::{gpu_caps, H264_FPS};
 use ghee::draw::Call;
 use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer};
 use ghee::filters::apply_filters;

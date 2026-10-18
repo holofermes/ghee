@@ -29,10 +29,10 @@ use ghee::console::core::{
     parse_query, ConsoleAPI, ConsoleError, ConsoleHost, ConsoleResult, Headers, LayerSet, Query,
     Response, Scope,
 };
-use ghee::console::server::{
-    leave_out, serve_h264, stream_bitrate, stream_size, H264Fanout, Heartbeat, Options, H264_FPS,
-    VIEWER_DEADLINE,
+use ghee::console::hub::{
+    serve_h264, stream_bitrate, stream_size, H264Fanout, Heartbeat, H264_FPS, VIEWER_DEADLINE,
 };
+use ghee::console::server::{leave_out, Options};
 use ghee::console::state;
 use ghee::h264::{no_encoder, ColorSpace, SoftwareH264, SW_COLOR};
 use ghee::live::Index;

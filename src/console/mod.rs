@@ -1,14 +1,16 @@
 //! The console: the web page and the HTTP API that show and edit a running
 //! scene.
 //!
-//! core is the API, with no transport under it. server serves the API and the
-//! page over HTTP, and hands each edit to a render loop. store holds a
+//! core is the API, with no transport under it. hub serves the API, the page
+//! and the streams over HTTP for any host that draws frames. server is the
+//! host of `ghee serve`: it hands each edit to a render loop. store holds a
 //! directory of scenes and the working copy of each. state holds the edits of
 //! one scene and reads and writes its state file. feeds reads the facts about
 //! the host for the page's render info.
 
 pub mod core;
 pub mod feeds;
+pub mod hub;
 pub mod server;
 pub mod state;
 pub mod store;

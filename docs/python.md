@@ -228,6 +228,10 @@ Pillow image in mode `RGBa`, Pillow's name for premultiplied RGBA.
 
 `screen.brightness` sets a display's brightness, from 0 to 1.
 
+Set `screen.blank = True` to turn the display off, such as to rest an OLED
+between uses, and `False` to light it again. While the display is off,
+`frame()` draws nothing.
+
 To close the screen, call `screen.close()`, or open it in a
 `with ghee.open(...) as screen:` block.
 

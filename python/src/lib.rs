@@ -446,6 +446,19 @@ impl Handle {
         Ok(())
     }
 
+    /// True while the display is blank. Setting it blanks the display, or
+    /// lights it again, and while it is blank frame() draws nothing. A
+    /// handle with no display takes it as a no-op.
+    #[getter]
+    fn get_blank(&mut self) -> PyResult<bool> {
+        Ok(self.held.get()?.blanked())
+    }
+
+    #[setter]
+    fn set_blank(&mut self, on: bool) -> PyResult<()> {
+        self.held.get()?.blank(on).map_err(fault)
+    }
+
     /// Open this iteration and give its tick, which the next frame() or
     /// skip() takes and returns: the shim's hooks run between the two.
     fn _tick<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {

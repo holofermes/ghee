@@ -811,3 +811,11 @@ def test_a_handles_layers_list_their_names():
         with pytest.raises(TypeError, match="a layer's name is a str, got int"):
             h.layers[0]
 
+
+def test_a_screen_with_no_display_takes_blank_as_a_no_op():
+    with ghee.open(RED, width=4, height=4) as h:
+        h.blank = True
+        assert h.blank is False
+        h.feed("level", LEVEL)
+        h.frame()
+        assert pixel(h) == (255, 0, 0, 255)

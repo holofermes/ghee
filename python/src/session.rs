@@ -533,6 +533,9 @@ impl Session {
     }
 
     pub fn frame(&mut self) -> Outcome<Tick> {
+        if self.renderer.blanked() {
+            return self.rest();
+        }
         let Opened { moment, tick } = self.take_opened()?;
         self.drain()?;
         self.clock
@@ -627,12 +630,18 @@ impl Session {
     pub fn skip(&mut self) -> Outcome<Tick> {
         let tick = self.begin()?;
         let wants = self.console.as_ref().is_some_and(|c| c.hub().wants_draw());
-        if wants && self.frame().is_ok() {
+        if wants && !self.renderer.blanked() && self.frame().is_ok() {
             if self.clock.pacer.is_none() {
                 nap(self.clock.idle());
             }
             return Ok(tick);
         }
+        self.rest()
+    }
+
+    /// Take this tick with no draw, and wait the time of a frame.
+    fn rest(&mut self) -> Outcome<Tick> {
+        let tick = self.begin()?;
         self.opened = None;
         self.frame += 1;
         if let Some(c) = self.console.as_ref() {
@@ -640,6 +649,17 @@ impl Session {
         }
         nap(self.clock.idle());
         Ok(tick)
+    }
+
+    /// Blank the display, or light it again, as Renderer::blank() does.
+    /// While it is blank, frame() draws nothing and rests as skip() does.
+    pub fn blank(&self, on: bool) -> Outcome<()> {
+        self.renderer.blank(on).map_err(system_fault)
+    }
+
+    /// True while the display is blank.
+    pub fn blanked(&self) -> bool {
+        self.renderer.blanked()
     }
 
     /// The last frame, row-major (height, width, components).

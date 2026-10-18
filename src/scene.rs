@@ -721,6 +721,42 @@ impl ParamValue {
     }
 }
 
+/// `val`, a value that a host sets the param `name` of type `ptype` to, as
+/// that type. An int rounds half up, so 2.5 gives 3. A bool takes the truth
+/// of any value. A color or a vec arrives as a list.
+pub fn coerce(name: &str, ptype: &str, val: &Value) -> Result<ParamValue> {
+    let val = match ptype {
+        _ if val.is_array() => val.clone(),
+        "int" => Value::from(round_half_up(as_f64(val)) as i64),
+        "bool" => Value::from(truthy(val)),
+        _ => val.clone(),
+    };
+    Ok(Param::new(name, ptype, val, None, None, None, None)?.value)
+}
+
+/// `x` rounded to a whole number, a half up.
+pub fn round_half_up(x: f64) -> f64 {
+    (x + 0.5).floor()
+}
+
+fn as_f64(v: &Value) -> f64 {
+    match v {
+        Value::Bool(b) => f64::from(u8::from(*b)),
+        _ => v.as_f64().unwrap_or_default(),
+    }
+}
+
+/// The truth of `v`: false for false, null, "" and 0, true for anything
+/// else.
+pub fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Bool(b) => *b,
+        Value::String(s) => !s.is_empty(),
+        Value::Null => false,
+        _ => v.as_f64().unwrap_or_default() != 0.0,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Param {
     pub name: String,
@@ -5422,5 +5458,30 @@ mod tests {
             sc.set_layer(&nope, &json!(1)).unwrap_err().to_string(),
             "the scene has no layer 'nope'"
         );
+    }
+
+    #[test]
+    fn a_coerced_value_takes_the_declared_type() {
+        assert_eq!(
+            coerce("k", "int", &Value::from(2.6)).unwrap(),
+            ParamValue::Int(3)
+        );
+        assert_eq!(
+            coerce("k", "int", &Value::from(2.5)).unwrap(),
+            ParamValue::Int(3)
+        );
+        assert_eq!(
+            coerce("k", "bool", &Value::from(1.0)).unwrap(),
+            ParamValue::Bool(true)
+        );
+        assert_eq!(
+            coerce("k", "float", &Value::from(0.5)).unwrap(),
+            ParamValue::Float(0.5)
+        );
+        assert_eq!(
+            coerce("k", "color", &serde_json::json!([1.0, 0.0, 0.5])).unwrap(),
+            ParamValue::Color(Rgb::numbers([1.0, 0.0, 0.5]))
+        );
+        assert!(coerce("k", "color", &serde_json::json!([1.0, 0.0])).is_err());
     }
 }

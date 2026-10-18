@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 
-use ghee::console::server::{coerce, gpu_caps, H264_FPS};
+use ghee::console::server::{gpu_caps, H264_FPS};
 use ghee::draw::{Arg, Call, CallKind};
 use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer};
 use ghee::filters::{apply_filters, load_filters};
@@ -23,7 +23,7 @@ use ghee::looper::{Frame, Pacer, RenderTarget, MAX_DT};
 use ghee::output::{encode_jpeg, encode_png_as, expand_pattern, AlphaForm, FixedPacer};
 use ghee::procedural::locks::{call_keys, look_keys, Tuned};
 use ghee::procedural::{load_scene, process, scene_name};
-use ghee::scene::{no_layer, no_param, short_floats, ArraySize, Scene};
+use ghee::scene::{coerce, no_layer, no_param, short_floats, truthy, ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
 use serde_json::{Map, Value};
 
@@ -495,15 +495,6 @@ fn geometry(
             )),
         },
         Sink::None => Ok((size.unwrap_or(DEFAULT_SIZE), 4)),
-    }
-}
-
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Bool(b) => *b,
-        Value::String(s) => !s.is_empty(),
-        Value::Null => false,
-        _ => v.as_f64().unwrap_or_default() != 0.0,
     }
 }
 

@@ -30,7 +30,7 @@ use crate::layer::{Address, Layer, Rgb};
 use crate::looper::{RenderTarget, SceneController};
 use crate::procedural::locks::{call_keys, look_keys, Locks, Tuned};
 use crate::procedural::resolve;
-use crate::scene::{py_repr, ArraySize, ParamValue, Reach, Scene};
+use crate::scene::{py_repr, round_half_up, ArraySize, ParamValue, Reach, Scene};
 
 /// `-- --help` waits this long for a scene's declarations line.
 /// Nothing else runs a scene with `--ghee-args`.
@@ -1477,7 +1477,7 @@ fn as_param(ty: &str, values: &[f32]) -> Option<ParamValue> {
     let at = |i: usize| f64::from(values[i]);
     match ty {
         "float" => Some(ParamValue::Float(at(0))),
-        "int" => Some(ParamValue::Int(at(0).round() as i64)),
+        "int" => Some(ParamValue::Int(round_half_up(at(0)) as i64)),
         "bool" => Some(ParamValue::Bool(at(0) != 0.0)),
         "color" => Some(ParamValue::Color(Rgb::numbers([at(0), at(1), at(2)]))),
         "vec2" | "vec3" | "vec4" => Some(ParamValue::Vec(
@@ -3486,6 +3486,18 @@ while IFS= read -r line; do :; done
             .tick(1, 0.0, 1.0 / 60.0)
             .is_err()));
         assert_eq!(*lock(&locks), Locks::default());
+    }
+
+    #[test]
+    fn an_int_param_on_the_wire_rounds_as_the_console_rounds_it() {
+        for x in [2.5, 3.5, -2.5, 2.4] {
+            assert_eq!(
+                as_param("int", &[x]),
+                crate::scene::coerce("n", "int", &Value::from(f64::from(x))).ok(),
+                "{x}"
+            );
+        }
+        assert_eq!(as_param("int", &[2.5]), Some(ParamValue::Int(3)));
     }
 
     #[test]

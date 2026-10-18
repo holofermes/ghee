@@ -30,15 +30,15 @@ use ghee::console::core::{
     Response, Scope,
 };
 use ghee::console::server::{
-    coerce, leave_out, serve_h264, stream_bitrate, stream_size, H264Fanout, Heartbeat, Options,
-    H264_FPS, VIEWER_DEADLINE,
+    leave_out, serve_h264, stream_bitrate, stream_size, H264Fanout, Heartbeat, Options, H264_FPS,
+    VIEWER_DEADLINE,
 };
 use ghee::console::state;
 use ghee::h264::{no_encoder, ColorSpace, SoftwareH264, SW_COLOR};
 use ghee::looper::Frame;
 use ghee::output::{encode_jpeg, encode_png};
 use ghee::procedural::locks::Locks;
-use ghee::scene::{ParamValue, Scene};
+use ghee::scene::{coerce, ParamValue, Scene};
 use ghee::stats::{monotonic, FrameRate, DEST_H264};
 use serde_json::{Map, Value};
 use tiny_http::{Header, Request, Server, StatusCode};

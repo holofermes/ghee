@@ -42,7 +42,7 @@ use crate::layer::Address;
 use crate::looper::{ControllerSlot, Frame, Loop, Output, Pacer, RenderTarget, SceneController};
 use crate::output::{encode_jpeg, encode_png, Scanout};
 use crate::procedural::locks::Locks;
-use crate::scene::{ArraySize, Param, ParamValue, Reach, Scene};
+use crate::scene::{coerce, ArraySize, ParamValue, Reach, Scene};
 use crate::sources::{collect, Snapshot};
 use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_KMS, DEST_MJPEG};
 
@@ -112,54 +112,6 @@ pub fn set_item(scope: Scope, name: &str, value: Value) -> Command {
     match scope {
         Scope::Scene => Command::SceneParam(name.to_string(), value),
         Scope::Pass(i) => Command::Param(i, name.to_string(), value),
-    }
-}
-
-/// The param's declared type wins over the wire type. An int rounds. A bool
-/// becomes a real bool. A color or a vec arrives as a list and passes through.
-/// `name` names the param in an error.
-pub fn coerce(name: &str, ptype: &str, val: &Value) -> Result<ParamValue> {
-    let built = if val.is_array() {
-        Param::new(name, ptype, val.clone(), None, None, None, None)
-    } else if ptype == "int" {
-        Param::new(
-            name,
-            ptype,
-            Value::from(round_half_even(as_f64(val)) as i64),
-            None,
-            None,
-            None,
-            None,
-        )
-    } else if ptype == "bool" {
-        Param::new(
-            name,
-            ptype,
-            Value::from(truthy(val)),
-            None,
-            None,
-            None,
-            None,
-        )
-    } else {
-        Param::new(name, ptype, val.clone(), None, None, None, None)
-    };
-    Ok(built?.value)
-}
-
-fn as_f64(v: &Value) -> f64 {
-    match v {
-        Value::Bool(b) => f64::from(u8::from(*b)),
-        _ => v.as_f64().unwrap_or_default(),
-    }
-}
-
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Bool(b) => *b,
-        Value::String(s) => !s.is_empty(),
-        Value::Null => false,
-        _ => v.as_f64().unwrap_or_default() != 0.0,
     }
 }
 
@@ -3582,6 +3534,7 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::scene::Param;
 
     const SCENE: &str = r#"{"version": 1,
         "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
@@ -4237,31 +4190,6 @@ mod tests {
             }
             _ => panic!("not a pass param"),
         }
-    }
-
-    #[test]
-    fn a_coerced_value_takes_the_declared_type() {
-        assert_eq!(
-            coerce("k", "int", &Value::from(2.6)).unwrap(),
-            ParamValue::Int(3)
-        );
-        assert_eq!(
-            coerce("k", "int", &Value::from(2.5)).unwrap(),
-            ParamValue::Int(2)
-        ); // half to even
-        assert_eq!(
-            coerce("k", "bool", &Value::from(1.0)).unwrap(),
-            ParamValue::Bool(true)
-        );
-        assert_eq!(
-            coerce("k", "float", &Value::from(0.5)).unwrap(),
-            ParamValue::Float(0.5)
-        );
-        assert_eq!(
-            coerce("k", "color", &serde_json::json!([1.0, 0.0, 0.5])).unwrap(),
-            ParamValue::Color(crate::layer::Rgb::numbers([1.0, 0.0, 0.5]))
-        );
-        assert!(coerce("k", "color", &serde_json::json!([1.0, 0.0])).is_err());
     }
 
     // stream sizing

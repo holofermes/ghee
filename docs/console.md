@@ -90,6 +90,8 @@ render` ([Where ghee finds a scene](scenes.md#where-ghee-finds-a-scene)).
 What Save does depends on whose scene it is.
 
 Your own scene: Save writes your changes into its files, like any editor.
+The scene file keeps its layout and changes only where you changed a value,
+and each shader goes back into the file that the scene names for it.
 
 Any other scene, such as a bundled example or a scene in a folder that you
 serve: ghee never touches its files. Save keeps only your changes, as

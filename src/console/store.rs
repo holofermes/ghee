@@ -12,9 +12,9 @@
 //!
 //! A store may also hold the scenes that its console makes, in a directory of
 //! their own, one directory per scene: `name/name.scene.json`, the GLSL of
-//! each pass in a file of its own, and the scene's files. A save writes such
-//! a scene whole, and no state file lays edits over it. That directory lists
-//! scene files alone, so no program there ever runs.
+//! each pass in a file of its own, and the scene's files. A save writes the
+//! edits of such a scene into its files, and no state file lays edits over
+//! it. That directory lists scene files alone, so no program there ever runs.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde_json::{Map, Value};
 
 use crate::console::core::{ConsoleError, ConsoleResult};
+use crate::console::layout;
 use crate::console::state::{self, Edits, Item};
 use crate::filters::{apply_filters, rebuild_filters};
 use crate::procedural::process::{self, Program, SceneProcess};
@@ -382,11 +383,42 @@ impl SceneStore {
         }
     }
 
-    /// Write scene `name`, one of the console's own, whole: `doc`, a scene
-    /// document as Scene::to_dict() writes it.
-    pub fn write(&self, name: &str, doc: &Value) -> ConsoleResult<()> {
+    /// Write `edits`, made over `defaults`, into the files of scene `name`,
+    /// one of the console's own. The scene file keeps its layout and changes
+    /// only where an edit lands, and each shader goes into the file that the
+    /// scene names for it (into_files()).
+    pub fn write(&self, name: &str, defaults: &Value, edits: &Edits) -> ConsoleResult<()> {
         let dir = self.own_dir(name)?;
-        write_scene(&dir, name, doc).map_err(ConsoleError::server_error)
+        let file = self.file(name)?;
+        let fail = |e: String| ConsoleError::server_error(format!("{name}: {e}"));
+        let text = fs::read_to_string(&file).map_err(|e| fail(format!("{file}: {e}")))?;
+        let raw: Value = serde_json::from_str(&text).map_err(|e| fail(format!("{file}: {e}")))?;
+        let (doc, glsl) = into_files(&raw, defaults, edits, &dir).map_err(fail)?;
+        let mut check = doc.clone();
+        for g in &glsl {
+            let at = match &g.pass {
+                Some(p) => raw_pass_mut(&mut check, p).map(|p| &mut p["fragment"]),
+                None => Some(&mut check["common"]),
+            };
+            if let Some(at) = at {
+                *at = Value::from(g.text.as_str());
+            }
+        }
+        Scene::from_dict_in(&check, &dir, Reach::Inside, Some(&file))
+            .map_err(|e| fail(e.to_string()))?;
+        for g in &glsl {
+            let p = format!("{dir}/{}", g.file);
+            if fs::read_to_string(&p).ok().as_deref() != Some(g.text.as_str()) {
+                write_kept(Path::new(&p), g.text.as_bytes())
+                    .map_err(|e| fail(format!("{p}: {e}")))?;
+            }
+        }
+        if doc != raw {
+            let out = layout::rewrite(&text, &doc).map_err(|e| fail(format!("{file}: {e}")))?;
+            write_kept(Path::new(&file), out.as_bytes())
+                .map_err(|e| fail(format!("{file}: {e}")))?;
+        }
+        Ok(())
     }
 
     /// Make scene `name` of the console's own from `doc`, with each of
@@ -729,29 +761,18 @@ pub fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
 }
 
 /// Write `doc`, a scene document as Scene::to_dict() writes it, as scene
-/// `name` in the directory `dir`: `name.scene.json`, the GLSL of each pass in
-/// `<pass>.glsl` and the common block in `common.glsl`, each through a
-/// temporary file and a rename. A filter's pass comes back from the scene's
-/// `filters`, so the file leaves it out. A GLSL file that the scene file
-/// named before and names no more goes.
+/// `name` in the new directory `dir`: `name.scene.json`, the GLSL of each
+/// pass in `<pass>.glsl` and the common block in `common.glsl`. A filter's
+/// pass comes back from the scene's `filters`, so the file leaves it out.
 fn write_scene(dir: &str, name: &str, doc: &Value) -> Result<(), String> {
     let file = format!("{dir}/{name}{SCENE_SUFFIX}");
-    let before: Vec<String> = fs::read_to_string(&file)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .map(|d| glsl_files(&d))
-        .unwrap_or_default();
     let (out, glsl) = split_glsl(doc);
     for (f, text) in &glsl {
         let p = format!("{dir}/{f}");
         state::write_file(Path::new(&p), text.as_bytes()).map_err(|e| format!("{p}: {e}"))?;
     }
     let text = serde_json::to_string_pretty(&out).map_err(|e| e.to_string())? + "\n";
-    state::write_file(Path::new(&file), text.as_bytes()).map_err(|e| format!("{file}: {e}"))?;
-    for f in before.iter().filter(|f| !glsl.iter().any(|(g, _)| g == *f)) {
-        let _ = fs::remove_file(format!("{dir}/{f}"));
-    }
-    Ok(())
+    state::write_file(Path::new(&file), text.as_bytes()).map_err(|e| format!("{file}: {e}"))
 }
 
 /// `doc` with the GLSL of each pass and of the common block as a file, and
@@ -798,23 +819,286 @@ fn split_glsl(doc: &Value) -> (Value, Vec<(String, String)>) {
     (out, glsl)
 }
 
-/// The GLSL files that the scene document `doc` names beside it.
-fn glsl_files(doc: &Value) -> Vec<String> {
-    let file = |v: Option<&Value>| {
-        v.and_then(|v| v.get("file"))
-            .and_then(Value::as_str)
-            .filter(|f| f.ends_with(".glsl") && !f.contains('/'))
-            .map(str::to_string)
+/// state::write_file(), with the old file's permissions kept.
+fn write_kept(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mode = fs::metadata(path).ok().map(|m| m.permissions());
+    state::write_file(path, bytes)?;
+    match mode {
+        Some(m) => fs::set_permissions(path, m),
+        None => Ok(()),
+    }
+}
+
+/// A shader that a save writes: the pass that it belongs to, None for the
+/// common block, the file inside the scene's directory, and its text.
+struct Glsl {
+    pass: Option<String>,
+    file: String,
+    text: String,
+}
+
+/// `raw`, the scene document as its file holds it, with `edits`, made over
+/// `defaults`, laid on, and the shaders to write. An edited shader goes into
+/// the file that `raw` names for it, or stays in the scene file when `raw`
+/// holds its text. A pass or a common block that names no file yet takes a
+/// file of its own name in `dir`. A filter's values stay out, since `raw`
+/// names a filter alone. Any other edit with no place in `raw` fails.
+fn into_files(
+    raw: &Value,
+    defaults: &Value,
+    edits: &Edits,
+    dir: &str,
+) -> Result<(Value, Vec<Glsl>), String> {
+    let mut doc = raw.clone();
+    let mut glsl: Vec<Glsl> = Vec::new();
+    let is_filter = |pass: &str| {
+        defaults["passes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|p| {
+                raw_name(p) == pass
+                    && p.get("filter")
+                        .and_then(Value::as_str)
+                        .is_some_and(|f| !f.is_empty())
+            })
     };
-    let mut out: Vec<String> = doc
-        .get("passes")
-        .and_then(Value::as_array)
-        .into_iter()
+    let no_pass = |p: &str| format!("the scene file has no pass '{p}'");
+    for item in &edits.items {
+        let pass = item.pass.as_deref().unwrap_or_default();
+        match item.item.as_str() {
+            "passes" => {
+                let mut passes = Vec::new();
+                for entry in item.value.as_array().into_iter().flatten() {
+                    match entry.as_str() {
+                        Some(n) => {
+                            passes.push(raw_pass(raw, n).cloned().ok_or_else(|| no_pass(n))?)
+                        }
+                        None => {
+                            let mut p = entry.clone();
+                            if let Some(Value::String(text)) = p.get("fragment").cloned() {
+                                let file = free_glsl(dir, raw_name(&p), &glsl);
+                                p["fragment"] = serde_json::json!({ "file": file });
+                                glsl.push(Glsl {
+                                    pass: Some(raw_name(&p).to_string()),
+                                    file,
+                                    text,
+                                });
+                            }
+                            passes.push(p);
+                        }
+                    }
+                }
+                doc["passes"] = Value::Array(passes);
+            }
+            "filters" => match item.value.as_array().is_some_and(|f| f.is_empty()) {
+                true => {
+                    doc.as_object_mut().map(|d| d.shift_remove("filters"));
+                }
+                false => doc["filters"] = item.value.clone(),
+            },
+            "common" => match &item.value {
+                Value::Null => {
+                    doc.as_object_mut().map(|d| d.shift_remove("common"));
+                }
+                v => {
+                    let text = v.as_str().unwrap_or_default();
+                    put_glsl(&mut doc, None, text, dir, &mut glsl);
+                }
+            },
+            "fragment" => {
+                raw_pass(&doc, pass).ok_or_else(|| no_pass(pass))?;
+                let text = item.value.as_str().unwrap_or_default();
+                put_glsl(&mut doc, Some(pass), text, dir, &mut glsl);
+            }
+            "channels" => {
+                let p = raw_pass_mut(&mut doc, pass).ok_or_else(|| no_pass(pass))?;
+                set_or_drop(p, "channels", &item.value);
+            }
+            "layers" => {
+                let mut layers = Vec::new();
+                for entry in item.value.as_array().into_iter().flatten() {
+                    match entry.as_str() {
+                        Some(n) => layers.push(
+                            raw_layer(raw, n)
+                                .cloned()
+                                .ok_or_else(|| format!("the scene file has no layer '{n}'"))?,
+                        ),
+                        None => layers.push(entry.clone()),
+                    }
+                }
+                let p = raw_pass_mut(&mut doc, pass).ok_or_else(|| no_pass(pass))?;
+                set_or_drop(p, "layers", &Value::Array(layers));
+            }
+            _ => {
+                let param = item.param.as_deref().unwrap_or_default();
+                let owner = match &item.pass {
+                    Some(p) => raw_pass_mut(&mut doc, p).ok_or_else(|| no_pass(p))?,
+                    None => &mut doc,
+                };
+                if !owner["params"].is_object() {
+                    owner["params"] = Value::Object(Map::new());
+                }
+                owner["params"][param] = item.value.clone();
+            }
+        }
+    }
+    let values = |key: &str| {
+        edits
+            .values
+            .get(key)
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+    };
+    for (n, v) in values("params") {
+        set_value(&mut doc, n, v).ok_or_else(|| format!("the scene file has no param '{n}'"))?;
+    }
+    for (pass, v) in values("passes") {
+        if is_filter(pass) {
+            continue;
+        }
+        let p = raw_pass_mut(&mut doc, pass).ok_or_else(|| no_pass(pass))?;
+        for (n, pv) in v
+            .get("params")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            set_value(p, n, pv)
+                .ok_or_else(|| format!("pass '{pass}' in the scene file has no param '{n}'"))?;
+        }
+        for (k, absent) in [
+            ("visible", Value::from(true)),
+            ("sampling", Value::from("linear")),
+            ("size", Value::Null),
+            ("scale", Value::Null),
+        ] {
+            if let Some(kv) = v.get(k) {
+                let kv = if *kv == absent { &Value::Null } else { kv };
+                set_or_drop(p, k, kv);
+            }
+        }
+    }
+    for (n, patch) in values("layers") {
+        let l = raw_layer_mut(&mut doc, n)
+            .ok_or_else(|| format!("the scene file has no layer '{n}'"))?;
+        state::merge(l, patch);
+    }
+    for (n, v) in values("assets") {
+        if !doc["assets"].is_object() {
+            doc["assets"] = Value::Object(Map::new());
+        }
+        match v.is_null() {
+            true => {
+                doc["assets"].as_object_mut().map(|a| a.shift_remove(n));
+            }
+            false => doc["assets"][n] = v.clone(),
+        }
+        if doc["assets"].as_object().is_some_and(Map::is_empty) {
+            doc.as_object_mut().map(|d| d.shift_remove("assets"));
+        }
+    }
+    Ok((doc, glsl))
+}
+
+/// Set the shader of pass `pass`, or the common block for None, in `doc`.
+fn put_glsl(doc: &mut Value, pass: Option<&str>, text: &str, dir: &str, glsl: &mut Vec<Glsl>) {
+    let (holder, key, own) = match pass {
+        Some(p) => match raw_pass_mut(doc, p) {
+            Some(h) => (h, "fragment", p.to_string()),
+            None => return,
+        },
+        None => (doc, "common", "common".to_string()),
+    };
+    match holder.get(key) {
+        Some(Value::String(_)) => holder[key] = Value::from(text),
+        Some(Value::Object(o)) if o.get("file").and_then(Value::as_str).is_some() => {
+            let file = o["file"].as_str().unwrap_or_default().to_string();
+            glsl.retain(|g| g.file != file);
+            glsl.push(Glsl {
+                pass: pass.map(str::to_string),
+                file,
+                text: text.to_string(),
+            });
+        }
+        _ => {
+            let file = free_glsl(dir, &own, glsl);
+            holder[key] = serde_json::json!({ "file": file });
+            glsl.push(Glsl {
+                pass: pass.map(str::to_string),
+                file,
+                text: text.to_string(),
+            });
+        }
+    }
+}
+
+/// `<stem>.glsl`, or `<stem>-2.glsl` and on, the first that no file in
+/// `dir` and no shader of `glsl` takes.
+fn free_glsl(dir: &str, stem: &str, glsl: &[Glsl]) -> String {
+    (1..)
+        .map(|i| match i {
+            1 => format!("{stem}.glsl"),
+            i => format!("{stem}-{i}.glsl"),
+        })
+        .find(|f| !Path::new(&format!("{dir}/{f}")).exists() && !glsl.iter().any(|g| g.file == *f))
+        .unwrap_or_default()
+}
+
+/// Set key `k` of `o` to `v`, or remove it for a null.
+fn set_or_drop(o: &mut Value, k: &str, v: &Value) {
+    match v.is_null() {
+        true => {
+            o.as_object_mut().map(|o| o.shift_remove(k));
+        }
+        false => o[k] = v.clone(),
+    }
+}
+
+/// Set the value of param `name` of `owner`, a pass or the scene. None when
+/// it has no such param.
+fn set_value(owner: &mut Value, name: &str, v: &Value) -> Option<()> {
+    let p = owner.get_mut("params")?.get_mut(name)?.as_object_mut()?;
+    p.insert("value".to_string(), v.clone());
+    Some(())
+}
+
+/// A pass's name as a scene file holds it: `main` when it names none.
+fn raw_name(p: &Value) -> &str {
+    p.get("name").and_then(Value::as_str).unwrap_or("main")
+}
+
+fn raw_pass<'a>(doc: &'a Value, name: &str) -> Option<&'a Value> {
+    doc.get("passes")?
+        .as_array()?
+        .iter()
+        .find(|p| raw_name(p) == name)
+}
+
+fn raw_pass_mut<'a>(doc: &'a mut Value, name: &str) -> Option<&'a mut Value> {
+    doc.get_mut("passes")?
+        .as_array_mut()?
+        .iter_mut()
+        .find(|p| raw_name(p) == name)
+}
+
+fn raw_layer<'a>(doc: &'a Value, name: &str) -> Option<&'a Value> {
+    doc.get("passes")?
+        .as_array()?
+        .iter()
+        .filter_map(|p| p.get("layers")?.as_array())
         .flatten()
-        .filter_map(|p| file(p.get("fragment")))
-        .collect();
-    out.extend(file(doc.get("common")));
-    out
+        .find(|l| l.get("name").and_then(Value::as_str) == Some(name))
+}
+
+fn raw_layer_mut<'a>(doc: &'a mut Value, name: &str) -> Option<&'a mut Value> {
+    doc.get_mut("passes")?
+        .as_array_mut()?
+        .iter_mut()
+        .filter_map(|p| p.get_mut("layers")?.as_array_mut())
+        .flatten()
+        .find(|l| l.get("name").and_then(Value::as_str) == Some(name))
 }
 
 /// The scenes in a directory, as package() finds them, the documents first.
@@ -1312,37 +1596,110 @@ mod tests {
         assert!(store.start("own", SIZE).unwrap().1.is_none());
     }
 
+    /// An own scene as a person writes it: shaders in files of their own
+    /// names, and entries on one line each.
+    const ART: &str = r#"{
+  "version": 1,
+  "common": {"file": "art-common.glsl"},
+  "passes": [
+    {"name": "main", "fragment": {"file": "art-main.glsl"},
+     "params": {
+       "gain":  {"type": "float", "value": 0.75, "min": 0.2, "max": 3.0},
+       "grain": {"type": "float", "value": 0.03}
+     },
+     "layers": [{"name": "word", "visible": false, "text": "exhale"}]}
+  ]
+}
+"#;
+
     #[test]
-    fn a_save_of_the_consoles_own_scene_writes_its_files_whole() {
+    fn a_save_of_an_own_scene_changes_only_what_changed_in_the_files_that_it_names() {
         let (_d, m, store) = mine("own-write");
-        let mut doc = store.resolve("own", SIZE).unwrap().to_dict();
-        doc["passes"][0]["name"] = json!("blur");
+        let dir = format!("{m}/own");
+        write_text(&format!("{dir}/own{SCENE_SUFFIX}"), ART);
+        write_text(
+            &format!("{dir}/art-main.glsl"),
+            "void main(){ gl_FragColor = vec4(k()); }",
+        );
+        write_text(
+            &format!("{dir}/art-common.glsl"),
+            "float k(){ return 1.0; }",
+        );
+        let scene = store.resolve("own", SIZE).unwrap();
+        let defaults = scene.to_dict();
+        let mut doc = defaults.clone();
+        doc["passes"][0]["params"]["gain"]["value"] = json!(1.2);
+        doc["passes"][0]["params"]["hot"] = json!({"type": "color", "value": "#ffd9a8"});
+        doc["passes"][0]["fragment"] = json!("void main(){ gl_FragColor = vec4(k() * gain); }");
+        doc["passes"][0]["layers"][0]["text"] = json!("inhale");
         doc["common"] = json!("float k(){ return 0.5; }");
         doc["filters"] = json!(["dither"]);
-        store.write("own", &doc).unwrap();
+        let working = scene_of(&scene, &doc, "own").unwrap().to_dict();
+        let edits = state::diff(&defaults, &working, false);
+        store.write("own", &defaults, &edits).unwrap();
+        assert_eq!(
+            fs::read_to_string(format!("{dir}/own{SCENE_SUFFIX}")).unwrap(),
+            ART.replace("\"value\": 0.75", "\"value\": 1.2")
+                .replace(
+                    "\"value\": 0.03}\n",
+                    "\"value\": 0.03},\n       \"hot\": {\"type\": \"color\", \"value\": \"#ffd9a8\"}\n"
+                )
+                .replace("\"exhale\"", "\"inhale\"")
+                .replace("  ]\n}", "  ],\n  \"filters\": [\"dither\"]\n}")
+        );
+        assert_eq!(
+            fs::read_to_string(format!("{dir}/art-main.glsl")).unwrap(),
+            "void main(){ gl_FragColor = vec4(k() * gain); }"
+        );
+        assert_eq!(
+            fs::read_to_string(format!("{dir}/art-common.glsl")).unwrap(),
+            "float k(){ return 0.5; }"
+        );
+        let mut files: Vec<String> = entries(&dir);
+        files.sort();
+        assert_eq!(
+            files,
+            ["art-common.glsl", "art-main.glsl", "own.scene.json"]
+        );
+        let back = store.resolve("own", SIZE).unwrap();
+        assert_eq!(back.passes[1].filter, "dither");
+        assert_eq!(store.state_file("own").unwrap(), None);
+    }
+
+    #[test]
+    fn a_new_pass_of_an_own_scene_saves_its_shader_into_a_file_of_its_name() {
+        let (_d, m, store) = mine("own-pass");
         let dir = format!("{m}/own");
+        let defaults = store.resolve("own", SIZE).unwrap().to_dict();
+        let mut doc = defaults.clone();
+        let mut blur = doc["passes"][0].clone();
+        blur["name"] = json!("blur");
+        blur["fragment"] = json!("void main(){ gl_FragColor = vec4(0.5); }");
+        doc["passes"].as_array_mut().unwrap().push(blur);
+        write_text(&format!("{dir}/blur.glsl"), "taken");
+        store
+            .write("own", &defaults, &state::diff(&defaults, &doc, false))
+            .unwrap();
         let written: Value =
             serde_json::from_str(&fs::read_to_string(format!("{dir}/own{SCENE_SUFFIX}")).unwrap())
                 .unwrap();
         assert_eq!(
-            written["passes"][0]["fragment"],
-            json!({"file": "blur.glsl"})
+            written["passes"][1]["fragment"],
+            json!({"file": "blur-2.glsl"})
         );
-        assert_eq!(written["common"], json!({"file": "common.glsl"}));
-        assert_eq!(written["passes"].as_array().unwrap().len(), 1);
         assert_eq!(
             fs::read_to_string(format!("{dir}/blur.glsl")).unwrap(),
-            "void main(){ gl_FragColor = vec4(1.0); }"
+            "taken"
         );
         let back = store.resolve("own", SIZE).unwrap();
-        assert_eq!(back.common.as_deref(), Some("float k(){ return 0.5; }"));
-        assert_eq!(back.passes[1].filter, "dither");
-        // a pass renamed again leaves no file of its old name
-        doc["passes"][0]["name"] = json!("main");
-        store.write("own", &doc).unwrap();
-        assert!(Path::new(&format!("{dir}/main.glsl")).is_file());
-        assert!(!Path::new(&format!("{dir}/blur.glsl")).exists());
-        assert_eq!(store.state_file("own").unwrap(), None);
+        assert_eq!(
+            back.passes[1].fragment,
+            "void main(){ gl_FragColor = vec4(0.5); }"
+        );
+        assert_eq!(
+            back.passes[0].fragment,
+            "void main(){ gl_FragColor = vec4(1.0); }"
+        );
     }
 
     #[test]

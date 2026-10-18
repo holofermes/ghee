@@ -1741,18 +1741,20 @@ impl ConsoleHost for RenderLoopHost {
         })
     }
 
-    /// A scene of the console's own saves whole, and its defaults are then
-    /// the scene as saved.
+    /// A scene of the console's own saves its edits into its files, and its
+    /// defaults are then the scene that its files hold.
     fn save(&self, _name: Option<&str>) -> ConsoleResult<()> {
         let console = &self.console;
         console.with_active(|name, copy| {
             if console.store.is_mine(name) {
-                console.store.write(name, &copy.working_doc())?;
-                copy.opened.defaults = copy.opened.working.clone();
+                console
+                    .store
+                    .write(name, &copy.defaults_doc, &copy.edits(None))?;
+                let size = lock(&console.scene_size).unwrap_or((console.hub.w, console.hub.h));
+                let (resolved, read) = collect(|| console.store.resolve(name, size));
+                copy.opened.defaults = resolved?;
                 copy.defaults_doc = copy.opened.defaults.to_dict();
                 copy.opened.saved = None;
-                let size = lock(&console.scene_size).unwrap_or((console.hub.w, console.hub.h));
-                let (_, read) = collect(|| console.store.resolve(name, size));
                 *lock(&console.sources) = Some(console.snapshot(read));
                 return Ok(());
             }
@@ -2478,6 +2480,46 @@ mod tests {
         );
         assert_eq!(console.store.state_file("copy").unwrap(), None);
         assert_eq!(console.stats()["stale"], false);
+    }
+
+    #[test]
+    fn a_save_of_an_own_scene_that_a_person_wrote_keeps_its_file_names_and_layout() {
+        let (_d, m, console) = with_mine("own-art");
+        let dir = m.join("art");
+        fs::create_dir_all(&dir).unwrap();
+        let text = r#"{
+  "version": 1,
+  "passes": [
+    {"name": "main", "fragment": {"file": "art-main.glsl"},
+     "params": {"cols": {"type": "int", "value": 7, "min": 1, "max": 9}}}
+  ]
+}
+"#;
+        fs::write(dir.join("art.scene.json"), text).unwrap();
+        fs::write(
+            dir.join("art-main.glsl"),
+            "void main(){ gl_FragColor = vec4(1.0); }",
+        )
+        .unwrap();
+        console.store.rescan();
+        let (opened, _) = console.store.open("art", None, (32, 24)).unwrap();
+        ready(&console, "art", opened);
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let q = "scene=art&pass=main&name=cols&value=3";
+        assert_eq!(ask(&api, "POST", "/set", q, "").0, 200);
+        assert_eq!(ask(&api, "POST", "/save", "name=art", "").0, 200);
+        assert_eq!(
+            fs::read_to_string(dir.join("art.scene.json")).unwrap(),
+            text.replace("\"value\": 7", "\"value\": 3")
+        );
+        let mut files: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        assert_eq!(files, ["art-main.glsl", "art.scene.json"]);
+        let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
+        assert_eq!(edits["unsaved"], false);
     }
 
     #[test]

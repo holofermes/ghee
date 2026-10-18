@@ -501,7 +501,7 @@ fn compose(under: &mut Map<String, Value>, over: &Map<String, Value>) {
 }
 
 /// RFC 7386: lay `patch` over `target`.
-fn merge(target: &mut Value, patch: &Value) {
+pub(crate) fn merge(target: &mut Value, patch: &Value) {
     let Value::Object(p) = patch else {
         *target = patch.clone();
         return;
@@ -514,7 +514,7 @@ fn merge(target: &mut Value, patch: &Value) {
     };
     for (k, v) in p {
         if v.is_null() {
-            t.remove(k);
+            t.shift_remove(k);
         } else {
             merge(t.entry(k.clone()).or_insert(Value::Null), v);
         }

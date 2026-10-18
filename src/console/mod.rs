@@ -11,6 +11,7 @@
 pub mod core;
 pub mod feeds;
 pub mod hub;
+pub mod layout;
 pub mod server;
 pub mod state;
 pub mod store;

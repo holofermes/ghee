@@ -107,8 +107,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   dropped it silently.
 - After dropped ticks, a tick's `dt` covers the whole gap since the last
   tick that the program got.
-- ghee rounds a half up in an int param, on the wire, in the console and in
-  `set_param` alike: 2.5 gives 3, and -2.5 gives -2.
+- ghee rounds a half up in an int param, in a scene file, on the wire, in
+  the console and in `set_param` alike: 2.5 gives 3, and -2.5 gives -2. A
+  scene file's 2.7 gives 3 instead of 2.
 - A Python scene file that you run yourself renders as `ghee render` renders
   it. Its flags take `ghee render`'s checks and help, `--stats` prints the
   same lines, a SIGTERM ends it with status 143, and `--serve` gives the

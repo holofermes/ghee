@@ -722,21 +722,22 @@ impl ParamValue {
 }
 
 /// `val`, a value that a host sets the param `name` of type `ptype` to, as
-/// that type. An int rounds half up, so 2.5 gives 3. A bool takes the truth
-/// of any value. A color or a vec arrives as a list.
+/// that type. An int rounds half up, as a scene file's does. A bool takes
+/// the truth of any value. A color or a vec arrives as a list.
 pub fn coerce(name: &str, ptype: &str, val: &Value) -> Result<ParamValue> {
     let val = match ptype {
         _ if val.is_array() => val.clone(),
-        "int" => Value::from(round_half_up(as_f64(val)) as i64),
+        "int" if !val.is_number() => Value::from(as_f64(val)),
         "bool" => Value::from(truthy(val)),
         _ => val.clone(),
     };
     Ok(Param::new(name, ptype, val, None, None, None, None)?.value)
 }
 
-/// `x` rounded to a whole number, a half up.
-pub fn round_half_up(x: f64) -> f64 {
-    (x + 0.5).floor()
+/// The int param value that `x` gives: `x` rounded to a whole number, a half
+/// up, so 2.5 gives 3 and -2.5 gives -2.
+pub fn round_half_up(x: f64) -> i64 {
+    (x + 0.5).floor() as i64
 }
 
 fn as_f64(v: &Value) -> f64 {
@@ -827,7 +828,7 @@ impl Param {
             }
             let f = value.as_f64().unwrap_or_default();
             if ty == "int" {
-                ParamValue::Int(value.as_i64().unwrap_or(f as i64))
+                ParamValue::Int(value.as_i64().unwrap_or_else(|| round_half_up(f)))
             } else {
                 ParamValue::Float(f)
             }
@@ -5502,6 +5503,25 @@ mod tests {
             sc.set_layer(&nope, &json!(1)).unwrap_err().to_string(),
             "the scene has no layer 'nope'"
         );
+    }
+
+    #[test]
+    fn an_int_in_a_scene_file_rounds_as_a_set_does() {
+        for (written, int) in [(2.5, 3), (2.4, 2), (-2.5, -2), (-2.6, -3)] {
+            let sc = Scene::from_dict(
+                &json!({"version": 1,
+                        "params": {"n": {"type": "int", "value": written}},
+                        "passes": [{"name": "a", "fragment": GOOD}]}),
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(sc.params.get("n").unwrap().value, ParamValue::Int(int));
+            assert_eq!(
+                coerce("n", "int", &Value::from(written)).unwrap(),
+                ParamValue::Int(int)
+            );
+        }
     }
 
     #[test]

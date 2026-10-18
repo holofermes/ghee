@@ -1295,7 +1295,7 @@ fn as_param(ty: &str, values: &[f32]) -> Option<ParamValue> {
     let at = |i: usize| f64::from(values[i]);
     match ty {
         "float" => Some(ParamValue::Float(at(0))),
-        "int" => Some(ParamValue::Int(round_half_up(at(0)) as i64)),
+        "int" => Some(ParamValue::Int(round_half_up(at(0)))),
         "bool" => Some(ParamValue::Bool(at(0) != 0.0)),
         "color" => Some(ParamValue::Color(Rgb::numbers([at(0), at(1), at(2)]))),
         "vec2" | "vec3" | "vec4" => Some(ParamValue::Vec(

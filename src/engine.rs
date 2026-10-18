@@ -951,7 +951,6 @@ pub struct Renderer {
     pub error_line: Option<i64>,
     /// The pass holding the error. Common is the scene's common block.
     pub error_pass: Option<ErrorPass>,
-    #[allow(dead_code)]
     pub display: bool,
     /// The card node that the display mode scans out on.
     card: Option<String>,
@@ -5086,8 +5085,11 @@ impl Renderer {
     /// takes its panel from there: the display goes off and the backlight
     /// with it. A blanked display draws nothing, so present returns at once
     /// and the caller paces its own loop.
-    /// A renderer that drives no display returns an error.
+    /// A renderer that drives no display takes it as a no-op.
     pub fn blank(&self, on: bool) -> Result<()> {
+        if !self.display {
+            return Ok(());
+        }
         if unsafe { ffi::ghee_display_blank(self.handle, i32::from(on)) } != 0 {
             bail!("{}", self.last_error());
         }

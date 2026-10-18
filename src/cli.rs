@@ -1253,8 +1253,8 @@ struct RenderArgs {
     #[arg(
         long,
         value_name = "K=V,...",
-        help = "extra options passed to the image encoder, e.g. quality=90 or \
-                lossless=True (ignored for -o -)"
+        help = "options for the image encoder: quality=90 sets a JPEG's quality, \
+                75 by default (ignored for -o -)"
     )]
     save_opts: Option<String>,
 

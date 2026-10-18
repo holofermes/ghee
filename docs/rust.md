@@ -57,10 +57,8 @@ holds what it held last frame, and ghee skips the upload. After every
 A running scene takes new layers with no rebuild. Use `add_layer` to put a
 layer, written as a scene declares it ([Layers](layers.md)), into a pass at
 an index among its layers. Every other layer and pass keeps what it holds,
-its phases and its arrays included. A shape compiles nothing, and a layer
-whose shaders come out the same as another layer's draws through the same
-program. Use `move_layer` to put a layer at another index of its pass, and
-`remove_layer` to take it out:
+its phases and its arrays included. Use `move_layer` to put a layer at
+another index of its pass, and `remove_layer` to take it out:
 
 ```rust,no_run
 use ghee::engine::Renderer;

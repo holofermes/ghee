@@ -34,7 +34,7 @@ use crate::console::state::{self, Edits, Item};
 use crate::console::store::{self, Carried, Opened, SceneStore};
 use crate::console::{examples_dir, is_examples_dir};
 use crate::draw::Call;
-use crate::engine::{Card, Feed, Given, Provider, Renderer, Taken};
+use crate::engine::{Card, Feed, Given, Provider, Renderer, Taken, DEFAULT_SIZE};
 use crate::feeds::demo_feed;
 use crate::layer::Address;
 use crate::live::Live;
@@ -875,11 +875,21 @@ impl RenderTarget for SharedRenderer {
     }
 }
 
-/// Create the render-thread Renderer. It probes the DRI devices, so the console
-/// runs on a Pi (card0) and on desktop Mesa (renderD128). A display takes
-/// `card` when the caller holds it open.
+/// Create the render-thread Renderer: on `card`, the display's, else on the
+/// GL device that `console.dri` names, else on the first one that opens.
 fn make_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
-    let mut r = open_renderer(console, card)?;
+    let (w, h) = (console.hub.w, console.hub.h);
+    let mut r = match card {
+        Some(card) => Renderer::on_card(card, w, h, console.rgb565)?,
+        None => Renderer::new(
+            w,
+            h,
+            console.components,
+            console.dri.as_deref(),
+            false,
+            false,
+        )?,
+    };
     if console.drop {
         r.set_drop(true)?;
     }
@@ -891,46 +901,6 @@ fn make_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
         }
     }
     Ok(r)
-}
-
-fn open_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
-    if console.display {
-        if let Some(card) = card {
-            return Renderer::on_card(card, console.hub.w, console.hub.h, console.rgb565);
-        }
-        let dev = console
-            .dri
-            .clone()
-            .or_else(|| std::env::var("GHEE_DRI").ok().filter(|d| !d.is_empty()))
-            .unwrap_or_else(|| "/dev/dri/card0".to_string());
-        return Renderer::new(
-            console.hub.w,
-            console.hub.h,
-            console.components,
-            Some(&dev),
-            true,
-            console.rgb565,
-        );
-    }
-    let devices = match &console.dri {
-        Some(d) => vec![d.clone()],
-        None => crate::engine::probe_dri_devices(),
-    };
-    let mut errs: Vec<String> = Vec::new();
-    for dev in devices {
-        match Renderer::new(
-            console.hub.w,
-            console.hub.h,
-            console.components,
-            Some(&dev),
-            false,
-            false,
-        ) {
-            Ok(r) => return Ok(r),
-            Err(e) => errs.push(format!("{dev}: {e}")),
-        }
-    }
-    bail!("no GL device for the console:\n{}", errs.join("\n"))
 }
 
 /// What the render thread holds between commands. The renderer's scene is
@@ -1933,12 +1903,15 @@ pub struct Options {
     /// Where the scenes' state files live. None takes the store's own, else
     /// state::default_dir().
     pub state_dir: Option<std::path::PathBuf>,
-    pub size: (i32, i32),
+    /// The render size. None takes the mode of `display`, else
+    /// engine::DEFAULT_SIZE.
+    pub size: Option<(i32, i32)>,
     pub port: u16,
     /// Loopback by default. The console has no auth, and it compiles POSTed
     /// GLSL. Pass "0.0.0.0" only on a network you trust.
     pub host: String,
-    pub display: bool,
+    /// The KMS display that the frames scan out to, from Card::open().
+    pub display: Option<Card>,
     pub rgb565: bool,
     /// The display skips to the newest frame, and the render keeps its own
     /// pace: Renderer::set_drop.
@@ -1974,10 +1947,9 @@ pub struct Options {
     /// 0 serves until stop(). A count ends the console with the render.
     pub frames: u64,
     pub timestep: Option<f64>,
+    /// The GL device of a render with no display. None takes the first one
+    /// that opens.
     pub dri_device: Option<String>,
-    /// The display's card, held open since the caller's probe, which the
-    /// renderer takes in place of opening `dri_device`.
-    pub card: Option<Card>,
     /// The summary hook. This hook makes the loop keep a cost per frame, and a
     /// run without it keeps none.
     pub on_stats: Option<StatsHook>,
@@ -1991,10 +1963,10 @@ impl Default for Options {
             my_scenes: None,
             uploads: false,
             state_dir: None,
-            size: (320, 240),
+            size: None,
             port: 8090,
             host: "127.0.0.1".to_string(),
-            display: false,
+            display: None,
             rgb565: false,
             drop: false,
             rotate: 0,
@@ -2014,7 +1986,6 @@ impl Default for Options {
             frames: 0,
             timestep: None,
             dri_device: None,
-            card: None,
             on_stats: None,
         }
     }
@@ -2070,7 +2041,6 @@ pub fn run(opts: Options) -> Result<()> {
         frames,
         timestep,
         dri_device,
-        card,
         on_stats,
         filters,
     } = opts;
@@ -2084,8 +2054,11 @@ pub fn run(opts: Options) -> Result<()> {
     store.state_dir = state_dir
         .or_else(|| store.state_dir.take())
         .or_else(state::default_dir);
+    let size = size
+        .or_else(|| display.as_ref().map(Card::size))
+        .unwrap_or(DEFAULT_SIZE);
     let mut console = Console::new(store);
-    console.display = display;
+    console.display = display.is_some();
     console.rgb565 = rgb565;
     console.drop = drop;
     console.rotate = rotate;
@@ -2103,7 +2076,7 @@ pub fn run(opts: Options) -> Result<()> {
     hub.stream_max = stream_max;
     hub.stream_hz = stream_fps;
     hub.bitrate = bitrate;
-    if display {
+    if console.display {
         hub.dests.push(DEST_KMS.to_string());
     }
     hub.dests.extend(
@@ -2112,7 +2085,7 @@ pub fn run(opts: Options) -> Result<()> {
             .map(|s| s.dest().to_string())
             .filter(|d| !d.is_empty()),
     );
-    let format = frame_format(display && rgb565, components);
+    let format = frame_format(display.is_some() && rgb565, components);
     hub.set_display(format, rotate);
     if let Some(first) = names.first() {
         console.ask(first);
@@ -2133,7 +2106,7 @@ pub fn run(opts: Options) -> Result<()> {
         .with_uploads(uploads);
     let serving = serve(Arc::new(server), Arc::clone(&console), Arc::new(api));
 
-    match make_renderer(&console, card) {
+    match make_renderer(&console, display) {
         Ok(r) => {
             let mut from = format!("scenes={}", console.store.dir);
             if let Some(m) = console.store.mine.as_deref() {
@@ -4079,7 +4052,7 @@ mod tests {
         let ran = run(Options {
             store: Some(SceneStore::new(&console.store.dir, Vec::new())),
             port: free_port(),
-            size: (32, 24),
+            size: Some((32, 24)),
             frames: 3,
             sinks: vec![Box::new(Bound(Rc::clone(&drawn)))],
             ..Options::default()
@@ -4102,7 +4075,7 @@ mod tests {
         let ran = run(Options {
             store: Some(SceneStore::new(&console.store.dir, Vec::new())),
             port: free_port(),
-            size: (32, 24),
+            size: Some((32, 24)),
             frames: 3,
             sinks: vec![Box::new(Bound(Rc::new(Cell::new(0))))],
             on_stats: Some(Box::new(move |times, wall, out| {
@@ -4163,7 +4136,7 @@ mod tests {
         let ran = run(Options {
             store: Some(SceneStore::new(&console.store.dir, Vec::new())),
             port,
-            size: (32, 24),
+            size: Some((32, 24)),
             rotate: 90,
             frames: 1,
             sinks: vec![Box::new(StatsAt(port, Rc::clone(&stats)))],
@@ -4304,7 +4277,7 @@ mod tests {
         let ran = run(Options {
             store: Some(SceneStore::new(&console.store.dir, Vec::new())),
             port: free_port(),
-            size: (32, 24),
+            size: Some((32, 24)),
             frames: 5,
             sinks: vec![Box::new(Bound(Rc::new(Cell::new(0))))],
             pacer: Some(Box::new(crate::output::FixedPacer::new(20.0))),

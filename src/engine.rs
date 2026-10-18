@@ -762,28 +762,48 @@ pub struct Card {
 
 impl Card {
     /// The card `dri_device`, else the first card with a connected display,
-    /// open. None means no card node, or no connected display.
-    pub fn open(dri_device: Option<&str>) -> Option<Card> {
-        let devices = match dri_device.filter(|d| !d.is_empty()) {
+    /// open, once GL on it runs on the GPU. The error says why no card
+    /// opened: the card node's own error, no connected display, or GL in
+    /// software.
+    pub fn open(dri_device: Option<&str>) -> Result<Card> {
+        let card = Card::find(dri_device)?;
+        card.check_renders()?;
+        Ok(card)
+    }
+
+    /// Card::open() without the check of GL on the card.
+    fn find(dri_device: Option<&str>) -> Result<Card> {
+        let named = dri_device.filter(|d| !d.is_empty());
+        let devices = match named {
             Some(d) => vec![d.to_string()],
             None => probe_dri_cards(),
         };
+        let mut why: Vec<String> = Vec::new();
         for device in devices {
-            let Ok(cdev) = CString::new(device.as_str()) else {
-                continue;
-            };
+            let cdev = CString::new(device.as_str())?;
             let (mut w, mut h): (c_int, c_int) = (0, 0);
             let fd = unsafe { ffi::ghee_display_open(cdev.as_ptr(), &mut w, &mut h) };
             if fd >= 0 {
                 let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-                return Some(Card {
+                return Ok(Card {
                     device,
                     size: (w, h),
                     fd,
                 });
             }
+            // ghee_display_open fails the same way for a card node that
+            // won't open and for a card with nothing connected. The card
+            // node's own open tells the two apart.
+            let failed = fs::OpenOptions::new().read(true).write(true).open(&device);
+            why.push(match failed {
+                Err(e) => format!("{device}: {}", crate::scene::strerror(&e)),
+                Ok(_) => format!("{device}: no connected display"),
+            });
         }
-        None
+        match named {
+            Some(_) => bail!("{}", why.join("")),
+            None => bail!("no connected display ({})", why.join("; ")),
+        }
     }
 
     /// The card node.
@@ -817,7 +837,9 @@ impl Card {
 /// The card node that drives a connected display, as (device, width, height).
 /// None means no display is connected.
 pub fn probe_display_device(dri_device: Option<&str>) -> Option<(String, i32, i32)> {
-    Card::open(dri_device).map(|c| (c.device, c.size.0, c.size.1))
+    Card::find(dri_device)
+        .ok()
+        .map(|c| (c.device, c.size.0, c.size.1))
 }
 
 /// The mode size of the connected display, as (width, height).
@@ -837,6 +859,10 @@ pub fn display_renders(dri_device: &str) -> bool {
     };
     unsafe { ffi::ghee_display_renders(cdev.as_ptr()) != 0 }
 }
+
+/// The render size with nothing to take one from: no display and no size
+/// given.
+pub const DEFAULT_SIZE: (i32, i32) = (320, 240);
 
 /// The turns that a renderer takes, in degrees clockwise.
 pub const ROTATIONS: [i64; 4] = [0, 90, 180, 270];
@@ -1189,12 +1215,11 @@ impl Renderer {
         if display {
             // Scanout to a KMS connector needs a card node and DRM master.
             // A render node offers neither.
-            let named = device.map(str::to_string).or_else(env_dri);
-            let card = card.or_else(|| named.is_none().then(|| Card::open(None)).flatten());
-            let (dev, fd) = match card {
-                Some(c) => (c.device, c.fd.into_raw_fd()),
-                None => (named.unwrap_or_else(|| "/dev/dri/card0".to_string()), -1),
+            let card = match card {
+                Some(card) => card,
+                None => Card::open(device.map(str::to_string).or_else(env_dri).as_deref())?,
             };
+            let (dev, fd) = (card.device, card.fd.into_raw_fd());
             let cdev = CString::new(dev.as_str())?;
             let mut err: *mut c_char = ptr::null_mut();
             r.handle = unsafe {
@@ -5487,6 +5512,24 @@ mod tests {
     fn probe_missing_device_is_none() {
         let _g = lock();
         assert_eq!(probe_display(Some("/dev/dri/does-not-exist")), None);
+    }
+
+    #[test]
+    fn a_card_that_opens_no_display_says_why() {
+        let _g = lock();
+        let e = Card::open(Some("/dev/dri/does-not-exist")).err().unwrap();
+        assert_eq!(
+            e.to_string(),
+            "/dev/dri/does-not-exist: No such file or directory"
+        );
+        let d = std::env::temp_dir().join(format!("ghee-card-{}", std::process::id()));
+        fs::write(&d, b"").unwrap();
+        let e = Card::open(Some(&d.to_string_lossy())).err().unwrap();
+        assert_eq!(
+            e.to_string(),
+            format!("{}: no connected display", d.display())
+        );
+        fs::remove_file(&d).unwrap();
     }
 
     #[test]

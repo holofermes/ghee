@@ -30,7 +30,7 @@ use serde_json::{Map, Value};
 use crate::console::server;
 use crate::console::store::SceneStore;
 use crate::console::{examples_dir, is_examples_dir};
-use crate::engine::{probe_display, Card, Feed, Renderer};
+use crate::engine::{probe_display, Card, Feed, Renderer, DEFAULT_SIZE};
 use crate::feeds::demo_feed;
 use crate::filters::{self, apply_filters};
 use crate::golden;
@@ -320,25 +320,11 @@ fn scene_of(a: &Ns, card: &mut Option<Card>) -> Result<(Scene, Option<SceneProce
     Ok((scene, process))
 }
 
-/// What --display names: the KMS scanout, or nothing.
+/// What --display names: the KMS scanout, with the mode size of its
+/// display, or nothing.
 enum Panel {
     None,
-    Kms,
-}
-
-/// Panel::Kms, after checking GL on the card runs on hardware. A display-only
-/// card (a panel under a kernel display driver) still gets hardware GL: Mesa
-/// pairs it with the render node and imports each frame back for the flip.
-/// Software GL here therefore means no usable render node at all, and ghee
-/// stops rather than render through llvmpipe. With no connected display this
-/// stays Panel::Kms, and geometry() reports that with its own error.
-fn kms_panel(a: &Ns, card: &mut Option<Card>) -> Result<Panel> {
-    let Some(card) = display_card(a, card) else {
-        return Ok(Panel::Kms);
-    };
-    card.check_renders()
-        .map_err(|e| exit(format!("{}: {e}", a.cmd)))?;
-    Ok(Panel::Kms)
+    Kms((i32, i32)),
 }
 
 fn panel_of(a: &Ns, card: &mut Option<Card>) -> Result<Panel> {
@@ -346,16 +332,17 @@ fn panel_of(a: &Ns, card: &mut Option<Card>) -> Result<Panel> {
         return Ok(Panel::None);
     }
     kms_named(a)?;
-    kms_panel(a, card)
+    Ok(Panel::Kms(display_card(a, card)?.size()))
 }
 
 /// The card of --display in `card`, opened at the first call and held from
 /// then on.
-fn display_card<'c>(a: &Ns, card: &'c mut Option<Card>) -> Option<&'c Card> {
-    if card.is_none() {
-        *card = Card::open(a.dri.as_deref());
-    }
-    card.as_ref()
+fn display_card<'c>(a: &Ns, card: &'c mut Option<Card>) -> Result<&'c Card> {
+    let open = match card.take() {
+        Some(open) => open,
+        None => Card::open(a.dri.as_deref()).map_err(|e| exit(format!("{}: {e}", a.cmd)))?,
+    };
+    Ok(card.insert(open))
 }
 
 /// Err unless the given --display names kms.
@@ -377,41 +364,23 @@ fn kms_named(a: &Ns) -> Result<()> {
     )))
 }
 
-/// A scene builds against this size, worked out before the renderer opens.
-/// geometry() gives the same answer once the display is up, and a scene
-/// process needs it earlier than that, before it writes its scene. A
-/// --display other than kms, and kms with no --size and no connected display,
-/// fail here with the run's own errors.
+/// A scene builds against this size, worked out before the renderer opens,
+/// as geometry() works it out. A scene process needs it before it writes its
+/// scene.
 fn prospective_size(a: &Ns, card: &mut Option<Card>) -> Result<(i32, i32)> {
-    let panel = match given(&a.display) {
-        true => {
-            kms_named(a)?;
-            if a.size.is_none() {
-                display_card(a, card);
-            }
-            Panel::Kms
-        }
-        false => Panel::None,
-    };
-    Ok(geometry(a, &panel, card.as_ref())?.0)
+    Ok(geometry(a, &panel_of(a, card)?).0)
 }
 
 /// (size, components) of the render.
-/// A scanout takes --size and scales it across the mode of the display on
-/// `card` on the way out, or the mode itself when there is no --size.
+/// A scanout takes --size and scales it across the mode of its display on
+/// the way out, or the mode itself when there is no --size.
 /// Everything else takes --size.
-fn geometry(a: &Ns, panel: &Panel, card: Option<&Card>) -> Result<((i32, i32), i32)> {
+fn geometry(a: &Ns, panel: &Panel) -> ((i32, i32), i32) {
     match panel {
         // ghee_display_create renders RGBA whatever --components asks for, so
         // the readback writes four bytes a pixel.
-        Panel::Kms => match a.size.or_else(|| card.map(Card::size)) {
-            Some(size) => Ok((size, 4)),
-            None => Err(exit(format!(
-                "{}: no connected display to size from, pass --size WxH",
-                a.cmd
-            ))),
-        },
-        Panel::None => Ok((a.size.unwrap_or(DEFAULT_SIZE), a.components)),
+        Panel::Kms(mode) => (a.size.unwrap_or(*mode), 4),
+        Panel::None => (a.size.unwrap_or(DEFAULT_SIZE), a.components),
     }
 }
 
@@ -465,7 +434,7 @@ fn pacer(a: &Ns, panel: &Panel) -> Option<Box<dyn Pacer>> {
         .filter(|f| *f != 0.0)
         .map(|f| Box::new(FixedPacer::new(f)) as Box<dyn Pacer>);
     match panel {
-        Panel::Kms => fixed,
+        Panel::Kms(_) => fixed,
         Panel::None if given(&a.h264) => Some(Box::new(FixedPacer::new(f64::from(h264_fps(a))))),
         Panel::None => None,
     }
@@ -512,9 +481,6 @@ fn sink_list<'a>(
 /// and SIGINT unwind the run. The run turns its sinks off, so a panel holds no
 /// stale frame.
 static SIGNALLED: AtomicI32 = AtomicI32::new(0);
-
-/// The render size with nothing to take one from: no display, no --size.
-const DEFAULT_SIZE: (i32, i32) = (320, 240);
 
 // Linux signal numbers. The handler is a plain function pointer, so the
 // install needs neither SIG_DFL nor SIG_IGN.
@@ -649,7 +615,7 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
         Some(scene_of(a, &mut card)?)
     };
     let panel = panel_of(a, &mut card)?;
-    let kms = matches!(panel, Panel::Kms);
+    let kms = matches!(panel, Panel::Kms(_));
     if a.brightness.is_some() && !kms {
         return Err(exit(format!("{}: --brightness needs --display kms", a.cmd)));
     }
@@ -663,7 +629,7 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
         )));
     }
     let dri = a.dri.clone();
-    let ((w, h), components) = geometry(a, &panel, card.as_ref())?;
+    let ((w, h), components) = geometry(a, &panel);
     let pace = pacer(a, &panel);
     let mut scanout = kms.then_some(Scanout);
     let mut file = file_sink(a)?;
@@ -677,7 +643,7 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
             FileSink::Images(s) => sinks.push(Box::new(s)),
             FileSink::None => {}
         }
-        return serve(a, sinks, (w, h), components, kms, dri, card);
+        return serve(a, sinks, (w, h), components, dri, card.filter(|_| kms));
     }
     let Some((scene, process)) = scene else {
         unreachable!("loaded above for every render that is not --serve")
@@ -799,15 +765,14 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
     Ok(())
 }
 
-/// Attach the console to this render. A scene serves itself alone. A directory
-/// (or --demo) serves everything in it.
-#[allow(clippy::too_many_arguments)]
+/// Attach the console to this render, on the display of `card` when it
+/// holds one. A scene serves itself alone. A directory (or --demo) serves
+/// everything in it.
 fn serve(
     a: &Ns,
     sinks: Vec<Box<dyn Output>>,
     size: (i32, i32),
     components: i32,
-    kms: bool,
     dri: Option<String>,
     card: Option<Card>,
 ) -> Result<()> {
@@ -838,11 +803,11 @@ fn serve(
         uploads: a.allow_uploads,
         state_dir: a.state_dir.clone(),
         store,
-        size,
+        size: Some(size),
         components,
         alpha: a.alpha.is_some(),
         sinks,
-        display: kms,
+        display: card,
         rgb565: a.rgb565,
         drop: a.drop,
         rotate: a.rotate,
@@ -858,7 +823,6 @@ fn serve(
         frames: frames_of(a).max(0) as u64,
         timestep: a.timestep,
         dri_device: dri,
-        card,
         on_stats: a.stats.then(serve_stats),
         pacer: console_pacer(a),
         ..Default::default()
@@ -2380,13 +2344,17 @@ mod tests {
     }
 
     #[test]
-    fn geometry_takes_size_or_the_default() {
+    fn geometry_takes_size_else_the_display_mode_else_the_default() {
         assert_eq!(
-            geometry(&ns(&["render", "s"]), &Panel::None, None).unwrap(),
+            geometry(&ns(&["render", "s"]), &Panel::None),
             ((320, 240), 4)
         );
         let a = ns(&["render", "s", "--size", "640x480", "--components", "3"]);
-        assert_eq!(geometry(&a, &Panel::None, None).unwrap(), ((640, 480), 3));
+        assert_eq!(geometry(&a, &Panel::None), ((640, 480), 3));
+        let kms = Panel::Kms((256, 64));
+        assert_eq!(geometry(&ns(&["render", "s"]), &kms), ((256, 64), 4));
+        let a = ns(&["render", "s", "--size", "128x32"]);
+        assert_eq!(geometry(&a, &kms), ((128, 32), 4));
     }
 
     #[test]
@@ -2452,7 +2420,7 @@ mod tests {
     fn a_bare_display_is_the_scanout() {
         let a = ns(&["render", "s", "--display"]);
         assert_eq!(a.display.as_deref(), Some("kms"));
-        assert!(matches!(panel_of(&a, &mut None).unwrap(), Panel::Kms));
+        assert!(kms_named(&a).is_ok());
     }
 
     #[test]
@@ -2471,9 +2439,9 @@ mod tests {
     fn a_pacer_follows_the_sink() {
         assert!(pacer(&ns(&["render", "s", "-o", "x.png"]), &Panel::None).is_none());
         assert!(pacer(&ns(&["render", "s", "--h264", "x"]), &Panel::None).is_some());
-        assert!(pacer(&ns(&["render", "s", "--display"]), &Panel::Kms).is_none());
+        assert!(pacer(&ns(&["render", "s", "--display"]), &Panel::Kms((8, 8))).is_none());
         let paced = ns(&["render", "s", "--display", "--fps", "24"]);
-        assert!(pacer(&paced, &Panel::Kms).is_some());
+        assert!(pacer(&paced, &Panel::Kms((8, 8))).is_some());
         assert_eq!(h264_fps(&ns(&["render", "s"])), 30);
         assert_eq!(h264_fps(&ns(&["render", "s", "--fps", "24.9"])), 24);
         assert_eq!(h264_fps(&ns(&["render", "s", "--fps", "0"])), 30);

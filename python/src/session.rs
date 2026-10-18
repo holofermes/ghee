@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use ghee::console::hub::{frame_format, gpu_caps, HwLane, RawFrame};
 use ghee::draw::Call;
-use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer};
+use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer, DEFAULT_SIZE};
 use ghee::filters::apply_filters;
 use ghee::layer::Address;
 use ghee::live::Live;
@@ -24,9 +24,6 @@ use ghee::stats::{monotonic, DEST_KMS};
 use serde_json::{Map, Value};
 
 use crate::serve::{Console, Serving};
-
-/// A render with no display takes this size, as in the CLI.
-pub const DEFAULT_SIZE: (i32, i32) = (320, 240);
 
 /// The KMS scanout, as `--display` names it.
 pub const KMS: &str = "kms";
@@ -247,7 +244,7 @@ pub fn display_size(dri: Option<&str>) -> Option<(i32, i32)> {
             return Some(card.size());
         }
     }
-    let card = Card::open(dri)?;
+    let card = Card::open(dri).ok()?;
     let size = card.size();
     *held = Some((dri.map(str::to_string), card));
     Some(size)
@@ -264,25 +261,19 @@ pub fn probed(dri: Option<&str>) -> Option<Card> {
 
 /// The card of a display="kms" open on `dri`: the one that display_size()
 /// holds for it, else the card opened now.
-fn display_card(dri: Option<&str>) -> Option<Card> {
-    probed(dri).or_else(|| Card::open(dri))
+fn display_card(dri: Option<&str>) -> Outcome<Card> {
+    match probed(dri) {
+        Some(card) => Ok(card),
+        None => Card::open(dri).map_err(system_fault),
+    }
 }
 
 /// (size, components) of the frame. A connected display on `card` states
 /// its mode, which wins over the host's own size.
-fn geometry(
-    sink: &Sink,
-    size: Option<(i32, i32)>,
-    card: Option<&Card>,
-) -> Outcome<((i32, i32), i32)> {
-    match sink {
-        Sink::Kms => match card.map(Card::size).or(size) {
-            Some(size) => Ok((size, 4)),
-            None => Err(Fault::system(
-                "no connected display to size from; pass width and height",
-            )),
-        },
-        Sink::None => Ok((size.unwrap_or(DEFAULT_SIZE), 4)),
+fn geometry(size: Option<(i32, i32)>, card: Option<&Card>) -> ((i32, i32), i32) {
+    match card {
+        Some(card) => (card.size(), 4),
+        None => (size.unwrap_or(DEFAULT_SIZE), 4),
     }
 }
 
@@ -353,13 +344,10 @@ impl Session {
             return Err(Fault::scene("drop without display"));
         }
         let card = match sink {
-            Sink::Kms => display_card(dri.as_deref()),
+            Sink::Kms => Some(display_card(dri.as_deref())?),
             Sink::None => None,
         };
-        if let Some(card) = &card {
-            card.check_renders().map_err(system_fault)?;
-        }
-        let ((w, h), components) = geometry(&sink, size, card.as_ref())?;
+        let ((w, h), components) = geometry(size, card.as_ref());
         let kms = matches!(sink, Sink::Kms);
         let rgb565 = opts
             .iter()

@@ -896,7 +896,10 @@ fn or_else(s: String, fallback: &str) -> String {
 /// The line a GL compile error names. Mesa writes `0:18(5): error`, and the
 /// line is the first `:<digits>(` in the error text. NVIDIA writes
 /// `0(18) : error C1503`, and the line is the first `<digits>(<digits>)`.
+/// A warning can come first in the log, so the first line that holds an
+/// error is read, when one does.
 fn error_line_number(err: &str) -> Option<i64> {
+    let err = err.lines().find(|l| l.contains("error")).unwrap_or(err);
     let b = err.as_bytes();
     let digits_end = |i: usize| i + b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
     let line = |from: usize, to: usize| Some(err[from..to].parse::<i64>().unwrap_or(i64::MAX));
@@ -5816,10 +5819,16 @@ mod tests {
     #[test]
     fn a_compile_error_names_its_line_in_the_log_of_each_driver() {
         // Mesa's row is the form of the tests above. NVIDIA's is the log of
-        // an undefined name on NVIDIA 615.71.09.
+        // an undefined name on NVIDIA 615.71.09. The last is Mesa's log of an
+        // error after a warning.
         for (log, line) in [
             ("0:6(3): error: no function nope", 6),
             ("0(18) : error C1503: undefined variable \"nope\"", 18),
+            (
+                "0:2(12): warning: extension `GL_OES_standard_derivatives' unsupported in \
+                 fragment shader\n0:29(22): error: no function with name 'fwidth'",
+                29,
+            ),
         ] {
             assert_eq!(error_line_number(log), Some(line), "{log}");
         }

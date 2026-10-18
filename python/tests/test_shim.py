@@ -1216,8 +1216,8 @@ def test_the_stubs_name_what_the_native_module_takes():
 
 
 def test_open_without_the_native_module_names_it(monkeypatch):
-    """A shim run under ghee needs no native module until it sets a layer.
-    open() needs it."""
+    """A shim run under ghee needs no native module until it sets a param or
+    a layer. open() needs it."""
     import ghee
 
     class Missing:

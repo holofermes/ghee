@@ -831,8 +831,8 @@ _OUT: list = []
 _CLEAN = False
 # a direct run: the host flags from args()
 _HOST = None
-# the scene of the run: the type of each param that set_param names, and the
-# filters that ghee appends
+# the scene of the run: the type of each param that set_param names, made on
+# the first set, and the filters that ghee appends
 _PARAMS: dict | None = None
 _FILTERS: list = []
 # the scene of the run, under ghee the native check of its layer sets, and
@@ -888,7 +888,7 @@ def set_param(
     _check(wire, value)
     # The wire carries a color written "#rrggbb" as three floats, and a
     # colour name as text.
-    rgb = None if _PARAMS and _PARAMS.get(wire) == "string" else _hex(value)
+    rgb = None if _SCENE and _types().get(wire) == "string" else _hex(value)
     if rgb is not None:
         value = rgb
     if isinstance(value, str):
@@ -916,8 +916,8 @@ def _set_layer(name: str, field: str, value: Any, effect: str | None = None) -> 
 
 
 def _live():
-    """The native check of the scene that run() runs under ghee, made on
-    the first use."""
+    """The native check of the scene that run() runs, made on the first
+    use."""
     global _LIVE
     if _LIVE is None:
         from ghee import _ext
@@ -943,18 +943,13 @@ def _send(kind: int, wire: str, body, what: str = "") -> None:
 layers = Layers(_set_layer)
 
 
-def _param_types(scene: Scene) -> dict:
-    """The type of each param that set_param names in `scene`.
-
-    A pass param takes `pass.name`, and its bare name too when no param
-    before it holds that name.
-    """
-    types = {n: p.type for n, p in scene.params.items()}
-    for ps in scene.passes:
-        for n, p in ps.params.items():
-            types[f"{ps.name}.{n}"] = p.type
-            types.setdefault(n, p.type)
-    return types
+def _types() -> dict:
+    """The type of each param that set_param names in the scene that run()
+    runs, by its wire name, from the native check."""
+    global _PARAMS
+    if _PARAMS is None:
+        _PARAMS = dict(_live().params())
+    return _PARAMS
 
 
 def _number(v) -> bool:
@@ -996,16 +991,16 @@ def _check(wire: str, value) -> None:
     """Raise ValueError unless the scene of the run declares param `wire`
     and `value` fits its type. Outside run() nothing is checked.
     """
-    if _PARAMS is None:
+    if _SCENE is None:
         return
-    ty = _PARAMS.get(wire)
+    ty = _types().get(wire)
     if ty is None:
         owner = wire.rpartition(".")[0]
         if owner in _FILTERS or (not owner and _FILTERS):
             return  # a filter pass may hold it
         raise ValueError(
             f"param '{wire}' is not a param this scene declares "
-            f"({', '.join(_PARAMS) or 'none'})"
+            f"({', '.join(_types()) or 'none'})"
         )
     n = 3 if ty == "color" else _VEC.get(ty)
     if ty == "string":
@@ -1175,7 +1170,7 @@ def run(scene: Scene | None = None) -> None:
     global _PARAMS, _FILTERS, _SCENE, _LIVE, _DRAWN, _TICK
     if scene is None:
         scene = Scene(passes=[Pass("main", _BLACK)])
-    _PARAMS, _FILTERS = _param_types(scene), list(scene.filters)
+    _PARAMS, _FILTERS = None, list(scene.filters)
     _SCENE = scene
     _DRAWN = None
     try:

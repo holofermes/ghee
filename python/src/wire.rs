@@ -181,6 +181,16 @@ impl LayerWire {
         })
     }
 
+    /// The wire name and the type of each param that a set can name, as
+    /// ghee addresses them.
+    fn params(&self) -> Vec<(String, String)> {
+        self.index
+            .params
+            .iter()
+            .map(|r| (r.wire.clone(), r.ty.clone()))
+            .collect()
+    }
+
     /// The width and height in pixels of the block that `words` lay out in
     /// on the scene's last pass in a frame of `size` pixels, as
     /// Scene::measure() gives them, the scene's files found in `base_dir`.

@@ -51,7 +51,8 @@ use crate::draw::{self, Call};
 use crate::ffi;
 use crate::hinted;
 use crate::layer::{
-    is_image_file, Address, Detail, ImageLayer, Kind, Layer, Render, TextLayer, GLSL_NAME,
+    image_label, is_image_data, is_image_file, Address, Detail, ImageLayer, Kind, Layer, Render,
+    TextLayer, GLSL_NAME,
 };
 use crate::run::{Candidate, Class, Mode, Open};
 use crate::scene::{ArraySize, Look, ParamValue, Pass, Sampling, Scene};
@@ -2546,6 +2547,7 @@ impl Renderer {
         if now_shown && !shown {
             self.first_shown(at.layer)?;
         }
+        self.drop_unshown_data();
         self.settle()
     }
 
@@ -2607,6 +2609,7 @@ impl Renderer {
             let scene = self.scene.borrow();
             match scene.as_ref().and_then(|s| s.root.as_ref()) {
                 Some(root) => root.image(layer, file)?,
+                None if is_image_data(file) => crate::scene::image_data(layer, file)?,
                 None => bail!(
                     "layer '{layer}': '{file}' is a file, and the scene was built without a \
                      directory"
@@ -2623,7 +2626,7 @@ impl Renderer {
             return Ok(asset.clone());
         }
         let (w, h) = (i64::from(img.width), i64::from(img.height));
-        if let Some(e) = self.past_max(&format!("layer '{layer}': '{file}'"), w, h) {
+        if let Some(e) = self.past_max(&format!("layer '{layer}': {}", image_label(file)), w, h) {
             bail!("{e}");
         }
         let n = self.file_count.get();
@@ -2642,6 +2645,39 @@ impl Renderer {
             .borrow_mut()
             .push((file.to_string(), name.clone()));
         Ok(name)
+    }
+
+    /// Free the engine asset of each PNG data URI that no image layer of the
+    /// scene shows.
+    fn drop_unshown_data(&self) {
+        let scene = self.scene.borrow();
+        let Some(scene) = scene.as_ref() else {
+            return;
+        };
+        let shown: Vec<&str> = scene
+            .layers()
+            .filter_map(Layer::as_image)
+            .map(|l| l.image.as_str())
+            .collect();
+        let mut dropped = Vec::new();
+        self.files.borrow_mut().retain(|(file, asset)| {
+            let keep = !is_image_data(file) || shown.contains(&file.as_str());
+            if !keep {
+                dropped.push(asset.clone());
+            }
+            keep
+        });
+        if dropped.is_empty() {
+            return;
+        }
+        self.scene_assets
+            .borrow_mut()
+            .retain(|n| !dropped.contains(n));
+        for name in dropped {
+            if let Ok(cname) = CString::new(name) {
+                unsafe { ffi::ghee_mp_drop_asset(self.handle, cname.as_ptr()) };
+            }
+        }
     }
 
     /// The size in pixels of drawn pass `pass`: the scene's for the pass
@@ -2730,6 +2766,7 @@ impl Renderer {
         self.moved();
         // The runs on either side of the layer join.
         self.rerun(&pass, Vec::new())?;
+        self.drop_unshown_data();
         self.refresh()
     }
 
@@ -2980,6 +3017,7 @@ impl Renderer {
         };
         if rebuild {
             self.replace_with(new)?;
+            self.drop_unshown_data();
             return Ok(true);
         }
         let name = new.name().to_string();
@@ -3000,6 +3038,7 @@ impl Renderer {
             _ => None,
         };
         let shown = self.show_live(&old, &new, words);
+        self.drop_unshown_data();
         self.refresh()?;
         shown?;
         Ok(true)
@@ -7660,6 +7699,40 @@ mod tests {
                 max + 1
             )
         );
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_layer_drawn_from_png_data_keeps_the_picture_that_it_shows_alone() {
+        let (_g, mut r) = gpu();
+        let data = |grey: u8| {
+            let mut png = Vec::new();
+            let mut enc = png::Encoder::new(&mut png, 1, 1);
+            enc.set_color(png::ColorType::Grayscale);
+            enc.write_header()
+                .unwrap()
+                .write_image_data(&[grey])
+                .unwrap();
+            format!("{}{}", crate::layer::PNG_DATA, crate::assets::base64(&png))
+        };
+        let look = |grey: u8| {
+            json!({"name": "pic", "image": data(grey), "x": 0, "y": 0,
+                   "width": W, "height": H})
+        };
+        let mut sc = Scene::from_dict(
+            &json!({"version": 1, "passes": [{"name": "main", "fragment": FLAT,
+                    "layers": [look(10)]}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        sc.load_assets(".").unwrap();
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        for grey in [20, 30, 40] {
+            assert!(r.update_layer(&look(grey)).unwrap());
+            assert_eq!(r.render(None).unwrap()[0], grey);
+            assert_eq!(r.files.borrow().len(), 1, "grey {grey}");
+        }
     }
 
     #[test]

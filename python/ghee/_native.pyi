@@ -137,7 +137,7 @@ class Drawing:
         screen, and an axis with no position centres them."""
     def image(
         self,
-        image: str | os.PathLike[str],
+        image: str | os.PathLike[str] | Any,
         *,
         name: str | None = None,
         x: float | None = None,
@@ -149,8 +149,9 @@ class Drawing:
         blend: Blend | None = None,
         visible: bool | None = None,
     ) -> None:
-        """Draw `image`, an image layer of a .png or .jpg file or an image
-        asset of the scene. A file loads once and stays with the screen."""
+        """Draw `image`, an image layer of a .png or .jpg file, an image
+        asset of the scene, or a Pillow image or a numpy array of HxWx3 or
+        HxWx4 uint8. A file loads once and stays with the screen."""
     def rect(
         self,
         *,

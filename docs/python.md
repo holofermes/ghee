@@ -46,7 +46,7 @@ for each [layer](layers.md), later calls on top:
 | Call | What it draws |
 | --- | --- |
 | `d.text(words)` | words ([Text layers](layers.md#text-layers)) |
-| `d.image(path)` | a `.png` or `.jpg` file, or an image asset ([Image layers](layers.md#image-layers)) |
+| `d.image(image)` | a `.png` or `.jpg` file, an image asset, a Pillow image, or a numpy array of HxWx3 or HxWx4 `uint8` ([Image layers](layers.md#image-layers)) |
 | `d.rect()` | a box, or the whole screen with no `width` and `height` ([Shape layers](layers.md#shape-layers)) |
 | `d.circle((x, y), radius)` | a filled circle of `radius` pixels around (x, y) ([Shape layers](layers.md#shape-layers)) |
 | `d.line((x0, y0), (x1, y1))` | a line between two points |
@@ -395,7 +395,7 @@ Each call, and the ghee call that draws the same:
 | `draw.ellipse((x0, y0, x1, y1), fill="white")` of a circle | `d.circle(((x0 + x1 + 1) / 2, (y0 + y1 + 1) / 2), (x1 - x0 + 1) / 2)` |
 | `draw.line((x0, y0, x1, y1), fill="white", width=1)` | `d.line((x0, y0), (x1, y1), stroke_width=1)` |
 | `draw.line(points, fill="lime")` | `d.lines(points, color="lime")` |
-| `image.paste(icon, (x, y), icon)` | `d.image("icon.png", x=x, y=y)` |
+| `image.paste(icon, (x, y), icon)` | `d.image(icon, x=x, y=y)` |
 | `draw.text(..., stroke_width=1, stroke_fill="black")` at size 12 | `d.text(..., text_stroke={"width": 1 / 12, "color": "black"})`, its width in em |
 | `ssd1306(serial, rotate=2)` | `ghee.open(display="kms", rotate=180)` |
 | `device.contrast(128)` | `screen.brightness = 0.5` |

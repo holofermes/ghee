@@ -8,6 +8,7 @@ import dataclasses
 import inspect
 import os
 import pathlib
+import re
 import runpy
 import subprocess
 import sys
@@ -1027,3 +1028,80 @@ def test_ghee_render_demo_stats_draws_the_chart_and_the_readings(tmp_path):
     assert lit(0, 1, 0, 32)
     assert lit(64, 128, 0, 9)
     assert lit(64, 128, 22, 31)
+
+
+def pictures(d, i):
+    """A numpy array whose colour turns each frame on the left half, and a
+    Pillow image on the right half."""
+    import numpy as np
+    from PIL import Image
+
+    rgb = [(255, 0, 0), (0, 255, 0), (0, 0, 255)][i % 3]
+    d.image(np.full((2, 2, 3), rgb, np.uint8), x=0, y=0, width=4, height=4)
+    d.image(Image.new("RGBA", (1, 1), (255, 255, 0, 255)), x=4, y=0, width=4, height=4)
+
+
+PICTURES = """#!{python}
+import ghee
+
+
+{pictures}
+
+@ghee.tick
+def show(tick):
+    with ghee.draw() as d:
+        pictures(d, tick.frame)
+
+
+ghee.run()
+"""
+
+
+def test_a_picture_in_memory_draws_on_a_screen_and_under_ghee_alike(tmp_path):
+    numpy()
+    pytest.importorskip("PIL.Image")
+    frames = 3
+    size = 8 * 4 * 4
+    with ghee.open(width=8, height=4, timestep=0) as screen:
+        drawn = []
+        for i in range(frames):
+            with screen.draw() as d:
+                pictures(d, i)
+            drawn.append(screen.pixels())
+    for i, rgb in enumerate([(255, 0, 0), (0, 255, 0), (0, 0, 255)]):
+        assert tuple(drawn[i][0:3]) == rgb
+        assert tuple(drawn[i][16:19]) == (255, 255, 0)
+    if not CLI.exists():
+        pytest.skip(f"no {CLI} to run the scene")
+    path = tmp_path / "pictures.py"
+    path.write_text(
+        PICTURES.format(python=sys.executable, pictures=inspect.getsource(pictures))
+    )
+    path.chmod(0o755)
+    ran = subprocess.run(
+        [str(CLI), "render", str(path), "-o", "-", "--size", "8x4"]
+        + ["--frames", str(frames), "--timestep", "0"],
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert ran.returncode == 0, ran.stderr
+    assert [ran.stdout[i * size : (i + 1) * size] for i in range(frames)] == drawn
+
+
+@pytest.mark.parametrize(
+    "image,error",
+    [
+        (lambda np: np.zeros((2, 2, 3), np.float32), "float32 of shape (2, 2, 3)"),
+        (lambda np: np.zeros((2, 2), np.uint8), "uint8 of shape (2, 2)"),
+        (lambda np: 3, "got int"),
+    ],
+)
+def test_a_picture_that_is_no_image_raises_type_error(image, error):
+    np = numpy()
+    with (
+        ghee.open(width=8, height=4) as screen,
+        pytest.raises(TypeError, match=re.escape(error)),
+        screen.draw() as d,
+    ):
+        d.image(image(np))

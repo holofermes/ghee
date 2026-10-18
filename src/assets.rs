@@ -57,6 +57,57 @@ pub fn decode_raw(
     })
 }
 
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// `data` as standard base64, with its padding.
+pub fn base64(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(chunk.get(1).copied().unwrap_or(0)) << 8)
+            | u32::from(chunk.get(2).copied().unwrap_or(0));
+        out.push(B64[(n >> 18) as usize & 63] as char);
+        out.push(B64[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            B64[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// The bytes of `text`, standard base64 with its padding. None for any
+/// other text.
+pub fn unbase64(text: &str) -> Option<Vec<u8>> {
+    let digit = |c: u8| B64.iter().position(|&x| x == c).map(|i| i as u32);
+    let text = text.as_bytes();
+    if !text.len().is_multiple_of(4) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    for (i, quad) in text.chunks(4).enumerate() {
+        let last = i == text.len() / 4 - 1;
+        let pad = quad.iter().rev().take_while(|&&c| c == b'=').count();
+        if pad > 2 || (pad > 0 && !last) {
+            return None;
+        }
+        let mut n = 0u32;
+        for &c in &quad[..4 - pad] {
+            n = n << 6 | digit(c)?;
+        }
+        n <<= 6 * pad as u32;
+        let bytes = n.to_be_bytes();
+        out.extend_from_slice(&bytes[1..4 - pad]);
+    }
+    Some(out)
+}
+
 /// An 8-bit PNG. A palette expands to its colours. Gray plus alpha widens to
 /// RGBA, because the engine has no two-channel upload. A 16-bit file is
 /// refused.
@@ -127,6 +178,16 @@ mod tests {
             width,
             height,
             components,
+        }
+    }
+
+    #[test]
+    fn base64_reads_back_what_it_writes() {
+        for data in [&b""[..], b"g", b"gh", b"ghe", b"ghee\xff\x00"] {
+            assert_eq!(unbase64(&base64(data)).as_deref(), Some(data));
+        }
+        for bad in ["Z2h", "Z2=h", "Z2h!", "Zg==Zg=="] {
+            assert_eq!(unbase64(bad), None, "{bad}");
         }
     }
 

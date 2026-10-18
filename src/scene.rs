@@ -30,7 +30,9 @@ use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
 
 use crate::filters::Filter;
-use crate::layer::{is_image_file, Address, Form, Layer, Rgb, TextLayer, COLOUR_FORMS};
+use crate::layer::{
+    is_image_data, is_image_file, Address, Form, Layer, Rgb, TextLayer, COLOUR_FORMS,
+};
 use crate::shape::Shape;
 
 const GLSL_TYPE: [(&str, &str); 3] = [("float", "float"), ("int", "int"), ("bool", "bool")];
@@ -469,7 +471,7 @@ fn py_str(v: &Value) -> String {
     }
 }
 
-fn py_str_repr(s: &str) -> String {
+pub(crate) fn py_str_repr(s: &str) -> String {
     let quote = if s.contains('\'') && !s.contains('"') {
         '"'
     } else {
@@ -2228,8 +2230,12 @@ impl Root {
         self.reach == Reach::Inside && !inside(&normpath(&join(&self.dir, file)), &self.dir)
     }
 
-    /// The pixels of the image file `file` of layer `layer`, decoded.
+    /// The pixels of the image file `file` of layer `layer`, or of its PNG
+    /// data URI, decoded.
     pub fn image(&self, layer: &str, file: &str) -> Result<crate::assets::Image> {
+        if is_image_data(file) {
+            return image_data(layer, file);
+        }
         if self.outside(file) {
             bail!(
                 "layer '{layer}' image {} is outside the scene directory",
@@ -2657,7 +2663,7 @@ impl Scene {
         };
         let root = self.root.as_ref().unwrap_or(&none);
         if let (Layer::Image(l), None) = (&*layer, &self.root) {
-            if l.is_file() {
+            if l.is_file() && !is_image_data(&l.image) {
                 bail!(
                     "layer '{}': '{}' is a file, and the scene was built without a directory",
                     l.name,
@@ -3205,6 +3211,17 @@ impl Scene {
         fs::write(path, serde_json::to_string_pretty(&self.to_dict())?)?;
         Ok(())
     }
+}
+
+/// The pixels of `data`, the PNG data URI of image layer `layer`, decoded.
+pub(crate) fn image_data(layer: &str, data: &str) -> Result<crate::assets::Image> {
+    let png = data
+        .strip_prefix(crate::layer::PNG_DATA)
+        .and_then(crate::assets::unbase64);
+    let Some(png) = png else {
+        bail!("layer '{layer}' image: its PNG data is no base64");
+    };
+    crate::assets::decode_png(&png).map_err(|e| anyhow!("layer '{layer}' image: {e}"))
 }
 
 /// Hand `layer` its fonts and the emoji font `emoji`, from the font assets

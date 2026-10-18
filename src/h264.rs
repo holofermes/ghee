@@ -115,30 +115,6 @@ pub fn avcc(nals: &[&[u8]]) -> Vec<u8> {
     out
 }
 
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let n = (u32::from(chunk[0]) << 16)
-            | (u32::from(chunk.get(1).copied().unwrap_or(0)) << 8)
-            | u32::from(chunk.get(2).copied().unwrap_or(0));
-        out.push(B64[(n >> 18) as usize & 63] as char);
-        out.push(B64[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            B64[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            B64[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 #[derive(Serialize)]
 struct DecoderConfig {
     codec: String,
@@ -161,7 +137,7 @@ pub fn build_config(sps: &[u8], pps: &[u8], w: i32, h: i32, color: Option<ColorS
     avcc_box.extend_from_slice(pps);
     let cfg = DecoderConfig {
         codec: format!("avc1.{:02x}{:02x}{:02x}", sps[1], sps[2], sps[3]),
-        description: base64(&avcc_box),
+        description: crate::assets::base64(&avcc_box),
         coded_width: w,
         coded_height: h,
         color_space: color,
@@ -824,7 +800,7 @@ mod tests {
         assert_eq!(cfg["codec"], "avc1.42c01e");
         assert_eq!(cfg["codedWidth"], 320);
         assert_eq!(cfg["codedHeight"], 240);
-        let raw = unbase64(cfg["description"].as_str().unwrap());
+        let raw = crate::assets::unbase64(cfg["description"].as_str().unwrap()).unwrap();
         assert_eq!(raw[0], 1); // avcC version
         assert!(find(&raw, sps, 0).is_some() && find(&raw, pps, 0).is_some());
     }
@@ -891,29 +867,6 @@ mod tests {
         assert!(types.contains(&NAL_IDR));
         let delta = [SC, &[0x41, 0x88, 0x80]].concat();
         assert!(!split_annexb(&delta).iter().any(|x| x[0] & 0x1F == NAL_IDR));
-    }
-
-    fn unbase64(s: &str) -> Vec<u8> {
-        let bits: Vec<u8> = s
-            .bytes()
-            .filter(|b| *b != b'=')
-            .map(|c| B64.iter().position(|x| *x == c).unwrap() as u8)
-            .collect();
-        let mut out = Vec::new();
-        for quad in bits.chunks(4) {
-            let mut n: u32 = 0;
-            for (i, v) in quad.iter().enumerate() {
-                n |= u32::from(*v) << (18 - 6 * i);
-            }
-            out.push((n >> 16) as u8);
-            if quad.len() > 2 {
-                out.push((n >> 8) as u8);
-            }
-            if quad.len() > 3 {
-                out.push(n as u8);
-            }
-        }
-        out
     }
 
     fn gradient_frames(w: i32, h: i32, n: i32) -> Vec<Vec<u8>> {

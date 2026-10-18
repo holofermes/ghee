@@ -689,7 +689,8 @@ pub fn files_of(doc: &Value) -> Vec<String> {
         .flatten();
     for l in layers {
         let text = |k: &str| l.get(k).and_then(Value::as_str);
-        add(text("image").filter(|f| crate::layer::is_image_file(f)));
+        add(text("image")
+            .filter(|f| crate::layer::is_image_file(f) && !crate::layer::is_image_data(f)));
         let fonts = match l.get("font_family") {
             Some(Value::Array(names)) => names.iter().collect(),
             f => Vec::from_iter(f),

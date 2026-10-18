@@ -179,3 +179,67 @@ def _circle(centre, radius) -> tuple:
     around `centre`, and the radius."""
     cx, cy = _plain(centre)
     return cx - radius, cy - radius, radius
+
+
+# The PNG data URIs of the last pictures that drawings drew, by the hash of
+# their pixels, newest last.
+_DATA: dict[bytes, str] = {}
+_DATA_KEPT = 16
+
+
+def _image_data(image: Any) -> str:
+    """`image`, a Pillow image or a numpy array of HxWx3 or HxWx4 uint8, as
+    a PNG data URI, which an image layer's `image` takes.
+
+    Raises TypeError for any other value."""
+    import base64
+    import hashlib
+    import struct
+    import zlib
+
+    if hasattr(image, "getbands"):
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGBA")
+        (w, h), n, data = image.size, len(image.mode), image.tobytes()
+    elif hasattr(image, "dtype"):
+        shape = tuple(getattr(image, "shape", ()))
+        if str(image.dtype) != "uint8" or len(shape) != 3 or shape[2] not in (3, 4):
+            raise TypeError(
+                "d.image takes a numpy array of HxWx3 or HxWx4 uint8, got "
+                f"{image.dtype} of shape {shape}"
+            )
+        (h, w, n), data = shape, image.tobytes(order="C")
+    else:
+        raise TypeError(
+            "d.image takes a .png or .jpg path, an image asset's name, a Pillow image "
+            f"or a numpy array of HxWx3 or HxWx4 uint8, got {type(image).__name__}"
+        )
+    if not w or not h:
+        raise ValueError(f"d.image takes a picture of one pixel or more, got {w}x{h}")
+    key = hashlib.sha1(struct.pack("<III", w, h, n) + data).digest()
+    uri = _DATA.pop(key, None)
+    if uri is None:
+        row = w * n
+        raw = b"".join(b"\0" + data[y * row : (y + 1) * row] for y in range(h))
+
+        def chunk(tag: bytes, body: bytes) -> bytes:
+            return (
+                struct.pack(">I", len(body))
+                + tag
+                + body
+                + struct.pack(">I", zlib.crc32(tag + body))
+            )
+
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(
+                b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6 if n == 4 else 2, 0, 0, 0)
+            )
+            + chunk(b"IDAT", zlib.compress(raw, 1))
+            + chunk(b"IEND", b"")
+        )
+        uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+    _DATA[key] = uri
+    while len(_DATA) > _DATA_KEPT:
+        del _DATA[next(iter(_DATA))]
+    return uri

@@ -1084,8 +1084,10 @@ impl Drawing {
         )
     }
 
-    /// Draw `image`, an image layer of a .png or .jpg file or an image asset
-    /// of the scene. A file loads once and stays with the screen.
+    /// Draw `image`, an image layer of a .png or .jpg file, an image asset of
+    /// the scene, or a Pillow image or a numpy array of HxWx3 or HxWx4 uint8,
+    /// which goes to ghee as a PNG data URI. A file loads once and stays with
+    /// the screen.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (image, *, name=None, x=None, y=None, width=None, height=None,
                         color=None, opacity=None, blend=None, visible=None))]
@@ -1103,7 +1105,17 @@ impl Drawing {
         blend: Option<Bound<'py, PyAny>>,
         visible: Option<Bound<'py, PyAny>>,
     ) -> PyResult<()> {
-        let image = Some(image).filter(|i| !i.is_none());
+        let image = match image.is_none()
+            || image.cast::<PyString>().is_ok()
+            || image.hasattr(pyo3::intern!(py, "__fspath__"))?
+        {
+            true => Some(image).filter(|i| !i.is_none()),
+            false => Some(
+                py.import("ghee._look")?
+                    .getattr("_image_data")?
+                    .call1((image,))?,
+            ),
+        };
         self.put(
             py,
             CallKind::Image,

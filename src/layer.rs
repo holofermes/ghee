@@ -2288,11 +2288,27 @@ impl ImageLayer {
     }
 }
 
-/// True when `image` names a .png or a .jpg file, where an asset's name
-/// holds no `.`.
+/// The start of a PNG written into an image layer's `image` as a data URI.
+pub const PNG_DATA: &str = "data:image/png;base64,";
+
+/// True when `image` is a PNG written as a data URI.
+pub fn is_image_data(image: &str) -> bool {
+    image.starts_with(PNG_DATA)
+}
+
+/// True when `image` names an image of the layer's own, not an asset: a .png
+/// or a .jpg file, where an asset's name holds no `.`, or a PNG data URI.
 pub fn is_image_file(image: &str) -> bool {
     let f = image.to_ascii_lowercase();
-    [".png", ".jpg", ".jpeg"].iter().any(|e| f.ends_with(e))
+    is_image_data(image) || [".png", ".jpg", ".jpeg"].iter().any(|e| f.ends_with(e))
+}
+
+/// `image`, an image of a layer's own, as an error names it.
+pub fn image_label(image: &str) -> String {
+    match is_image_data(image) {
+        true => "its PNG data".to_string(),
+        false => crate::scene::py_str_repr(image),
+    }
 }
 
 /// A layer of a pass, which paints its words, its picture or its shape over

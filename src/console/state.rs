@@ -874,6 +874,24 @@ fn out_note(scene: &str, line: String) -> Option<String> {
     Some(format!("{scene}: {line}"))
 }
 
+/// The entries of a scene's `filters` for the filter names `names`, in
+/// order. A filter that `was`, the scene's `filters`, lists keeps its entry
+/// there, and so the values that the entry sets.
+pub fn filter_entries(was: &Value, names: &Value) -> Value {
+    let was = was.as_array().map_or(&[][..], Vec::as_slice);
+    names
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|n| {
+            was.iter()
+                .find(|w| *w == n || w.get("name") == Some(n))
+                .unwrap_or(n)
+                .clone()
+        })
+        .collect()
+}
+
 /// Apply `item` to `doc`, with `defaults` for the default passes and layers
 /// that a list names.
 fn put(defaults: &Value, doc: &mut Value, item: &Item) -> Result<(), String> {
@@ -899,18 +917,9 @@ fn put(defaults: &Value, doc: &mut Value, item: &Item) -> Result<(), String> {
             doc["passes"] = Value::Array(kept);
         }
         "filters" => {
-            // A filter that the scene file lists keeps the values that its
-            // entry there sets.
-            let was = list(&doc["filters"]);
-            let entry = |n: Value| {
-                was.iter()
-                    .find(|w| *w == &n || w.get("name") == Some(&n))
-                    .cloned()
-                    .unwrap_or(n)
-            };
             let kept: Vec<Value> = own(doc).cloned().collect();
             doc["passes"] = Value::Array(kept);
-            doc["filters"] = list(&item.value).into_iter().map(entry).collect();
+            doc["filters"] = filter_entries(&doc["filters"], &item.value);
         }
         "common" => match &item.value {
             Value::Null => {

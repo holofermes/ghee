@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 use crate::console::core::{ConsoleError, ConsoleResult};
 use crate::console::layout;
 use crate::console::state::{self, Edits, Item};
-use crate::filters::{apply_filters, rebuild_filters};
+use crate::filters::{apply_filters, rebuild_filters, Filter};
 use crate::procedural::process::{self, Program, SceneProcess};
 use crate::scene::{Reach, Scene};
 
@@ -841,8 +841,8 @@ struct Glsl {
 /// `defaults`, laid on, and the shaders to write. An edited shader goes into
 /// the file that `raw` names for it, or stays in the scene file when `raw`
 /// holds its text. A pass or a common block that names no file yet takes a
-/// file of its own name in `dir`. A filter's values stay out, since `raw`
-/// names a filter alone. Any other edit with no place in `raw` fails.
+/// file of its own name in `dir`. A filter's values go into its entry in
+/// `filters`. Any other edit with no place in `raw` fails.
 fn into_files(
     raw: &Value,
     defaults: &Value,
@@ -851,17 +851,14 @@ fn into_files(
 ) -> Result<(Value, Vec<Glsl>), String> {
     let mut doc = raw.clone();
     let mut glsl: Vec<Glsl> = Vec::new();
-    let is_filter = |pass: &str| {
+    let filter_of = |pass: &str| {
         defaults["passes"]
             .as_array()
             .into_iter()
             .flatten()
-            .any(|p| {
-                raw_name(p) == pass
-                    && p.get("filter")
-                        .and_then(Value::as_str)
-                        .is_some_and(|f| !f.is_empty())
-            })
+            .find(|p| raw_name(p) == pass)
+            .and_then(|p| p.get("filter")?.as_str())
+            .filter(|f| !f.is_empty())
     };
     let no_pass = |p: &str| format!("the scene file has no pass '{p}'");
     for item in &edits.items {
@@ -895,7 +892,7 @@ fn into_files(
                 true => {
                     doc.as_object_mut().map(|d| d.shift_remove("filters"));
                 }
-                false => doc["filters"] = item.value.clone(),
+                false => doc["filters"] = state::filter_entries(&doc["filters"], &item.value),
             },
             "common" => match &item.value {
                 Value::Null => {
@@ -955,7 +952,8 @@ fn into_files(
         set_value(&mut doc, n, v).ok_or_else(|| format!("the scene file has no param '{n}'"))?;
     }
     for (pass, v) in values("passes") {
-        if is_filter(pass) {
+        if let Some(filter) = filter_of(pass) {
+            put_filter(&mut doc, filter, v)?;
             continue;
         }
         let p = raw_pass_mut(&mut doc, pass).ok_or_else(|| no_pass(pass))?;
@@ -1000,6 +998,35 @@ fn into_files(
         }
     }
     Ok((doc, glsl))
+}
+
+/// Lay `v`, the values of the pass of filter `name`, on the filter's entry in
+/// the `filters` of `doc`: the value of each of its params, and its eye. A
+/// filter that `doc` doesn't list, such as a host's, keeps its values out.
+fn put_filter(doc: &mut Value, name: &str, v: &Value) -> Result<(), String> {
+    let Some(entry) = doc
+        .get_mut("filters")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .find(|e| e.as_str() == Some(name) || e.get("name").and_then(Value::as_str) == Some(name))
+    else {
+        return Ok(());
+    };
+    let mut filter = Filter::from_json(entry).map_err(|e| e.to_string())?;
+    for (n, pv) in v
+        .get("params")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        filter.values.insert(n.clone(), pv.clone());
+    }
+    if let Some(visible) = v.get("visible").and_then(Value::as_bool) {
+        filter.visible = visible;
+    }
+    *entry = filter.to_json();
+    Ok(())
 }
 
 /// Set the shader of pass `pass`, or the common block for None, in `doc`.
@@ -1664,6 +1691,43 @@ mod tests {
         let back = store.resolve("own", SIZE).unwrap();
         assert_eq!(back.passes[1].filter, "dither");
         assert_eq!(store.state_file("own").unwrap(), None);
+    }
+
+    #[test]
+    fn a_save_of_an_own_scene_writes_a_filter_s_settings_into_its_entry() {
+        let (_d, m, store) = mine("own-filter");
+        let file = format!("{m}/own/own{SCENE_SUFFIX}");
+        let head = "{\n  \"version\": 1,\n  \"passes\": [{\"name\": \"main\", \
+                    \"fragment\": \"void main(){ gl_FragColor = vec4(1.0); }\"}],\n";
+        write_text(&file, &format!("{head}  \"filters\": [\"frc\"]\n}}\n"));
+        let save = |edit: &dyn Fn(&mut Value)| {
+            let scene = store.resolve("own", SIZE).unwrap();
+            let defaults = scene.to_dict();
+            let mut doc = defaults.clone();
+            edit(&mut doc);
+            let working = scene_of(&scene, &doc, "own").unwrap().to_dict();
+            let edits = state::diff(&defaults, &working, false);
+            store.write("own", &defaults, &edits).unwrap();
+            let text = fs::read_to_string(&file).unwrap();
+            assert!(text.starts_with(head), "{text}");
+            serde_json::from_str::<Value>(&text).unwrap()["filters"].clone()
+        };
+        let written = save(&|doc| doc["passes"][1]["params"]["calm"]["value"] = json!(8.0));
+        assert_eq!(written, json!([{"name": "frc", "calm": 8.0}]));
+        let written = save(&|doc| {
+            doc["passes"][1]["params"]["calm"]["value"] = json!(3.0);
+            doc["passes"][1]["visible"] = json!(false);
+            doc["filters"] = json!(["frc", "dither"]);
+        });
+        assert_eq!(
+            written,
+            json!([{"name": "frc", "calm": 3.0, "visible": false}, "dither"])
+        );
+        let back = store.resolve("own", SIZE).unwrap();
+        let frc = &back.passes[1];
+        assert_eq!(frc.params.get("calm").unwrap().value.to_json(), json!(3.0));
+        assert!(!frc.visible);
+        assert_eq!(back.passes[2].filter, "dither");
     }
 
     #[test]

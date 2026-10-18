@@ -23,9 +23,9 @@ A feed that returns bytes, a bytearray or a numpy array of dtype uint8 sends
 the u8 wire form, where the value is byte / 255.
 
 The same scene file runs two ways. When ghee starts it, run() talks the
-wire. When you run the file yourself, run() opens the scene on the ghee
-bindings and drives the same feeds there. $GHEE_WIRE, which ghee sets in
-the processes it starts, tells the two apart.
+wire. When you run the file yourself, run() renders the scene as `ghee
+render` renders it, and the same feeds answer each tick in this process.
+$GHEE_WIRE, which ghee sets in the processes it starts, tells the two apart.
 """
 
 from __future__ import annotations
@@ -36,10 +36,8 @@ import functools
 import json
 import numbers
 import os
-import signal
 import struct
 import sys
-import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -489,8 +487,6 @@ def measure(
     Raises RuntimeError outside run(), and ValueError for a font that the
     scene cannot give a text.
     """
-    if _HANDLE is not None:
-        return _HANDLE.measure(words, font_size, font_family)
     if _SCENE is None:
         raise RuntimeError(
             "ghee.measure lays words out in the scene that run() runs: call it in "
@@ -508,12 +504,12 @@ def draw() -> Drawing:
     scene's own on its last pass before its filters. One block in a tick
     states the whole drawing of that frame.
 
-    Under ghee, the layers go out with the tick's answer, and the native
-    half of the package checks each against the scene first, so a call that
-    ghee would refuse raises ValueError. Raises RuntimeError outside run().
+    The layers go out with the tick's answer, and the native half of the
+    package checks each against the scene first, so a call that ghee would
+    refuse raises ValueError. Raises RuntimeError outside run().
     """
     global _DRAWN
-    if _HANDLE is None and _SCENE is None:
+    if _SCENE is None:
         raise RuntimeError(
             "ghee.draw draws on the scene that run() runs: call it in a tick or a feed"
         )
@@ -522,8 +518,7 @@ def draw() -> Drawing:
     native = _ext()
     if _DRAWN is None:
         _DRAWN = native._Screen()
-    handle = _Wire() if _HANDLE is None else _HANDLE
-    return native.Drawing(handle, _DRAWN, ends_frame=False)
+    return native.Drawing(_Wire(), _DRAWN, ends_frame=False)
 
 
 class _Wire:
@@ -736,7 +731,7 @@ def args(specs: list[Arg] | tuple[Arg, ...] = ()):
     `--ghee-args` writes the declaration line and stops: the ghee probe.
     `--help` lists the args.
     A dash in a name becomes an underscore on the result.
-    A direct run takes the host flags as well, and run() reads them.
+    A direct run takes the host flags as well, and run() hands them to ghee.
     """
     global _HOST
     argv = sys.argv[1:]
@@ -753,8 +748,7 @@ def args(specs: list[Arg] | tuple[Arg, ...] = ()):
         p.add_argument(f"--{s.name}", default=d, help=help_, **_ARG_TYPES[s.type])
     if os.environ.get(WIRE):
         return _known(p, argv)
-    _host_flags(p)
-    _HOST = _known(p, argv)
+    _HOST = _host_parse(p, argv)
     return _HOST
 
 
@@ -774,135 +768,58 @@ def _known(p: argparse.ArgumentParser, argv: list[str]):
     return got
 
 
-def _rotation(s: str) -> int:
-    """A --rotate value: 0, 90, 180 or 270."""
-    try:
-        degrees = int(s.strip())
-    except ValueError:
-        degrees = None
-    if degrees not in (0, 90, 180, 270):
-        raise argparse.ArgumentTypeError(f"'{s}' is not 0, 90, 180 or 270")
-    return degrees
-
-
-def _level(s: str) -> float:
-    """A --brightness value, 0 to 1."""
-    try:
-        level = float(s.strip())
-    except ValueError:
-        level = None
-    if level is None or not 0.0 <= level <= 1.0:
-        raise argparse.ArgumentTypeError(f"'{s}' is not a level from 0 to 1")
-    return level
-
-
-def _image_pattern(s: str) -> str:
-    """An -o value: a .png or .jpg name or pattern, or '-'."""
-    if s == "-" or s.lower().endswith((".png", ".jpg", ".jpeg")):
-        return s
-    raise argparse.ArgumentTypeError(
-        f"wants an image pattern such as frame.####.png, or '-', got {s!r}; "
-        "a display takes --display"
-    )
+# The value of a flag given bare that takes a value or none, as --display.
+_BARE = "\0bare"
 
 
 def _host_flags(p: argparse.ArgumentParser) -> None:
-    """What a direct run takes on top of the scene's own args.
-
-    Each flag is the flag that `ghee render` spells the same way. With no -o
-    and no --serve, the frames go to the connected display.
-    A scene that declares one of these names collides here, and argparse says
-    so.
+    """The flags of `ghee render` that a direct run takes on top of the
+    scene's own args, with ghee render's help. A scene that declares one of
+    these names collides here, and argparse says so.
     """
-    p.add_argument(
-        "-o",
-        "--output",
-        type=_image_pattern,
-        metavar="PATTERN",
-        help="image pattern (frame.####.png), or '-' for raw RGBA frames to stdout",
-    )
-    p.add_argument(
-        "--display",
-        nargs="?",
-        const="kms",
-        metavar="kms",
-        help="the connected KMS display: bare, or 'kms' (the default with no -o "
-        "and no --serve)",
-    )
-    p.add_argument(
-        "--rgb565",
-        action="store_true",
-        help="display scanout in 16-bit color: halves the GPU store and scanout "
-        "bandwidth (worth it on VC4-class boards), slight banding in gradients",
-    )
-    p.add_argument(
-        "--drop",
-        action="store_true",
-        help="show the newest frame on the --display kms display each time it "
-        "frees, and skip the frames that waited: the render stops waiting for the "
-        "display, so --fps paces it",
-    )
-    p.add_argument(
-        "--serve", action="store_true", help="also run the console on this render"
-    )
-    p.add_argument(
-        "--port",
-        type=int,
-        default=8090,
-        metavar="PORT",
-        help="the console's port (default: 8090)",
-    )
-    p.add_argument(
-        "--host",
-        default="127.0.0.1",
-        metavar="HOST",
-        help="the console's bind address (default: 127.0.0.1)",
-    )
-    p.add_argument(
-        "--size",
-        type=_size,
-        metavar="WxH",
-        help="WxH to render at; a display states its own",
-    )
-    p.add_argument("--fps", type=float, metavar="N", help="frame rate cap")
-    p.add_argument(
-        "--stats",
-        action="store_true",
-        help="print a timing summary when the render ends",
-    )
-    p.add_argument(
-        "--frames",
-        type=int,
-        metavar="N",
-        help="frame count (default 1 for images, loop for a display or the console)",
-    )
-    p.add_argument(
-        "--timestep",
-        type=float,
-        metavar="S",
-        help="pin time to frame*S seconds instead of the wall clock",
-    )
-    p.add_argument(
-        "--rotate",
-        type=_rotation,
-        default=0,
-        metavar="DEGREES",
-        help="turn the frame clockwise on its way to every output: 0, 90, 180 or "
-        "270. At 90 and 270 the scene renders at the output's size turned",
-    )
-    p.add_argument(
-        "--brightness",
-        type=_level,
-        metavar="LEVEL",
-        help="set the --display kms panel's backlight, 0 to 1, through the "
-        "kernel's backlight device",
-    )
-    p.add_argument(
-        "--dri",
-        metavar="DEVICE",
-        help="DRI device, e.g. /dev/dri/renderD128. With --display it picks "
-        "which card's display to drive",
-    )
+    from ghee import _ext
+
+    for f in _ext()._render_flags():
+        names = [f"-{f['short']}"] if f["short"] else []
+        names.append(f"--{f['long']}")
+        kw: dict = {"help": f["help"]}
+        if f["default"] is not None:
+            kw["help"] = f"{f['help']} [default: {f['default']}]".lstrip()
+        if f["takes"] == 0:
+            kw["action"] = "store_true"
+        elif f["metavar"]:
+            kw["metavar"] = f["metavar"]
+        if f["takes"] == 2:
+            kw.update(nargs="?", const=_BARE)
+        p.add_argument(*names, **kw)
+    p.epilog = "With no -o and no --serve, the frames go to the connected display."
+
+
+def _host_parse(p: argparse.ArgumentParser, argv: list[str]):
+    """`argv` parsed by `p` and the host flags, which ghee checks as `ghee
+    render` checks them: a value that it refuses stops the run here."""
+    from ghee import _ext
+
+    _host_flags(p)
+    got = _known(p, argv)
+    why = _ext()._render_check(_flags(got))
+    if why:
+        p.error(why)
+    return got
+
+
+def _flags(a) -> list[str]:
+    """The host flags that `a` holds, as `ghee render` takes them."""
+    from ghee import _ext
+
+    out = []
+    for f in _ext()._render_flags():
+        value = getattr(a, f["long"].replace("-", "_"), None)
+        if value is None or value is False:
+            continue
+        flag = f"--{f['long']}"
+        out.append(flag if value is True or value == _BARE else f"{flag}={value}")
+    return out
 
 
 # ------------------------------------------------------------------ the loop
@@ -912,10 +829,8 @@ _FEEDS: dict = {}
 _HOOKS: list = []
 _OUT: list = []
 _CLEAN = False
-# a direct run: the host flags from args(), the handle it drives, the signals
+# a direct run: the host flags from args()
 _HOST = None
-_HANDLE = None
-_STOPPED: list = []
 # the scene of the run: the type of each param that set_param names, and the
 # filters that ghee appends
 _PARAMS: dict | None = None
@@ -971,9 +886,6 @@ def set_param(
     """
     wire = f"{in_pass}.{name}" if in_pass else name
     _check(wire, value)
-    if _HANDLE is not None:
-        _HANDLE.set_param(name, value, in_pass=in_pass)
-        return
     # The wire carries a color written "#rrggbb" as three floats, and a
     # colour name as text.
     rgb = None if _PARAMS and _PARAMS.get(wire) == "string" else _hex(value)
@@ -991,12 +903,9 @@ def set_param(
 def _set_layer(name: str, field: str, value: Any, effect: str | None = None) -> None:
     """Set a live field of a layer for this tick, the set of `layers`.
 
-    Under ghee, the native half of the wheel checks the set against the
-    scene, as Handle.set_layer does, and gives the message.
+    The native half of the wheel checks the set against the scene, as
+    Handle.set_layer does, and gives the message.
     """
-    if _HANDLE is not None:
-        _HANDLE.set_layer(name, field, value, effect)
-        return
     if _SCENE is None:
         raise RuntimeError(
             "ghee.layers sets a layer of the scene that run() runs: set it in a "
@@ -1256,7 +1165,8 @@ def run(scene: Scene | None = None) -> None:
     clears to black, for ghee.draw() to paint on.
 
     A run under ghee answers the wire.
-    A run of its own opens the scene on the bindings and drives it.
+    A run of its own renders the scene as `ghee render` renders it, and
+    answers each tick in this process.
 
     Ctrl-C reaches every process in the terminal's group, so ghee takes it
     too and is already stopping. The scene ends where it stands, quietly: a
@@ -1285,36 +1195,47 @@ def _wire(scene: Scene) -> None:
     Every answer ends with kind 5, as the handshake's `"lockstep": true`
     promises.
     """
-    global _CLEAN, _TICK
     out = sys.stdout.buffer
-    hello = scene.to_dict()
-    hello["lockstep"] = True
-    out.write(json.dumps(hello).encode("utf-8") + b"\n")
+    out.write(_hello(scene).encode("utf-8") + b"\n")
     out.flush()
     arrays = _arrays(scene)
     for line in sys.stdin:
         if not line.strip():
             continue
-        t = _TICK = _tick(line)
-        del _OUT[:]
-        _CLEAN = False
-        for hook in _HOOKS:
-            hook(t)
-        for name, fn in _FEEDS.items():
-            values = fn(t)
-            if values is None:
-                continue
-            count, msg = _array_message(name, values)
-            # ghee sends ticks only for a scene that it took, so the size is valid
-            want = arrays[name].count
-            if count != want:
-                raise ValueError(f"array '{name}' takes {want} values, got {count}")
-            _OUT.append(msg)
-        if _CLEAN:
-            _OUT.append(b"\x02")
-        _OUT.append(b"\x05")
-        out.write(b"".join(_OUT))
+        out.write(_answer(arrays, line))
         out.flush()
+
+
+def _hello(scene: Scene) -> str:
+    """The handshake: the scene, which answers every tick in lockstep."""
+    hello = scene.to_dict()
+    hello["lockstep"] = True
+    return json.dumps(hello)
+
+
+def _answer(arrays: dict, line: str) -> bytes:
+    """The answer to the tick of `line`: what the hooks and the feeds send,
+    kind 5 last."""
+    global _CLEAN, _TICK
+    t = _TICK = _tick(line)
+    del _OUT[:]
+    _CLEAN = False
+    for hook in _HOOKS:
+        hook(t)
+    for name, fn in _FEEDS.items():
+        values = fn(t)
+        if values is None:
+            continue
+        count, msg = _array_message(name, values)
+        # ghee sends ticks only for a scene that it took, so the size is valid
+        want = arrays[name].count
+        if count != want:
+            raise ValueError(f"array '{name}' takes {want} values, got {count}")
+        _OUT.append(msg)
+    if _CLEAN:
+        _OUT.append(b"\x02")
+    _OUT.append(b"\x05")
+    return b"".join(_OUT)
 
 
 # --------------------------------------------------------------- direct mode
@@ -1323,8 +1244,7 @@ def _wire(scene: Scene) -> None:
 def _host_args():
     """The host flags of a run that declared no args of its own."""
     p = argparse.ArgumentParser(prog=os.path.basename(sys.argv[0]), allow_abbrev=False)
-    _host_flags(p)
-    return _known(p, sys.argv[1:])
+    return _host_parse(p, sys.argv[1:])
 
 
 def _script_dir() -> str | None:
@@ -1334,149 +1254,33 @@ def _script_dir() -> str | None:
     return os.path.dirname(os.path.abspath(path)) if path else None
 
 
-def _display(a) -> str | None:
-    """The display of a direct run: --display, else the connected display
-    when the run names no -o and no --serve, else none."""
-    if a.display is not None or a.output is not None or a.serve:
-        return a.display
-    return "kms"
-
-
-def _refuse(why: str):
-    """Stop a direct run that ghee refuses: its one line, and exit status 1,
-    as `ghee render` stops."""
-    print(f"{os.path.basename(sys.argv[0])}: {why}", file=sys.stderr)
-    raise SystemExit(1)
-
-
-def _open(scene: Scene, a):
-    """Open the scene on the bindings. A scene or a display that ghee
-    refuses stops the run, and a --brightness that the display refuses is
-    reported and the run goes on."""
-    from ghee import open as open_scene
-
-    w, h = a.size or (None, None)
-    if a.brightness is not None and _display(a) != "kms":
-        _refuse("--brightness needs --display kms")
-    if a.drop and _display(a) != "kms":
-        _refuse("--drop needs --display kms")
-    doc = scene.to_dict()
-    display = _display(a)
-    try:
-        handle = open_scene(
-            doc,
-            display=display,
-            # ghee.open takes opts with a display alone
-            opts={"rgb565": True} if a.rgb565 and display else None,
-            dri=a.dri,
-            rotate=a.rotate,
-            width=w,
-            height=h,
-            fps=a.fps,
-            serve=(a.host, a.port) if a.serve else None,
-            timestep=a.timestep,
-            base_dir=_script_dir(),
-            drop=a.drop,
-        )
-    except (ValueError, RuntimeError) as e:
-        _refuse(str(e))
-    if a.brightness is not None:
-        try:
-            handle.brightness = a.brightness
-        except (ValueError, RuntimeError) as e:
-            print(f"{os.path.basename(sys.argv[0])}: {e}", file=sys.stderr)
-    return handle
-
-
-def _frames(a) -> int:
-    """--frames as given, else as `ghee render` counts them: one frame for an
-    image or a pipe, and 0, a run until SIGINT or SIGTERM, for a display or the
-    console."""
-    if a.frames is not None:
-        return a.frames
-    return int(_display(a) is None and not a.serve)
-
-
-def _destinations(a) -> str:
-    """Where a direct run's frames go, as `ghee render --stats` names them."""
-    out = []
-    display = _display(a)
-    if display is not None:
-        out.append("kms")
-    if a.output is not None:
-        out.append("pipe" if a.output == "-" else "file")
-    if not out:
-        out.append("console")
-    return "+".join(out)
-
-
-def _summary(times: list, wall: float, a) -> str:
-    """The line of `ghee render --stats`."""
-    n = len(times)
-    return (
-        f"{'done':>9}  stats: {n} frame(s) in {wall:.2f}s, "
-        f"{1000 * sum(times) / n:.2f} ms/frame (min {1000 * min(times):.2f}, "
-        f"max {1000 * max(times):.2f}), {n / wall if wall > 0 else 0:.1f} fps -> "
-        f"{_destinations(a)}"
-    )
-
-
-def _stop(sig, _frame) -> None:
-    _STOPPED.append(sig)
-
-
 def _direct(scene: Scene) -> None:
-    """Drive the scene from the wire's own hooks and feeds.
+    """Render the scene as `ghee render` renders a scene file that is a
+    program, with the host flags. ghee asks this process for the scene, and
+    for the answer to each tick, as it asks a process on the wire.
 
-    The tick keeps its wire shape: `params` holds the params that the
-    console changed, and the first tick holds every param. Its `dt`
-    is the time since the tick before, as under ghee.
+    Raises what a hook or a feed raises, and SystemExit with the status of
+    `ghee render` when that is not 0.
     """
-    global _CLEAN, _HANDLE
-    a = _HOST if _HOST is not None else _host_args()
-    _arrays(scene)
-    if a.output not in (None, "-") and (a.frames or 0) > 1:
-        from ghee import _ext
+    from ghee import _ext
 
-        if not _ext()._numbered(a.output):
-            _refuse(
-                "multiple frames into one filename; number them with a # run "
-                "(frame.####.png)"
-            )
-    handle = _open(scene, a)
-    del _STOPPED[:]
-    caught = [(s, signal.signal(s, _stop)) for s in (signal.SIGINT, signal.SIGTERM)]
-    _HANDLE = handle
-    frames = _frames(a)
-    frame, started = 0, time.monotonic()
-    times: list = []
-    try:
-        while not _STOPPED and (frames == 0 or frame < frames):
-            t = handle._tick()
-            _CLEAN = False
-            for hook in _HOOKS:
-                hook(t)
-            for name, fn in _FEEDS.items():
-                values = fn(t)
-                if values is not None:
-                    handle.feed(name, values)
-            # A file or a pipe takes every frame, as under `ghee render`.
-            if _CLEAN and a.output is None:
-                handle.skip()
-            else:
-                drawn = time.monotonic()
-                handle.frame()
-                if a.output == "-":
-                    sys.stdout.buffer.write(handle.pixels())
-                    sys.stdout.buffer.flush()
-                elif a.output is not None:
-                    handle.save(a.output)
-                times.append(time.monotonic() - drawn)
-            frame += 1
-    finally:
-        _HANDLE = None
-        for s, held in caught:
-            signal.signal(s, held)
-        handle.close()
-    if a.stats and times:
-        print(_summary(times, time.monotonic() - started, a), file=sys.stderr)
+    a = _HOST if _HOST is not None else _host_args()
+    arrays = _arrays(scene)
+
+    def start(_w: int, _h: int) -> str:
+        global _DRAWN
+        _DRAWN = None
+        return _hello(scene)
+
+    main = getattr(sys.modules.get("__main__"), "__file__", None)
+    path = os.path.abspath(main) if main else os.path.join(os.getcwd(), "scene")
+    status = _ext()._direct(
+        os.path.basename(sys.argv[0]),
+        path,
+        _flags(a),
+        start,
+        lambda line: _answer(arrays, line),
+        a.dri,
+    )
+    if status:
+        raise SystemExit(status)

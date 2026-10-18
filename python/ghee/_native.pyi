@@ -1,7 +1,7 @@
 """The renderer that ghee.open opens, the native half of ghee-render."""
 
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any, Literal, SupportsFloat, TypeAlias
 
 from typing_extensions import Buffer, Self
@@ -242,9 +242,6 @@ class _LayerWire:
         font_family: str | Sequence[str] | None = None,
     ) -> tuple[float, float]: ...
 
-def _numbered(pattern: str) -> bool:
-    """True when the image file name `pattern` numbers its frames."""
-
 def _display_size(
     dri: str | os.PathLike[str] | None = None,
 ) -> tuple[int, int] | None:
@@ -255,6 +252,24 @@ def _display_size(
 def _command(argv: list[str]) -> int:
     """The `ghee` command: the arguments after the program name in, the
     exit status out."""
+
+def _render_flags() -> list[dict[str, Any]]:
+    """`ghee render`'s flags that a direct run takes: `long`, `short`,
+    `takes` (0 never, 1 always, 2 maybe), `help`, `metavar` and `default`."""
+
+def _render_check(flags: list[str]) -> str | None:
+    """Why `flags` make no render, or None."""
+
+def _direct(
+    prog: str,
+    path: str,
+    flags: list[str],
+    start: Callable[[int, int], str],
+    answer: Callable[[str], bytes],
+    dri: str | None = None,
+) -> int:
+    """Render the scene of a direct run as `ghee render` renders it, and
+    return its exit status."""
 
 def open(
     scene: str | os.PathLike[str] | dict[str, Any] | Scene | None = None,

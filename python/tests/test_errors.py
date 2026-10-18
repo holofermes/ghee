@@ -238,7 +238,8 @@ def test_a_scene_mistake_reads_as_ghee_wrote_it_in_open_a_direct_run_and_ghee_re
         timeout=120,
     )
     assert direct.returncode == 1
-    assert direct.stderr == f"mistake.py: {message}\n"
+    assert direct.stderr.startswith("mistake.py: "), direct.stderr
+    assert direct.stderr.count(message.removeprefix("scene: ")) == 1, direct.stderr
     if not CLI.exists():
         pytest.skip(f"no {CLI} to run the scene")
     ran = subprocess.run(

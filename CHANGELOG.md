@@ -101,6 +101,10 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   tick that the program got.
 - ghee rounds a half up in an int param, on the wire, in the console and in
   `set_param` alike: 2.5 gives 3, and -2.5 gives -2.
+- A Python scene file that you run yourself renders as `ghee render` renders
+  it. Its flags take `ghee render`'s checks and help, `--stats` prints the
+  same lines, a SIGTERM ends it with status 143, and `--serve` gives the
+  console of `ghee render --serve`, which saves your edits.
 
 ### Fixed
 

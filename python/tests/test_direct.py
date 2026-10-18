@@ -1,151 +1,78 @@
-"""Direct mode: a scene with no ghee parent hosts itself on the bindings.
+"""Direct mode: a scene with no ghee parent renders itself as `ghee render`
+renders a program, and its hooks and feeds answer each tick in this process.
 
-$GHEE_WIRE marks the process ghee started. Without it, run() opens the scene,
-drives the same hooks and feeds, and honours the same skip. A fake `ghee.open`
-in sys.modules stands in for the renderer, bar the last test.
+$GHEE_WIRE marks the process ghee started. Without it, run() hands the host
+flags to ghee's render, which asks the shim for the scene and for each
+tick's answer.
 """
 
-import io
 import re
 import shutil
 import signal
 import subprocess
 import sys
-import types
 
 import pytest
-from conftest import REPO
+from conftest import REPO, pillow
+from test_console import free_port
 from test_shim import REFUSED, load, scene_of
 
-from ghee._tick import Tick
 
-
-class Fake:
-    """The handle open() hands back. It records what the loop asks of it, and
-    its ticks run half a second apart."""
-
-    def __init__(self, on_frame=None):
-        self.calls = []
-        self.on_frame = on_frame
-        self.drawn = 0
-        self.ticks = 0
-        self.opened = None
-        # the params of each tick, then {}
-        self.changes = [{"words": "hi"}, {}, {"words": "ho"}]
-
-    def _tick(self):
-        if self.opened is None:
-            params = self.changes.pop(0) if self.changes else {}
-            n = self.ticks
-            self.opened = Tick(n, 0.5 * n, 0.5, params)
-        return self.opened
-
-    def _taken(self):
-        tick = self._tick()
-        self.opened = None
-        self.ticks += 1
-        return tick
-
-    def feed(self, name, values):
-        self.calls.append(("feed", name, list(values)))
-
-    def set_param(self, name, value, in_pass=None):
-        self.calls.append(("set_param", name, value, in_pass))
-
-    def set_layer(self, name, field, value, effect=None):
-        self.calls.append(("set_layer", name, field, value, effect))
-
-    def frame(self):
-        self.calls.append(("frame",))
-        self.drawn += 1
-        if self.on_frame:
-            self.on_frame(self.drawn)
-        return self._taken()
-
-    def skip(self):
-        self.calls.append(("skip",))
-        return self._taken()
-
-    def save(self, path):
-        self.calls.append(("save", path))
-
-    def pixels(self):
-        return bytes([self.drawn]) * 4
-
-    def close(self):
-        self.calls.append(("close",))
-
-    @property
-    def brightness(self):
-        return None
-
-    @brightness.setter
-    def brightness(self, level):
-        self.calls.append(("brightness", level))
-
-
-def host(monkeypatch, argv, on_frame=None):
-    """A run of `argv` with a fake renderer -> (shim, handle, open kwargs)."""
+def host(monkeypatch, argv):
+    """A fresh shim, run as `feeder.py` with `argv`."""
     shim = load()
-    fake = Fake(on_frame)
-    opened = {}
-
-    def open_scene(scene, **kw):
-        opened.update(kw, scene=scene)
-        return fake
-
-    from ghee import _native
-
-    module = types.ModuleType("ghee")
-    module.open = open_scene
-    # the native half holds the colour names
-    module._ext = lambda: _native
     monkeypatch.delenv(shim.WIRE, raising=False)
-    monkeypatch.setitem(sys.modules, "ghee", module)
     monkeypatch.setattr(sys, "argv", ["feeder.py", *argv])
-    return shim, fake, opened
+    return shim
 
 
-def test_the_loop_runs_the_hooks_then_the_feeds_then_the_frame(monkeypatch):
-    shim, fake, _ = host(monkeypatch, ["--display", "kms", "--frames", "3"])
+def frames(tmp_path):
+    """The frames that a run wrote into `tmp_path`, by name."""
+    return sorted(p.name for p in tmp_path.glob("f*.png"))
+
+
+def pixels(path):
+    """The RGBA bytes of the image at `path`."""
+    return pillow().open(path).convert("RGBA").tobytes()
+
+
+def test_the_loop_runs_the_hooks_then_the_feeds_then_the_frame(tmp_path, monkeypatch):
+    shim = host(
+        monkeypatch,
+        ["-o", str(tmp_path / "f.####.png"), "--frames", "3", "--timestep", "0.5"],
+    )
     seen = []
 
     @shim.tick
     def hook(t):
-        seen.append((t.frame, t.time, t.dt, t.params))
+        seen.append(("tick", t.frame, t.time, t.dt))
         shim.set_param("gain", 0.5)
         if t.frame == 1:
             shim.skip()
 
     @shim.feed("v")
     def v(t):
+        seen.append(("feed", t.frame))
         return None if t.frame == 2 else [float(t.frame)] * 4
 
     shim.run(scene_of(shim))
-    # the tick is the handle's, in its wire shape, with the string params
-    # that changed
     assert seen == [
-        (0, 0.0, 0.5, {"words": "hi"}),
-        (1, 0.5, 0.5, {}),
-        (2, 1.0, 0.5, {"words": "ho"}),
+        ("tick", 0, 0.0, 0.5),
+        ("feed", 0),
+        ("tick", 1, 0.5, 0.5),
+        ("feed", 1),
+        ("tick", 2, 1.0, 0.5),
+        ("feed", 2),
     ]
-    gain = ("set_param", "gain", 0.5, None)
-    assert fake.calls == [
-        gain,
-        ("feed", "v", [0.0] * 4),
-        ("frame",),
-        gain,
-        ("feed", "v", [1.0] * 4),
-        ("skip",),
-        gain,
-        ("frame",),
-        ("close",),
-    ]
+    # a file takes the skipped tick too, as under `ghee render`
+    assert frames(tmp_path) == ["f.0000.png", "f.0001.png", "f.0002.png"]
 
 
 @pytest.mark.parametrize("call,error", REFUSED)
-def test_a_param_the_scene_cannot_take_raises_as_on_the_wire(call, error, monkeypatch):
-    shim, fake, _ = host(monkeypatch, ["--display", "kms", "--frames", "1"])
+def test_a_param_the_scene_cannot_take_raises_as_on_the_wire(
+    call, error, tmp_path, monkeypatch
+):
+    shim = host(monkeypatch, ["-o", str(tmp_path / "f.png")])
 
     @shim.tick
     def hook(t):
@@ -153,146 +80,86 @@ def test_a_param_the_scene_cannot_take_raises_as_on_the_wire(call, error, monkey
 
     with pytest.raises(ValueError, match=re.escape(error)):
         shim.run(scene_of(shim))
-    assert not [c for c in fake.calls if c[0] == "set_param"]
 
 
-def test_a_layer_set_reaches_the_handle(monkeypatch):
-    shim, fake, _ = host(monkeypatch, ["--display", "kms", "--frames", "1"])
+def test_the_host_flags_reach_the_render(tmp_path, monkeypatch):
+    shim = host(
+        monkeypatch,
+        [
+            "-o",
+            str(tmp_path / "f.png"),
+            "--size",
+            "64x48",
+            "--rotate",
+            "270",
+            "--timestep",
+            "0.25",
+        ],
+    )
+    seen = []
 
     @shim.tick
     def hook(t):
-        shim.layers.title.x = 10
-        shim.layers["title"]["glow"]["color"] = "#ffffff"
+        seen.append((t.dt, shim.render_size()))
 
     shim.run(scene_of(shim))
-    assert fake.calls[:2] == [
-        ("set_layer", "title", "x", 10, None),
-        ("set_layer", "title", "color", "#ffffff", "glow"),
-    ]
-
-
-def test_the_host_flags_reach_the_bindings(monkeypatch):
-    shim, _, opened = host(
-        monkeypatch,
-        [
-            "--display",
-            "kms",
-            "--size",
-            "64x48",
-            "--fps",
-            "30",
-            "--serve",
-            "--port",
-            "8099",
-            "--host",
-            "0.0.0.0",
-            "--frames",
-            "1",
-            "--timestep",
-            "0.25",
-            "--rotate",
-            "270",
-            "--dri",
-            "/dev/dri/card1",
-        ],
-    )
-    shim.run(scene_of(shim))
-    assert opened["scene"] == scene_of(shim).to_dict()
-    assert opened["display"] == "kms"
-    assert (opened["width"], opened["height"]) == (64, 48)
-    assert (opened["fps"], opened["serve"], opened["timestep"]) == (
-        30.0,
-        ("0.0.0.0", 8099),
-        0.25,
-    )
-    assert (opened["rotate"], opened["dri"]) == (270, "/dev/dri/card1")
-
-
-def test_brightness_sets_the_backlight_of_the_kms_display(monkeypatch):
-    shim, fake, opened = host(
-        monkeypatch, ["--display", "kms", "--brightness", "0.25", "--frames", "1"]
-    )
-    shim.run(scene_of(shim))
-    assert opened["display"] == "kms"
-    assert fake.calls[0] == ("brightness", 0.25)
-
-
-def test_brightness_with_no_kms_display_stops_the_run_as_ghee_render_stops(
-    monkeypatch, capsys
-):
-    shim, fake, opened = host(monkeypatch, ["-o", "f.png", "--brightness", "0.5"])
-    with pytest.raises(SystemExit) as stopped:
-        shim.run(scene_of(shim))
-    assert stopped.value.code == 1
-    assert capsys.readouterr().err == "feeder.py: --brightness needs --display kms\n"
-    assert not opened and not fake.calls
+    assert seen == [(0.25, (48, 64))]
+    assert pillow().open(tmp_path / "f.png").size == (64, 48)
 
 
 @pytest.mark.parametrize(
-    "argv,drop",
+    "flag,error",
     [
-        (["--display", "kms", "--drop"], True),
-        (["--drop"], True),
-        (["--display", "kms"], False),
+        (["--brightness", "0.5"], "--brightness needs --display kms"),
+        (["--drop"], "--drop needs --display kms"),
     ],
 )
-def test_drop_lets_the_display_skip_to_the_newest_frame_as_ghee_render_does(
-    argv, drop, monkeypatch
+def test_a_display_flag_with_no_kms_display_stops_the_run_as_ghee_render_stops(
+    flag, error, tmp_path, monkeypatch, capfd
 ):
-    shim, _, opened = host(monkeypatch, [*argv, "--frames", "1"])
-    shim.run(scene_of(shim))
-    assert opened["drop"] is drop
-
-
-def test_drop_with_no_kms_display_stops_the_run_as_ghee_render_stops(
-    monkeypatch, capsys
-):
-    shim, fake, opened = host(monkeypatch, ["-o", "f.png", "--drop"])
+    shim = host(monkeypatch, ["-o", str(tmp_path / "f.png"), *flag])
     with pytest.raises(SystemExit) as stopped:
         shim.run(scene_of(shim))
     assert stopped.value.code == 1
-    assert capsys.readouterr().err == "feeder.py: --drop needs --display kms\n"
-    assert not opened and not fake.calls
-
-
-@pytest.mark.parametrize(
-    "argv,opts",
-    [
-        (["--display", "kms", "--rgb565"], {"rgb565": True}),
-        (["--rgb565"], {"rgb565": True}),
-        (["--display", "kms"], None),
-        (["-o", "f.png", "--rgb565"], None),
-    ],
-)
-def test_rgb565_scans_the_display_out_in_16_bit_color_as_ghee_render_does(
-    argv, opts, monkeypatch
-):
-    shim, _, opened = host(monkeypatch, [*argv, "--frames", "1"])
-    shim.run(scene_of(shim))
-    assert opened["opts"] == opts
+    assert capfd.readouterr().err == f"feeder.py: {error}\n"
+    assert not frames(tmp_path)
 
 
 @pytest.mark.parametrize(
     "argv,error",
     [
-        (["--rotate", "45"], "argument --rotate: '45' is not 0, 90, 180 or 270"),
+        (["--rotate", "45"], "argument --rotate: wants 0, 90, 180 or 270, got '45'"),
         (
             ["--brightness", "2"],
-            "argument --brightness: '2' is not a level from 0 to 1",
+            "argument --brightness: wants a level from 0 to 1, got '2'",
         ),
     ],
 )
 def test_rotate_and_brightness_take_the_values_of_ghee_render(
     argv, error, monkeypatch, capsys
 ):
-    shim, _, _ = host(monkeypatch, argv)
-    with pytest.raises(SystemExit):
+    shim = host(monkeypatch, argv)
+    with pytest.raises(SystemExit) as stopped:
         shim.args([])
+    assert stopped.value.code == 2
     assert capsys.readouterr().err.splitlines()[-1] == f"feeder.py: error: {error}"
 
 
+def test_the_help_lists_the_flags_of_ghee_render_with_their_help(monkeypatch, capsys):
+    shim = host(monkeypatch, ["--help"])
+    with pytest.raises(SystemExit):
+        shim.args([shim.Arg("bins", "int", 4, "how many bars")])
+    out = capsys.readouterr().out
+    assert "how many bars (default: 4)" in out
+    from ghee import _native
+
+    for f in _native._render_flags():
+        assert f"--{f['long']}" in out
+    assert "the frames go to the connected display" in out
+
+
 def test_a_share_of_the_render_size_turns_with_a_quarter_rotate(monkeypatch):
-    shim, _, _ = host(monkeypatch, ["--size", "128x32", "--rotate", "90"])
+    shim = host(monkeypatch, ["--size", "128x32", "--rotate", "90"])
     got = shim.args([shim.Arg("bar", "size", default="half")])
     assert got.bar == (16, 64)
 
@@ -314,7 +181,7 @@ def connected(monkeypatch, mode):
 
 def test_a_share_of_the_render_size_is_a_share_of_the_display(monkeypatch):
     asked = connected(monkeypatch, (128, 32))
-    shim, _, _ = host(monkeypatch, ["--display", "--dri", "/dev/dri/card1"])
+    shim = host(monkeypatch, ["--display", "--dri", "/dev/dri/card1"])
     got = shim.args([shim.Arg("bar", "size", default="half")])
     assert got.bar == (64, 16)
     assert asked == ["/dev/dri/card1"]
@@ -335,91 +202,61 @@ def test_a_share_of_the_render_size_is_a_share_of_the_display(monkeypatch):
 )
 def test_a_direct_run_renders_at_its_size_turned_by_its_rotate(argv, size, monkeypatch):
     connected(monkeypatch, (128, 32))
-    shim, _, _ = host(monkeypatch, argv)
+    shim = host(monkeypatch, argv)
     monkeypatch.delenv(shim.SIZE, raising=False)
     shim.args([])
     assert shim.render_size() == size
 
 
-@pytest.mark.parametrize(
-    "argv,display,serve",
-    [
-        ([], "kms", None),
-        (["--display"], "kms", None),
-        (["-o", "f.png"], None, None),
-        (["--serve"], None, ("127.0.0.1", 8090)),
-        (["-o", "-", "--display", "kms"], "kms", None),
-    ],
-)
-def test_a_run_with_no_output_goes_to_the_display(argv, display, serve, monkeypatch):
-    shim, _, opened = host(monkeypatch, [*argv, "--frames", "1"])
-    monkeypatch.setattr(sys, "stdout", Out())
-    shim.run(scene_of(shim))
-    assert (opened["display"], opened["serve"]) == (display, serve)
-    assert (opened["width"], opened["height"]) == (None, None)
-
-
-class Out:
-    """sys.stdout as run() writes raw frames to it."""
-
-    def __init__(self):
-        self.buffer = io.BytesIO()
-
-
-@pytest.mark.parametrize(
-    "target,saved,piped,dest",
-    [
-        ("f.####.png", [("save", "f.####.png")] * 3, b"", "file"),
-        ("-", [], bytes([1] * 4 + [2] * 4 + [3] * 4), "pipe"),
-    ],
-)
+@pytest.mark.parametrize("target", ["f.####.png", "-"])
 def test_o_writes_every_frame_as_ghee_render_does(
-    target, saved, piped, dest, monkeypatch, capsys
+    target, tmp_path, monkeypatch, capfdbinary
 ):
     """A file or a pipe takes the skipped ticks too, and --stats sums them up."""
-    shim, fake, _ = host(monkeypatch, ["-o", target, "--frames", "3", "--stats"])
-    out = Out()
-    monkeypatch.setattr(sys, "stdout", out)
+    out = target if target == "-" else str(tmp_path / target)
+    shim = host(monkeypatch, ["-o", out, "--frames", "3", "--size", "4x2", "--stats"])
 
     @shim.tick
     def hook(t):
         shim.skip()
 
     shim.run(scene_of(shim))
-    assert [c for c in fake.calls if c[0] in ("save", "skip")] == saved
-    assert out.buffer.getvalue() == piped
-    err = capsys.readouterr().err
-    assert re.fullmatch(
+    out, err = capfdbinary.readouterr()
+    if target == "-":
+        assert len(out) == 3 * 4 * 2 * 4
+    else:
+        assert len(frames(tmp_path)) == 3
+    dest = "pipe" if target == "-" else "file"
+    assert re.search(
         r"     done  stats: 3 frame\(s\) in \d+\.\d\ds, \d+\.\d\d ms/frame "
         rf"\(min \d+\.\d\d, max \d+\.\d\d\), \d+\.\d fps -> {dest}\n",
-        err,
+        err.decode(),
     ), err
 
 
-def test_o_takes_an_image_pattern_or_a_pipe(monkeypatch, capsys):
-    shim, _, _ = host(monkeypatch, ["-o", "kms"])
-    with pytest.raises(SystemExit):
-        shim.args([])
-    assert (
-        "argument -o/--output: wants an image pattern such as frame.####.png, or "
-        "'-', got 'kms'; a display takes --display" in capsys.readouterr().err
+def test_o_takes_an_image_pattern_or_a_pipe(monkeypatch, capfd):
+    shim = host(monkeypatch, ["-o", "kms"])
+    with pytest.raises(SystemExit) as stopped:
+        shim.run(scene_of(shim))
+    assert stopped.value.code == 1
+    assert capfd.readouterr().err == (
+        "feeder.py: -o wants an image pattern such as frame.####.png, or '-', "
+        "got 'kms'; a display takes --display\n"
     )
 
 
-def test_a_scene_takes_its_own_args_beside_the_host_flags(monkeypatch):
-    shim, _, opened = host(
-        monkeypatch, ["--bins", "8", "--display", "kms", "--frames", "1"]
-    )
+def test_a_scene_takes_its_own_args_beside_the_host_flags(tmp_path, monkeypatch):
+    shim = host(monkeypatch, ["--bins", "8", "-o", str(tmp_path / "f.png")])
     got = shim.args([shim.Arg("bins", "int", default=4)])
     assert got.bins == 8
     shim.run(scene_of(shim))
-    assert opened["display"] == "kms"
+    assert frames(tmp_path) == ["f.png"]
 
 
 def test_a_wire_run_leaves_the_host_flags_alone(monkeypatch, capsys):
     """ghee owns the render under the wire, so the scene takes its args alone,
     and names each flag that it leaves."""
-    shim, _, _ = host(monkeypatch, ["--display", "kms", "--bins", "8"])
+    shim = host(monkeypatch, ["--display", "kms", "--bins", "8"])
     monkeypatch.setenv(shim.WIRE, "1")
     got = shim.args([shim.Arg("bins", "int", default=4)])
     assert got.bins == 8
@@ -427,20 +264,18 @@ def test_a_wire_run_leaves_the_host_flags_alone(monkeypatch, capsys):
 
 
 def test_a_flag_that_no_scene_declares_is_named_and_the_run_goes_on(
-    monkeypatch, capsys
+    tmp_path, monkeypatch, capsys
 ):
-    shim, _, opened = host(
-        monkeypatch, ["--bisn", "32", "--display", "kms", "--frames", "1"]
-    )
+    shim = host(monkeypatch, ["--bisn", "32", "-o", str(tmp_path / "f.png")])
     got = shim.args([shim.Arg("bins", "int", default=4)])
     assert got.bins == 4
     assert capsys.readouterr().err == "feeder.py: ignoring --bisn 32\n"
     shim.run(scene_of(shim))
-    assert opened["display"] == "kms"
+    assert frames(tmp_path) == ["f.png"]
 
 
-def test_a_feed_the_scene_never_declared_stops_before_the_render(monkeypatch):
-    shim, fake, opened = host(monkeypatch, ["--display", "kms", "--frames", "1"])
+def test_a_feed_the_scene_never_declared_stops_before_the_render(tmp_path, monkeypatch):
+    shim = host(monkeypatch, ["-o", str(tmp_path / "f.png")])
 
     @shim.feed("nope")
     def nope(t):
@@ -448,43 +283,38 @@ def test_a_feed_the_scene_never_declared_stops_before_the_render(monkeypatch):
 
     with pytest.raises(ValueError, match="feed 'nope' is not an array"):
         shim.run(scene_of(shim))
-    assert not opened and not fake.calls
+    assert not frames(tmp_path)
 
 
 def test_many_frames_into_one_file_stop_the_run_as_ghee_render_stops(
-    monkeypatch, capsys
+    tmp_path, monkeypatch, capfd
 ):
-    shim, fake, opened = host(monkeypatch, ["-o", "one.png", "--frames", "4"])
+    shim = host(monkeypatch, ["-o", str(tmp_path / "f.png"), "--frames", "4"])
     with pytest.raises(SystemExit) as stopped:
         shim.run(scene_of(shim))
     assert stopped.value.code == 1
-    assert capsys.readouterr().err == (
+    assert capfd.readouterr().err == (
         "feeder.py: multiple frames into one filename; number them with a # run "
         "(frame.####.png)\n"
     )
-    assert not opened and not fake.calls
+    assert not frames(tmp_path)
 
 
-@pytest.mark.parametrize("error", [ValueError, RuntimeError])
-def test_a_run_that_ghee_refuses_stops_with_its_one_line(error, monkeypatch, capsys):
-    """A scene or a display that ghee refuses ends the run with ghee's line,
-    and an exception of the script's own keeps its traceback."""
-    shim, _, _ = host(monkeypatch, ["--frames", "1"])
-
-    def refuse(scene, **kw):
-        raise error("no connected display to size from; pass width and height")
-
-    sys.modules["ghee"].open = refuse
+def test_a_scene_that_ghee_refuses_stops_the_run_with_its_one_line(
+    tmp_path, monkeypatch, capfd
+):
+    shim = host(monkeypatch, ["-o", str(tmp_path / "f.png")])
+    scene = shim.Scene(passes=[shim.Pass("main", "void main(){ nope; }")])
     with pytest.raises(SystemExit) as stopped:
-        shim.run(scene_of(shim))
+        shim.run(scene)
     assert stopped.value.code == 1
-    assert capsys.readouterr().err == (
-        "feeder.py: no connected display to size from; pass width and height\n"
-    )
+    err = capfd.readouterr().err
+    assert err.startswith("compile error: ") and "nope" in err, err
+    assert not frames(tmp_path)
 
 
-def test_an_exception_of_the_script_keeps_its_traceback(monkeypatch):
-    shim, _, _ = host(monkeypatch, ["--display", "kms", "--frames", "1"])
+def test_an_exception_of_the_script_keeps_its_traceback(tmp_path, monkeypatch, capfd):
+    shim = host(monkeypatch, ["-o", str(tmp_path / "f.png")])
 
     @shim.tick
     def hook(t):
@@ -492,46 +322,45 @@ def test_an_exception_of_the_script_keeps_its_traceback(monkeypatch):
 
     with pytest.raises(KeyError, match="own"):
         shim.run(scene_of(shim))
+    assert capfd.readouterr().err == ""
 
 
 @pytest.mark.parametrize(
     "argv,drawn",
     [
-        (["-o", "f.####.png"], 1),
-        (["-o", "-"], 1),
-        (["-o", "f.####.png", "--frames", "2"], 2),
-        (["-o", "f.####.png", "--frames", "-1"], 0),
-        (["-o", "f.####.png", "--frames", "0"], 4),
-        (["-o", "f.####.png", "--display", "kms"], 4),
-        (["-o", "f.####.png", "--serve"], 4),
-        ([], 4),
+        ([], 1),
+        (["--frames", "2"], 2),
+        (["--frames", "-1"], 0),
+        (["--frames", "0"], 4),
+        (["--serve"], None),
     ],
 )
-def test_a_run_takes_the_frame_count_of_ghee_render(argv, drawn, monkeypatch):
-    """One frame for an image or a pipe, and a display or the console runs
-    until a signal, here a SIGTERM at the fourth frame."""
+def test_a_run_takes_the_frame_count_of_ghee_render(argv, drawn, tmp_path, monkeypatch):
+    """One frame for an image, and an endless run, the console's too, runs
+    until a signal, here a SIGTERM in the tick of the fourth frame, which
+    ends the run with 143. The console takes the signal on a thread of its
+    own, so it may draw a frame more. The handlers that the run replaced
+    come back."""
+    if argv == ["--serve"]:
+        argv = [*argv, "--port", str(free_port())]
+    shim = host(monkeypatch, ["-o", str(tmp_path / "f.####.png"), *argv])
 
-    def on_frame(n):
-        if n == 4:
+    @shim.tick
+    def hook(t):
+        if t.frame == 3:
             signal.raise_signal(signal.SIGTERM)
 
-    shim, fake, _ = host(monkeypatch, argv, on_frame)
-    monkeypatch.setattr(sys, "stdout", Out())
-    shim.run(scene_of(shim))
-    assert fake.drawn == drawn
-
-
-def test_an_endless_run_ends_on_a_sigterm(monkeypatch):
-    """--frames 0 runs until a signal. The handlers it replaced come back."""
-
-    def on_frame(drawn):
-        if drawn == 2:
-            signal.raise_signal(signal.SIGTERM)
-
-    shim, fake, _ = host(monkeypatch, ["--display", "kms"], on_frame)
     held = signal.getsignal(signal.SIGTERM)
-    shim.run(scene_of(shim))
-    assert [c[0] for c in fake.calls] == ["frame", "frame", "close"]
+    if drawn in (4, None):
+        with pytest.raises(SystemExit) as stopped:
+            shim.run(scene_of(shim))
+        assert stopped.value.code == 143
+    else:
+        shim.run(scene_of(shim))
+    if drawn is None:
+        assert len(frames(tmp_path)) in (4, 5)
+    else:
+        assert len(frames(tmp_path)) == drawn
     assert signal.getsignal(signal.SIGTERM) is held
 
 
@@ -595,10 +424,7 @@ def test_a_scene_file_renders_itself(tmp_path):
 TEXT_SCENE = '''#!/usr/bin/env python3
 """A scene that sets new words each tick, in a font beside it."""
 
-import hashlib
-
 import ghee
-from ghee import _shim
 
 CODE = (
     "void main(){ vec2 px = floor(uv * iResolution.xy) + 0.5;"
@@ -608,8 +434,6 @@ CODE = (
 
 @ghee.tick
 def hook(t):
-    if t.frame:
-        print(hashlib.sha256(_shim._HANDLE.pixels()).hexdigest())
     ghee.layers.words.text = ("ab", "cd")[t.frame % 2]
 
 
@@ -625,7 +449,7 @@ ghee.run(
 
 def test_a_direct_run_finds_its_font_beside_its_script(tmp_path):
     """Run from another directory, the font beside the script loads, and
-    each frame draws the words that the tick before it set."""
+    each frame draws the words that its tick set."""
     scene_dir = tmp_path / "scene"
     (scene_dir / "fonts").mkdir(parents=True)
     shutil.copy(REPO / "ghee/examples/fonts/DejaVuSans-Latin.ttf", scene_dir / "fonts")
@@ -651,7 +475,7 @@ def test_a_direct_run_finds_its_font_beside_its_script(tmp_path):
         timeout=120,
     )
     assert ran.returncode == 0, ran.stderr
-    ab, cd, ab_again = ran.stdout.split()
+    ab, cd, ab_again = (pixels(tmp_path / f"f.{n:04d}.png") for n in range(3))
     assert ab != cd and ab == ab_again
 
 
@@ -659,14 +483,6 @@ LAYER_SCENE = '''#!/usr/bin/env python3
 """A scene whose layer puts its words at 4, 4."""
 
 import ghee
-from ghee import _shim
-
-
-@ghee.tick
-def hook(t):
-    if t.frame:
-        print(_shim._HANDLE.pixels().hex())
-
 
 ghee.run(
     ghee.Scene(
@@ -685,9 +501,8 @@ ghee.run(
 '''
 
 
-def ink(frame, width):
-    """{(x, y): red} of every pixel that the words cover, from a hex frame."""
-    px = bytes.fromhex(frame)
+def ink(px, width):
+    """{(x, y): red} of every pixel that the words cover, from RGBA bytes."""
     return {
         (i // 4 % width, i // 4 // width): px[i] for i in range(0, len(px), 4) if px[i]
     }
@@ -720,6 +535,6 @@ def test_a_scene_file_draws_its_words_where_its_layer_places_them(tmp_path):
         check=False,
     )
     assert ran.returncode == 0, ran.stderr
-    (first,) = (ink(f, 64) for f in ran.stdout.split())
+    first = ink(pixels(tmp_path / "f.0000.png"), 64)
     assert max(first.values()) == 255
     assert min(x for x, _ in first) >= 4 and min(y for _, y in first) >= 4

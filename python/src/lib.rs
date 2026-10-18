@@ -722,13 +722,120 @@ fn _display_size(dri: Option<PathBuf>) -> PyResult<Option<(i32, i32)>> {
     Ok(session::display_size(dri.as_deref()))
 }
 
-/// True when the image file name `pattern` numbers its frames: a run of `#`
-/// or a printf field.
+/// The scene's program of a direct run, in Python: `start(w, h)` gives the
+/// handshake's JSON text, `answer(tick)` the bytes of a tick's answer. An
+/// exception of either waits in `raised`, and ends the render.
+struct Script {
+    start: Py<PyAny>,
+    answer: Py<PyAny>,
+    raised: std::sync::Mutex<Option<PyErr>>,
+}
+
+impl Script {
+    /// `e`, kept for direct() to raise, as an error that ends the render.
+    fn fail(&self, e: PyErr) -> anyhow::Error {
+        let why = anyhow::anyhow!("{e}");
+        *self.raised.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
+        why
+    }
+}
+
+impl ghee::procedural::process::Program for Script {
+    fn start(&self, (w, h): (i32, i32)) -> anyhow::Result<Value> {
+        Python::attach(|py| {
+            let text: String = self
+                .start
+                .call1(py, (w, h))
+                .and_then(|r| r.extract(py))
+                .map_err(|e| self.fail(e))?;
+            Ok(serde_json::from_str(&text)?)
+        })
+    }
+
+    fn answer(&self, tick: &str) -> anyhow::Result<Vec<u8>> {
+        Python::attach(|py| {
+            let out = self.answer.call1(py, (tick,)).map_err(|e| self.fail(e))?;
+            let bytes = out
+                .bind(py)
+                .cast::<PyBytes>()
+                .map_err(|e| self.fail(e.into()))?;
+            Ok(bytes.as_bytes().to_vec())
+        })
+    }
+}
+
+/// `ghee render`'s flags that a direct run takes, each a dict: `long`,
+/// `short`, `takes` (0 never, 1 always, 2 maybe), `help`, `metavar` and
+/// `default`.
 #[pyfunction]
-fn _numbered(pattern: &str) -> PyResult<bool> {
-    let first = ghee::output::expand_pattern(pattern, 0)
-        .map_err(|e| PyValueError::new_err(format!("{e:#}")))?;
-    Ok(first != pattern)
+fn _render_flags(py: Python<'_>) -> PyResult<Vec<Bound<'_, PyDict>>> {
+    use ghee::cli::Takes;
+    ghee::cli::direct_flags()
+        .into_iter()
+        .map(|f| {
+            let d = PyDict::new(py);
+            d.set_item("long", f.long)?;
+            d.set_item("short", f.short.map(String::from))?;
+            let takes = match f.takes {
+                Takes::Never => 0,
+                Takes::Always => 1,
+                Takes::Maybe => 2,
+            };
+            d.set_item("takes", takes)?;
+            d.set_item("help", f.help)?;
+            d.set_item("metavar", f.metavar)?;
+            d.set_item("default", f.default)?;
+            Ok(d)
+        })
+        .collect()
+}
+
+/// Why `flags` make no render, as `argument --rotate: ...`, or None.
+#[pyfunction]
+fn _render_check(flags: Vec<String>) -> Option<String> {
+    ghee::cli::direct_check(&flags)
+}
+
+/// Render the scene of a direct run as `ghee render` renders it, with
+/// `flags`, `ghee render` flags: `start` and `answer` are its program,
+/// `path` its file, `prog` the name that its error lines start with.
+/// Returns the exit status of `ghee render`, and raises what the program
+/// raised.
+#[pyfunction]
+#[pyo3(signature = (prog, path, flags, start, answer, dri=None))]
+fn _direct(
+    py: Python<'_>,
+    prog: &str,
+    path: String,
+    flags: Vec<String>,
+    start: Py<PyAny>,
+    answer: Py<PyAny>,
+    dri: Option<String>,
+) -> PyResult<i32> {
+    let script = std::sync::Arc::new(Script {
+        start,
+        answer,
+        raised: std::sync::Mutex::new(None),
+    });
+    let here = ghee::cli::Here {
+        path,
+        program: script.clone(),
+    };
+    let card = session::probed(dri.as_deref());
+    let ran = py.detach(|| ghee::cli::direct(prog, &flags, here, card));
+    let raised = script
+        .raised
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    match (raised, ran) {
+        (Some(e), _) => Err(e),
+        (None, Ok(code)) => Ok(code),
+        (None, Err(e)) => {
+            ghee::cli::say_failure(prog, &e);
+            Ok(1)
+        }
+    }
 }
 
 extern "C" {
@@ -757,9 +864,11 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.setattr("_Screen", m.py().get_type::<draw::Screen>())?;
     m.setattr("_LayerWire", m.py().get_type::<wire::LayerWire>())?;
     m.setattr("_colour_name", wrap_pyfunction!(wire::_colour_name, m)?)?;
-    m.setattr("_numbered", wrap_pyfunction!(_numbered, m)?)?;
     m.setattr("_display_size", wrap_pyfunction!(_display_size, m)?)?;
     m.setattr("_command", wrap_pyfunction!(_command, m)?)?;
+    m.setattr("_render_flags", wrap_pyfunction!(_render_flags, m)?)?;
+    m.setattr("_render_check", wrap_pyfunction!(_render_check, m)?)?;
+    m.setattr("_direct", wrap_pyfunction!(_direct, m)?)?;
     m.add_function(wrap_pyfunction!(open, m)?)?;
     Ok(())
 }

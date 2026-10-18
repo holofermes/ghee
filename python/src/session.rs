@@ -253,14 +253,19 @@ pub fn display_size(dri: Option<&str>) -> Option<(i32, i32)> {
     Some(size)
 }
 
-/// The card of a display="kms" open on `dri`: the one that display_size()
-/// holds for it, else the card opened now.
-fn display_card(dri: Option<&str>) -> Option<Card> {
+/// The card that display_size() holds for `dri`, which it lets go.
+pub fn probed(dri: Option<&str>) -> Option<Card> {
     let held = PROBED.lock().unwrap_or_else(|e| e.into_inner()).take();
     match held {
         Some((asked, card)) if asked.as_deref() == dri => Some(card),
-        _ => Card::open(dri),
+        _ => None,
     }
+}
+
+/// The card of a display="kms" open on `dri`: the one that display_size()
+/// holds for it, else the card opened now.
+fn display_card(dri: Option<&str>) -> Option<Card> {
+    probed(dri).or_else(|| Card::open(dri))
 }
 
 /// (size, components) of the frame. A connected display on `card` states

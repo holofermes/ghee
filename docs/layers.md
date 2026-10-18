@@ -278,6 +278,9 @@ every pass:
 | `float <name>_cover(vec2 p, float px)` | how much the words cover the point `p`, 0 to 1. `p` is in em, from the top left of the words, y down |
 | `vec2 <name>_size` | the words' width and height, in em |
 
+Both follow the layer's `text`, `font_family` and `text_align`. The layer's
+other keys change only how the layer draws.
+
 A visible layer still draws on top of the pass. When the shader draws the
 words itself, hide the layer with `"visible": false` so they draw once:
 

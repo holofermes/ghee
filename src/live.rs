@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 
 use crate::draw::{call_of, Arg, Call, CallKind};
 use crate::engine::{Given, Refused};
-use crate::layer::{set_key, Address, Layer, Rebuild};
+use crate::layer::{rebuilt_look, Address, Layer};
 use crate::looper::RenderTarget;
 use crate::procedural::locks::{call_keys, look_keys, Locks, Tuned};
 use crate::scene::{no_layer, no_param, ArraySize, ParamValue, Scene};
@@ -279,24 +279,25 @@ fn name_of(look: &Value) -> Option<&str> {
     look.get("name").and_then(Value::as_str)
 }
 
-/// The look of the layer of `at` with the key of `at` at `given`, when the
-/// layer takes that key in its look but not live. None otherwise.
-fn rebuilt_look(renderer: &dyn RenderTarget, at: &Address, given: Given) -> Option<Value> {
-    let mut look = renderer.layer(at.layer)?;
-    let layer = Layer::from_dict("the layer", &look).ok()?;
-    layer
-        .live(at.effect, at.field)
-        .err()?
-        .downcast_ref::<Rebuild>()?;
-    let value = match given {
-        Given::Json(v) => v.clone(),
-        Given::Numbers([]) => Value::Null,
-        Given::Numbers([n]) => Value::from(f64::from(*n)),
-        Given::Numbers(ns) => ns.iter().map(|n| Value::from(f64::from(*n))).collect(),
-        Given::Text(t) => serde_json::from_str(t).unwrap_or_else(|_| Value::from(t)),
+/// Set the key `at` of a layer of `renderer` to `given`: a live field with no
+/// rebuild, and any other key that the layer takes in its look by building
+/// the layer again alone. The layer's new look when it was built again.
+pub fn put_key(
+    renderer: &mut dyn RenderTarget,
+    at: &Address,
+    given: Given,
+) -> Result<Option<Value>> {
+    let Err(e) = renderer.set_layer(at, given) else {
+        return Ok(None);
     };
-    set_key(&mut look, at, value)?;
-    Some(look)
+    let Some(look) = renderer
+        .layer(at.layer)
+        .and_then(|now| rebuilt_look(&now, at, given.to_json()))
+    else {
+        return Err(e);
+    };
+    renderer.update_layer(&look)?;
+    Ok(Some(look))
 }
 
 impl Default for Live {
@@ -397,11 +398,7 @@ impl Live {
         at: &Address,
         given: Given,
     ) -> Result<()> {
-        if let Err(e) = renderer.set_layer(at, given) {
-            let Some(look) = rebuilt_look(&*renderer, at, given) else {
-                return Err(e);
-            };
-            renderer.update_layer(&look)?;
+        if let Some(look) = put_key(renderer, at, given)? {
             self.took(&look);
         }
         if let (None, "text") = (at.effect, at.field) {
@@ -609,16 +606,18 @@ impl Live {
         Ok(())
     }
 
-    /// A console sets the live field `at` to `value`, written as the scene
-    /// format writes the key. The key counts as the console's, and the next
-    /// tick reports new words of a text layer.
+    /// A console sets the key `at` to `value`, written as the scene format
+    /// writes the key, as put_key() sets it. The key counts as the console's,
+    /// and the next tick reports new words of a text layer.
     pub fn console_layer(
         &mut self,
-        renderer: &dyn RenderTarget,
+        renderer: &mut dyn RenderTarget,
         at: &Address,
         value: &Value,
     ) -> Result<()> {
-        renderer.set_layer(at, Given::Json(value))?;
+        if let Some(look) = put_key(renderer, at, Given::Json(value))? {
+            self.took(&look);
+        }
         self.tuned.set(at);
         let text = format!("{}.text", at.layer);
         if let (None, "text", true) = (at.effect, at.field, self.values.contains_key(&text)) {

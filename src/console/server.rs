@@ -1256,14 +1256,14 @@ fn set_scene_param(
     }
 }
 
-/// Set a live field of a layer as a console sets it: through the live state
-/// of the scene that a controller runs.
+/// Set a key of a layer as a console sets it: through the live state of the
+/// scene that a controller runs.
 fn set_layer(renderer: &RefCell<Renderer>, ctrl: &ControllerSlot, set: &LayerSet) -> bool {
     let at = set.at();
-    let r = renderer.borrow();
+    let mut r = renderer.borrow_mut();
     let applied = match live_of(ctrl) {
-        Some(mut live) => live.console_layer(&*r, &at, &set.value),
-        None => r.set_layer(&at, Given::Json(&set.value)),
+        Some(mut live) => live.console_layer(&mut *r, &at, &set.value),
+        None => crate::live::put_key(&mut *r, &at, Given::Json(&set.value)).map(|_| ()),
     };
     match applied {
         Ok(()) => true,
@@ -1626,7 +1626,7 @@ impl ConsoleHost for RenderLoopHost {
             // A layer that a procedural scene's program drew is the program's.
             if working.layer(&set.layer).is_some() {
                 working
-                    .set_layer(&set.at(), &set.value)
+                    .put_key(&set.at(), &set.value)
                     .map_err(|e| ConsoleError::bad_request(format!("bad /set: {e}")))?;
             }
             Ok(())

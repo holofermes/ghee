@@ -3,7 +3,7 @@
 //! The console API is ghee's own (console::core), and so is everything that a
 //! viewer reads: the preview, the streams, the still and /stats
 //! (console::hub). This module is the console's host over a session: it
-//! serves the session's scene, sets live params and live fields, and an apply
+//! serves the session's scene, sets live params and layer keys, and an apply
 //! gives layers a new look.
 //!
 //! No request thread ever touches the engine. A /set or an apply lands on a
@@ -46,7 +46,7 @@ pub struct Shared {
     /// The new looks of layers, from applies, for the next frame.
     looks: Mutex<Vec<Value>>,
     queue: Mutex<Vec<Queued>>,
-    /// The live fields of layers queued by requests for the next frame.
+    /// The layer keys queued by requests for the next frame.
     layers: Mutex<Vec<LayerSet>>,
     /// What the host set, which this console refuses to set.
     locks: Arc<Mutex<Locks>>,

@@ -42,6 +42,7 @@ use std::sync::Mutex;
 use serde_json::{Map, Value};
 
 use crate::console::{static_asset, WEB};
+use crate::engine::Given;
 use crate::filters::{filter_defs, rebuild_filters};
 use crate::layer::{Address, Form, Layer, Live, Rgb};
 use crate::scene::{no_layer, no_param, not_an_image, py_repr, Scene};
@@ -205,8 +206,8 @@ impl std::error::Error for ConsoleError {}
 
 pub type ConsoleResult<T> = Result<T, ConsoleError>;
 
-/// A live field of a layer that a /set names, with its value as the scene
-/// format writes the field.
+/// A key of a layer that a /set names, with its value as the scene format
+/// writes the key.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayerSet {
     pub layer: String,
@@ -225,7 +226,7 @@ impl LayerSet {
     }
 }
 
-/// What a /set changes: a param, or a live field of a layer.
+/// What a /set changes: a param, or a key of a layer.
 enum Set {
     Param(Scope, String, Value),
     Layer(LayerSet),
@@ -594,8 +595,9 @@ pub trait ConsoleHost {
     /// typed against live_doc().
     fn set_param(&self, scope: Scope, name: &str, value: Value) -> ConsoleResult<()>;
 
-    /// Set a live field of a layer, with no rebuild, to a value that
-    /// live_value() checked against live_doc().
+    /// Set a key of a layer to a value that live_value() checked against
+    /// live_doc(): a live field with no rebuild, any other key by building
+    /// the layer again.
     fn set_layer(&self, set: LayerSet) -> ConsoleResult<()>;
 
     /// The scene document that a /set checks its param or its layer's field
@@ -1250,7 +1252,7 @@ fn parse_aside(query: &Query) -> Result<(Aside, bool), String> {
 }
 
 /// What a /set changes, or the first thing wrong with it. A query that names
-/// a `layer` sets one of its live fields, and its value parses by the field.
+/// a `layer` sets one of its keys, and its value parses by the key.
 /// Any other query sets the param that param_of() finds, and its value
 /// parses by the param's type. A `name` of `pass.name` with no `pass` names
 /// both. The outer error is the host's own.
@@ -1365,9 +1367,10 @@ fn doc_passes(doc: &Value) -> &[Value] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// The value of `raw`, a /set value, for the live field `at` of the scene
-/// document `doc`, checked as the scene checks a live value, or why the scene
-/// takes none.
+/// The value of `raw`, a /set value, for the key `at` of the scene document
+/// `doc`, checked as the scene checks the key, or why the scene takes none.
+/// A key that changes with a rebuild takes `none`, JSON, or else text, as a
+/// wire message's text sets it.
 pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String> {
     let named = Value::from(at.layer);
     let Some(d) = doc_layers(doc).find(|l| l.get("name") == Some(&named)) else {
@@ -1375,7 +1378,20 @@ pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String>
         return Err(no_layer(at.layer, names));
     };
     let mut layer = Layer::from_dict("a layer", d).map_err(|e| e.to_string())?;
-    let live = layer.live(at.effect, at.field).map_err(|e| e.to_string())?;
+    let live = match layer.live(at.effect, at.field) {
+        Ok(live) => live,
+        Err(e) => {
+            let value = match raw.trim() {
+                "none" => Value::Null,
+                _ => Given::Text(raw).to_json(),
+            };
+            let Some(look) = crate::layer::rebuilt_look(d, at, value.clone()) else {
+                return Err(e.to_string());
+            };
+            Layer::from_dict("a layer", &look).map_err(|e| e.to_string())?;
+            return Ok(value);
+        }
+    };
     let value = parse_live_value(&live, raw)?;
     if live.form == Form::Image && !crate::layer::is_image_file(raw) {
         let file = doc
@@ -2132,6 +2148,16 @@ mod tests {
             ("frame", Some("border"), "color", "Red", Value::from("Red")),
             ("frame", None, "width", "none", Value::Null),
             ("words", None, "text", " la la ", Value::from(" la la ")),
+            // a key that changes with a rebuild: JSON, else text
+            ("words", None, "font_size", "20", serde_json::json!(20)),
+            (
+                "words",
+                None,
+                "font_family",
+                "Pixel Operator 8",
+                Value::from("Pixel Operator 8"),
+            ),
+            ("words", None, "font_size", "none", Value::Null),
         ] {
             let api = api();
             let r = post(&api, "/set", &layer_query(layer, effect, field, raw));
@@ -2205,15 +2231,19 @@ mod tests {
                 "layer 'words' color has no 'to'".to_string(),
             ),
             (
-                q("words", None, "font_size", "20"),
-                "layer 'words' font_size changes with a rebuild".to_string(),
+                q("words", None, "font_size", "big"),
+                "layer 'words' font_size needs".to_string(),
+            ),
+            (
+                q("words", None, "name", "other"),
+                "layer 'words' keeps its name".to_string(),
             ),
         ] {
             let api = api();
             let r = post(&api, "/set", &query);
             assert_eq!(r.status, 400, "{query:?}");
             // The errors of the scene's own checks hold more than the key.
-            match why.ends_with("rebuild") {
+            match why.ends_with("needs") {
                 true => assert!(body(&r).starts_with(&format!("bad /set: {why}"))),
                 false => assert_eq!(body(&r), format!("bad /set: {why}")),
             }

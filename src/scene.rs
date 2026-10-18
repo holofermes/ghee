@@ -31,7 +31,7 @@ use serde_json::{Map, Value};
 
 use crate::filters::Filter;
 use crate::layer::{
-    is_image_data, is_image_file, Address, Form, Layer, Rgb, TextLayer, COLOUR_FORMS,
+    is_image_data, is_image_file, rebuilt_look, Address, Form, Layer, Rgb, TextLayer, COLOUR_FORMS,
 };
 use crate::shape::Shape;
 
@@ -2586,6 +2586,24 @@ impl Scene {
             new,
             rebuild,
         }))
+    }
+
+    /// Set the key `at` to `value`, written as the scene format writes the
+    /// key: a live field as set_layer() sets it, and any other key that the
+    /// layer takes in its look as update_layer() gives the layer its look.
+    /// True when the layer was built again.
+    pub fn put_key(&mut self, at: &Address, value: &Value) -> Result<bool> {
+        let Err(e) = self.set_layer(at, value) else {
+            return Ok(false);
+        };
+        let Some(look) = self
+            .layer(at.layer)
+            .and_then(|l| rebuilt_look(&l.to_dict(), at, value.clone()))
+        else {
+            return Err(e);
+        };
+        self.update_layer(&look)?;
+        Ok(true)
     }
 
     /// Give the layer of the name of `look` that look, as look() finds it:

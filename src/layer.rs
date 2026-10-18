@@ -2778,6 +2778,19 @@ pub fn set_key(look: &mut Value, at: &Address, value: Value) -> Option<()> {
     Some(())
 }
 
+/// `look`, a layer as a scene declares it, with the key of `at` at `value`,
+/// when the layer takes that key in its look but not live. None otherwise.
+pub fn rebuilt_look(look: &Value, at: &Address, value: Value) -> Option<Value> {
+    Layer::from_dict("the layer", look)
+        .ok()?
+        .live(at.effect, at.field)
+        .err()?
+        .downcast_ref::<Rebuild>()?;
+    let mut look = look.clone();
+    set_key(&mut look, at, value)?;
+    Some(look)
+}
+
 /// Why a layer takes no live set of a key that it takes in its look: the key
 /// changes with a rebuild of the layer.
 #[derive(Debug)]

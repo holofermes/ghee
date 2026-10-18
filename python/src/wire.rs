@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use ghee::draw::{self, Call};
-use ghee::layer::{set_key, Address, Form, Layer, Rebuild, Rgb};
+use ghee::layer::{Address, Form, Layer, Rgb};
 use ghee::live::Index;
 use ghee::scene::Scene;
 use pyo3::prelude::*;
@@ -88,19 +88,7 @@ impl LayerWire {
             Some(effect) => format!("{layer}.{effect}.{field}"),
             None => format!("{layer}.{field}"),
         };
-        if let Err(e) = self.scene.set_layer(&at, value) {
-            if e.downcast_ref::<Rebuild>().is_none() {
-                return Err(scene_fault(e));
-            }
-            let mut look = self
-                .scene
-                .layer(layer)
-                .expect("the index holds the layer")
-                .to_dict();
-            if set_key(&mut look, &at, value.clone()).is_none() {
-                return Err(scene_fault(e));
-            }
-            self.scene.update_layer(&look).map_err(scene_fault)?;
+        if self.scene.put_key(&at, value).map_err(scene_fault)? {
             self.took(layer);
             let body = match value {
                 Value::Null => Body::Floats(vec![]),

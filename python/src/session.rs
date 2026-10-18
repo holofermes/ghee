@@ -723,8 +723,8 @@ impl Session {
             .map_err(system_fault)
     }
 
-    /// Set the live field `field` of layer `layer`, or of its effect
-    /// `effect`, with no rebuild. The field `text` of a text layer sets its
+    /// Set the key `field` of layer `layer`, or of its effect `effect`, as
+    /// Live::set_layer() sets it. The field `text` of a text layer sets its
     /// words. A layer, a field or a value that the scene refuses is a fault
     /// of the caller's.
     pub fn set_layer(
@@ -870,7 +870,7 @@ impl Session {
         }
         for set in layers {
             self.live
-                .console_layer(&self.renderer, &set.at(), &set.value)
+                .console_layer(&mut self.renderer, &set.at(), &set.value)
                 .map_err(system_fault)?;
         }
         let applied = !looks.is_empty();

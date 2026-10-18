@@ -91,10 +91,9 @@ To change a key of one of the layer's effects, add `effect=`, as in
 `/set?layer=title&effect=karaoke&field=sung&value=12`. A rect's or a
 circle's border takes `effect=border`.
 
-Only the keys that change at runtime take a `/set`, and `GET /format`
-lists them for each kind of layer ([Changing a layer at
-runtime](layers.md#changing-a-layer-at-runtime)). Any other key answers
-400, and the text names the keys that do.
+The keys that change at runtime, which `GET /format` lists for each kind
+of layer ([Changing a layer at
+runtime](layers.md#changing-a-layer-at-runtime)), take these values:
 
 | Key | `value` |
 | --- | --- |
@@ -107,6 +106,11 @@ runtime](layers.md#changing-a-layer-at-runtime)). Any other key answers
 
 To put `x`, `y`, `color`, a rect's `width` or `height`, or a circle's
 `radius` back to its default, pass `value=none`.
+
+Any other key takes a `/set` too, such as `font_size` or a whole effect, and
+ghee builds the layer again. Its `value` is JSON, such as `14` or
+`{"strength":0.5}`, or else text, such as `Pixel Operator 8`. `none` puts
+the key back to its default.
 
 ### Locked
 

@@ -4,6 +4,7 @@ import concurrent.futures
 import contextlib
 import copy
 import inspect
+import io
 import json
 import os
 import shutil
@@ -16,7 +17,7 @@ import urllib.error
 import urllib.request
 
 import pytest
-from conftest import RED, REPO, VECS, near, quarters
+from conftest import RED, REPO, VECS, near, pillow, quarters
 
 import ghee
 
@@ -362,7 +363,7 @@ def test_a_layer_set_lands_on_the_next_frame():
         h.frame()
         assert max(h.pixels()[0::4]) == 0
         with pytest.raises(urllib.error.HTTPError) as raised:
-            post(port, "/set?layer=t&field=font_size&value=12")
+            post(port, "/set?layer=t&field=name&value=u")
         assert raised.value.code == 400
 
 
@@ -954,3 +955,88 @@ def test_the_stream_runs_only_while_a_client_watches(served):
         h.feed("level", LEVEL)
         h.frame()
     assert "h264" not in json_of(port, "/stats")["out"]
+
+
+SIZED = {
+    "version": 1,
+    "passes": [
+        {
+            "name": "main",
+            "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }",
+            "layers": [{"name": "title", "text": "Hi", "font_size": 8}],
+        }
+    ],
+}
+
+GROWN = """#!{python}
+import ghee
+
+
+@ghee.tick
+def grow(tick):
+    ghee.layers.title.font_size = 16
+
+
+ghee.run({scene!r})
+"""
+
+
+def test_a_key_that_rebuilds_its_layer_sets_alike_through_set_python_and_the_wire(
+    tmp_path,
+):
+    image = pillow()
+    size = 64 * 32 * 4
+    with ghee.open(copy.deepcopy(SIZED), width=64, height=32, timestep=0) as h:
+        h.frame()
+        small = h.pixels()
+        h.layers.title.font_size = 16
+        h.frame()
+        want = h.pixels()
+    assert want != small
+
+    port = free_port()
+    with ghee.open(copy.deepcopy(SIZED), width=64, height=32, serve=port) as h:
+        h.frame()
+        assert post(port, "/set?layer=title&field=font_size&value=16")[0] == 200
+        h.frame()
+        assert h.pixels() == want, "/set of ghee.open"
+
+    cli = shutil.which("ghee", path=os.path.dirname(sys.executable))
+    assert cli, f"no ghee command beside {sys.executable}"
+    script = tmp_path / "grown.py"
+    script.write_text(GROWN.format(python=sys.executable, scene=SIZED))
+    script.chmod(0o755)
+    ran = subprocess.run(
+        [cli, "render", str(script), "-o", "-", "--size", "64x32"]
+        + ["--frames", "3", "--timestep", "0"],
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout[-size:] == want, "the wire"
+
+    scene = tmp_path / "sized.scene.json"
+    scene.write_text(json.dumps(SIZED))
+    port = free_port()
+    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path)}
+    served = subprocess.Popen(
+        [cli, "serve", str(scene), "--port", str(port), "--size", "64x32"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        # a /set answers 503 while the scene loads
+        until(
+            lambda: post(port, "/set?layer=title&field=font_size&value=16")[0] == 200,
+            lambda: time.sleep(0.05),
+        )
+        _, png = get(port, "/frame.png", timeout=10)
+        got = image.open(io.BytesIO(png)).convert("RGBA").tobytes()
+        assert got == want, "/set of ghee serve"
+        layer = json_of(port, "/scene")["passes"][0]["layers"][0]
+        assert layer["font_size"] == 16
+    finally:
+        served.terminate()
+        served.communicate(timeout=10)

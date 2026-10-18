@@ -606,6 +606,20 @@ pub enum Given<'a> {
     Text(&'a str),
 }
 
+impl Given<'_> {
+    /// The value as the scene format writes the key. The text of a wire
+    /// message is JSON when it parses as JSON, and text otherwise.
+    pub fn to_json(self) -> Value {
+        match self {
+            Given::Json(v) => v.clone(),
+            Given::Numbers([]) => Value::Null,
+            Given::Numbers([n]) => Value::from(f64::from(*n)),
+            Given::Numbers(ns) => ns.iter().map(|n| Value::from(f64::from(*n))).collect(),
+            Given::Text(t) => serde_json::from_str(t).unwrap_or_else(|_| Value::from(t)),
+        }
+    }
+}
+
 /// Why the scene took no live value: an unknown layer, effect or field, a
 /// field that changes with a rebuild, or a value that the field does not
 /// take.

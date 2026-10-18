@@ -1649,7 +1649,9 @@ sleep 60
     /// A console's set of the live field `at`, as the process's live state
     /// takes it.
     fn console_layer(f: &mut SceneProcess, at: &Address, value: Value) {
-        f.live.console_layer(&Stub::default(), at, &value).unwrap();
+        f.live
+            .console_layer(&mut Stub::default(), at, &value)
+            .unwrap();
     }
 
     fn tmpdir(tag: &str) -> crate::testing::TempDir {

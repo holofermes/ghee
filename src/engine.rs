@@ -2238,6 +2238,7 @@ impl Renderer {
             return Ok(false);
         }
         let Some(idx) = self.pass_index(pass_name) else {
+            self.hold_param(Some(pass_name), name, value);
             return Ok(false);
         };
         let fits = match (ptype, value) {

@@ -39,7 +39,7 @@ pub struct ParamRef {
 /// A param answers to `pass.name` and to `name`. A bare name is the scene
 /// param, else the param of the first pass that declares it. This is the
 /// addressing of the procedural wire.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Index {
     pub arrays: Vec<(String, ArraySize)>,
     pub params: Vec<ParamRef>,
@@ -275,12 +275,11 @@ fn name_of(look: &Value) -> Option<&str> {
     look.get("name").and_then(Value::as_str)
 }
 
-impl Live {
-    /// The live state of `scene`, which a host has just set up. The first
-    /// tick reports every value.
-    pub fn new(scene: &Scene) -> Live {
-        let mut live = Live {
-            index: Arc::new(Index::of(scene)),
+impl Default for Live {
+    /// The live state of a scene that declares nothing, until bind().
+    fn default() -> Live {
+        Live {
+            index: Arc::new(Index::default()),
             values: Map::new(),
             sent: Map::new(),
             kept: HashMap::new(),
@@ -290,7 +289,15 @@ impl Live {
             layers: BTreeSet::new(),
             params: BTreeSet::new(),
             grown: false,
-        };
+        }
+    }
+}
+
+impl Live {
+    /// The live state of `scene`, which a host has just set up. The first
+    /// tick reports every value.
+    pub fn new(scene: &Scene) -> Live {
+        let mut live = Live::default();
         live.bind(scene);
         live
     }

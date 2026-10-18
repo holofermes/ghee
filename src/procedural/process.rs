@@ -8,7 +8,6 @@
 //!
 //! The render thread never blocks on the process.
 
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_int;
 use std::fs;
@@ -24,11 +23,12 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use serde_json::{Map, Value};
 
-use crate::draw::{self, Arg, Call, CallKind};
+use crate::draw;
 use crate::engine::{Feed, Given, Refused};
-use crate::layer::{Address, Layer, Rgb};
+use crate::layer::{Address, Rgb};
+use crate::live::Live;
 use crate::looper::{RenderTarget, SceneController};
-use crate::procedural::locks::{call_keys, look_keys, Locks, Tuned};
+use crate::procedural::locks::Locks;
 use crate::procedural::resolve;
 use crate::scene::{py_repr, round_half_up, ArraySize, ParamValue, Reach, Scene};
 
@@ -450,21 +450,6 @@ impl Set {
     }
 }
 
-/// A param value that the process set: the name that its message gave the
-/// param, the param's pass, None for the scene's, its type and the value.
-struct Kept {
-    name: String,
-    pass: Option<String>,
-    ty: String,
-    value: ParamValue,
-}
-
-/// The uniform of the param `name`: a dotted name carries its pass, and the
-/// uniform is the tail.
-fn uniform(name: &str) -> &str {
-    name.rsplit_once('.').map_or(name, |(_, p)| p)
-}
-
 /// What the reader thread takes off stdout between two drains.
 #[derive(Default)]
 struct Inbox {
@@ -590,29 +575,9 @@ pub struct SceneProcess {
     unsent: bool,
     /// The sets that wait for a renderer, in the order of arrival.
     incoming: Vec<(String, Set)>,
-    /// param name -> (the pass that holds it, its type). None is scene scope.
-    params: HashMap<String, (Option<String>, String)>,
-    /// The names of the scene's layers, which address their live fields as
-    /// `layer.field` and `layer.effect.field`, each true for a text layer.
-    layers: HashMap<String, bool>,
-    /// The params as they stand, by the name that a tick gives each, a text
-    /// layer's words as its `text` too, each value as a scene file writes
-    /// it, and the last values read by the process.
-    values: HashMap<String, Value>,
-    sent: HashMap<String, Value>,
-    /// The last value that the process set of each param, by the name that
-    /// a tick gives the param.
-    kept: HashMap<String, Kept>,
-    /// The live fields and the keys of layers that the process set, by the
-    /// names of their messages, `layer.field` or `layer.effect.field`.
-    fields: HashSet<String>,
-    /// The keys of layers that a console changed.
-    tuned: Tuned,
-    /// Where each first set lands, for a console that locks them, emptied
-    /// when the process ends.
-    locks: Option<Arc<Mutex<Locks>>>,
-    /// The scene was set up again, so update() sets every kept value again.
-    rebuilt: bool,
+    /// The scene's live state, which the messages change. A layer's name
+    /// addresses its live fields as `layer.field` and `layer.effect.field`.
+    live: Live,
     /// Clean ticks from the process, not yet spent on a skip.
     clean: u32,
     /// The process died. The scene stays in this error state.
@@ -694,15 +659,7 @@ impl SceneProcess {
             data: HashMap::new(),
             unsent: false,
             incoming: Vec::new(),
-            params: HashMap::new(),
-            layers: HashMap::new(),
-            values: HashMap::new(),
-            sent: HashMap::new(),
-            kept: HashMap::new(),
-            fields: HashSet::new(),
-            tuned: Tuned::default(),
-            locks: None,
-            rebuilt: false,
+            live: Live::default(),
             clean: 0,
             dead: None,
             lockstep: false,
@@ -757,29 +714,10 @@ impl SceneProcess {
         self.pinned = true;
     }
 
-    /// Record in `locks` each param, live field and key of a layer that the
-    /// process sets from now on, once, at its first set, and empty `locks`
-    /// when the process ends.
-    pub(crate) fn lock_into(&mut self, locks: Arc<Mutex<Locks>>) {
-        self.locks = Some(locks);
-    }
-
-    /// The process set the live field of the message `name`.
-    fn set_field(&mut self, name: &str) {
-        if self.fields.contains(name) {
-            return;
-        }
-        self.fields.insert(name.to_string());
-        if let (Some(locks), Some(at)) = (&self.locks, Address::dotted(name)) {
-            lock(locks).set_field(&at);
-        }
-    }
-
-    /// The process gave layer `layer` the keys `keys`.
-    fn set_keys(&mut self, layer: &str, keys: &[&str]) {
-        for key in keys {
-            self.set_field(&format!("{layer}.{key}"));
-        }
+    /// Each param, live field and key of a layer that the process sets, for
+    /// a console that locks them. It empties when the process ends.
+    pub fn locks(&self) -> Arc<Mutex<Locks>> {
+        self.live.locks()
     }
 
     /// Wait until the process ended its answer to every tick offered, or
@@ -834,14 +772,10 @@ impl SceneProcess {
         };
         let name = layer.get("name").and_then(Value::as_str).unwrap_or(pass);
         let name = name.to_string();
-        match renderer.add_layer(pass, index, &layer) {
-            Ok(()) => {
-                self.took(&layer);
-                self.set_keys(&name, &look_keys(&layer));
-            }
-            Err(e) => self.refuse_or_fail(&name, e)?,
+        match self.live.add_layer(renderer, pass, index, &layer) {
+            Ok(()) => Ok(()),
+            Err(e) => self.refuse_or_fail(&name, e),
         }
-        Ok(())
     }
 
     /// Give layer `name` the look of a kind 7 message, `text` its JSON.
@@ -868,17 +802,10 @@ impl SceneProcess {
         name: &str,
         look: &Value,
     ) -> Result<()> {
-        let kept = self.tuned.look(look, |n| renderer.layer(n));
-        match renderer.update_layer(kept.as_ref().unwrap_or(look)) {
-            Ok(changed) => {
-                if changed {
-                    self.took(kept.as_ref().unwrap_or(look));
-                }
-                self.set_keys(name, &look_keys(look));
-            }
-            Err(e) => self.refuse_or_fail(name, e)?,
+        match self.live.update_layer(renderer, look) {
+            Ok(_) => Ok(()),
+            Err(e) => self.refuse_or_fail(name, e),
         }
-        Ok(())
     }
 
     /// Give the layers of a kind 8 message their looks, `text` its JSON. The
@@ -906,24 +833,8 @@ impl SceneProcess {
             }
         }
         if !calls.is_empty() {
-            let kept = self.tuned.calls(&calls, |n| renderer.layer(n));
-            let taken = renderer.update_calls(kept.as_deref().unwrap_or(&calls));
-            match taken {
-                Ok(taken) => {
-                    for &k in &taken.changed {
-                        self.took_call(&calls[k]);
-                    }
-                    let mut taken_here = vec![true; calls.len()];
-                    for &i in &taken.left {
-                        taken_here[i] = false;
-                    }
-                    for (call, here) in calls.iter().zip(taken_here) {
-                        if here {
-                            self.set_keys(&call.layer, &call_keys(call));
-                        }
-                    }
-                    slow.extend(taken.left.iter().map(|&i| at[i]));
-                }
+            match self.live.update_calls(renderer, &calls) {
+                Ok(left) => slow.extend(left.iter().map(|&i| at[i])),
                 Err(e) => return self.refuse_or_fail("kind 8", e),
             }
         }
@@ -937,15 +848,10 @@ impl SceneProcess {
 
     /// Take layer `name` out of the scene, for a kind 9 message.
     fn remove_layer(&mut self, renderer: &mut dyn RenderTarget, name: &str) -> Result<()> {
-        if let Err(e) = renderer.remove_layer(name) {
-            return self.refuse_or_fail(name, e);
+        match self.live.remove_layer(renderer, name) {
+            Ok(()) => Ok(()),
+            Err(e) => self.refuse_or_fail(name, e),
         }
-        self.layers.remove(name);
-        self.tuned.forget(name);
-        let text = format!("{name}.text");
-        self.values.remove(&text);
-        self.sent.remove(&text);
-        Ok(())
     }
 
     /// Put layer `name` in the place of a kind 10 message, `text` its JSON.
@@ -956,7 +862,7 @@ impl SceneProcess {
         text: &str,
     ) -> Result<()> {
         match place_of(name, text) {
-            Ok(index) => match renderer.move_layer(name, index) {
+            Ok(index) => match self.live.move_layer(renderer, name, index) {
                 Ok(()) => Ok(()),
                 Err(e) => self.refuse_or_fail(name, e),
             },
@@ -967,101 +873,11 @@ impl SceneProcess {
         }
     }
 
-    /// Hold the words of `call`, a call that the renderer took, as the
-    /// process's own, which no tick carries back.
-    fn took_call(&mut self, call: &Call) {
-        let (CallKind::Text, Some(Arg::Str(words))) = (call.kind, call.args.first()) else {
-            return;
-        };
-        let text = format!("{}.text", call.layer);
-        self.values
-            .insert(text.clone(), Value::from(words.as_str()));
-        self.sent.insert(text, Value::from(words.as_str()));
-    }
-
-    /// Index `layer`, a layer that the renderer took from the process: its
-    /// live fields, and the words of a text layer, the process's own, which
-    /// no tick carries back.
-    fn took(&mut self, layer: &Value) {
-        let Ok(layer) = Layer::from_dict("the layer", layer) else {
-            return;
-        };
-        let name = layer.name().to_string();
-        let was_text = self.layers.insert(name.clone(), layer.as_text().is_some());
-        let text = format!("{name}.text");
-        match layer.as_text() {
-            Some(l) => {
-                self.values
-                    .insert(text.clone(), Value::from(l.text.clone()));
-                self.sent.insert(text, Value::from(l.text.clone()));
-            }
-            None if was_text == Some(true) => {
-                self.values.remove(&text);
-                self.sent.remove(&text);
-            }
-            None => {}
-        }
-    }
-
-    /// Index the params of the compiled scene.
-    /// The set holds the handshake params, plus any param added by a filter
-    /// or a saved value.
-    /// The first tick carries every param, and the words of each text layer
-    /// as its `text`.
+    /// Index the compiled scene: its params, any param added by a filter or
+    /// a saved value included, and its layers. The first tick carries every
+    /// param, and the words of each text layer as its `text`.
     pub fn bind(&mut self, scene: &Scene) {
-        self.params.clear();
-        self.layers = scene
-            .layers()
-            .map(|l| (l.name().to_string(), l.as_text().is_some()))
-            .collect();
-        self.values.clear();
-        self.sent.clear();
-        for l in scene.text_layers() {
-            self.values
-                .insert(format!("{}.text", l.name), Value::from(l.text.clone()));
-        }
-        let scoped: Vec<(Option<&str>, &crate::scene::ParamMap)> =
-            std::iter::once((None, &scene.params))
-                .chain(
-                    scene
-                        .passes
-                        .iter()
-                        .map(|p| (Some(p.name.as_str()), &p.params)),
-                )
-                .collect();
-        for (pass, params) in scoped {
-            for (name, p) in params.iter() {
-                // "pass.param" addresses one pass
-                // a bare name goes to the first pass that declares it
-                if let Some(pass) = pass {
-                    self.params.insert(
-                        format!("{pass}.{name}"),
-                        (Some(pass.to_string()), p.ty.clone()),
-                    );
-                }
-                if self.params.contains_key(name) {
-                    if let Some(pass) = pass {
-                        self.values
-                            .insert(format!("{pass}.{name}"), p.value.to_json());
-                    }
-                    continue;
-                }
-                self.params
-                    .insert(name.clone(), (pass.map(str::to_string), p.ty.clone()));
-                self.values.insert(name.clone(), p.value.to_json());
-            }
-        }
-    }
-
-    /// The name that a tick gives the param `name` of pass `pass`, None for
-    /// the scene's: the bare name when it addresses that param, else
-    /// `pass.name`.
-    fn tick_name(&self, pass: Option<&str>, name: &str) -> Option<String> {
-        match (self.params.get(name), pass) {
-            (Some((at, _)), _) if at.as_deref() == pass => Some(name.to_string()),
-            (_, Some(pass)) => Some(format!("{pass}.{name}")),
-            _ => None,
-        }
+        self.live.bind(scene);
     }
 
     /// Take everything the reader holds. The newest data for a name wins.
@@ -1090,26 +906,7 @@ impl SceneProcess {
                 false => fault,
             };
             self.dead = Some(self.epitaph(&why));
-            if let Some(locks) = self.locks.take() {
-                *lock(&locks) = Locks::default();
-            }
-        }
-    }
-
-    /// Set every kept param value again. A value that the scene no longer
-    /// takes is logged and dropped.
-    fn set_kept(&mut self, renderer: &mut dyn RenderTarget) {
-        let mut refused = Vec::new();
-        for (ticked, k) in &self.kept {
-            if let Err(e) = renderer.set_param(k.pass.as_deref(), uniform(&k.name), &k.ty, &k.value)
-            {
-                refused.push((ticked.clone(), format!("{e:#}")));
-            }
-        }
-        for (ticked, why) in refused {
-            if let Some(k) = self.kept.remove(&ticked) {
-                self.refuse(&k.name, &why);
-            }
+            self.live.unlock();
         }
     }
 
@@ -1128,14 +925,7 @@ impl SceneProcess {
 
     /// One JSON line for this tick, carrying the params that changed.
     fn offer(&mut self, frame: u64, time: f64, dt: f64) {
-        let mut params = Map::new();
-        for (name, value) in &self.values {
-            if self.sent.get(name) == Some(value) {
-                continue;
-            }
-            params.insert(name.clone(), value.clone());
-        }
-        self.sent.clone_from(&self.values);
+        let mut params = self.live.tick_params();
         let (slot, wake) = &*self.outbox;
         let mut out = lock(slot);
         if out.closed {
@@ -1241,8 +1031,8 @@ impl SceneController for SceneProcess {
     }
 
     fn update(&mut self, renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {
-        if std::mem::take(&mut self.rebuilt) {
-            self.set_kept(renderer);
+        for (name, why) in self.live.restore(renderer) {
+            self.refuse(&name, &why);
         }
         for (name, set) in std::mem::take(&mut self.incoming) {
             let data = match set {
@@ -1270,43 +1060,37 @@ impl SceneController for SceneProcess {
             };
             // A first part that names a layer addresses a live field of it.
             // Names are unique across the scene, so no pass has that name.
-            let layer = Address::dotted(&name).filter(|at| self.layers.contains_key(at.layer));
+            let layer =
+                Address::dotted(&name).filter(|at| self.live.index().text(at.layer).is_some());
             if let Some(at) = layer {
                 let given = match &data {
                     ParamData::F32(values) => Given::Numbers(values),
                     ParamData::Str(text) => Given::Text(text),
                 };
-                if let Err(e) = renderer.set_layer(&at, given) {
+                if let Err(e) = self.live.set_layer(renderer, &at, given) {
                     self.refuse_or_fail(&name, e)?;
-                    continue;
-                }
-                self.set_field(&name);
-                // The process wrote these words itself, so no tick carries
-                // them back.
-                if let (Some(held), ParamData::Str(text)) = (self.values.get_mut(&name), data) {
-                    *held = Value::from(text);
-                    self.sent.insert(name, held.clone());
                 }
                 continue;
             }
-            let Some((pass, ty)) = self.params.get(&name).cloned() else {
+            let Some(p) = self.live.index().wired(&name).cloned() else {
                 let why = format!("param '{name}' is not a param this scene declares");
                 self.refuse(&name, &why);
                 continue;
             };
+            let ty = p.ty.as_str();
             let value = match data {
-                ParamData::F32(values) => as_param(&ty, &values).ok_or_else(|| match ty.as_str() {
+                ParamData::F32(values) => as_param(ty, &values).ok_or_else(|| match ty {
                     "string" => format!("string param '{name}' takes text, got numbers"),
                     _ => format!(
                         "{ty} param '{name}' takes {}, got {}",
-                        match arity(&ty) {
+                        match arity(ty) {
                             1 => "a number".to_string(),
                             n => format!("{n} numbers"),
                         },
                         values.len()
                     ),
                 }),
-                ParamData::Str(text) => match ty.as_str() {
+                ParamData::Str(text) => match ty {
                     "string" => Ok(ParamValue::Str(text)),
                     "color" => Rgb::from_text(&text).map(ParamValue::Color).ok_or_else(|| {
                         format!(
@@ -1325,37 +1109,7 @@ impl SceneController for SceneProcess {
                     continue;
                 }
             };
-            renderer.set_param(pass.as_deref(), uniform(&name), &ty, &value)?;
-            let Some(ticked) = self.tick_name(pass.as_deref(), uniform(&name)) else {
-                continue;
-            };
-            // The process set this value itself, so no tick carries it back.
-            if let Some(held) = self.values.get_mut(&ticked) {
-                *held = value.to_json();
-                match self.sent.get_mut(&ticked) {
-                    Some(sent) => sent.clone_from(held),
-                    None => {
-                        self.sent.insert(ticked.clone(), held.clone());
-                    }
-                }
-            }
-            let kept = Kept {
-                name,
-                pass,
-                ty,
-                value,
-            };
-            match self.kept.entry(ticked) {
-                Entry::Occupied(mut held) => {
-                    held.insert(kept);
-                }
-                Entry::Vacant(slot) => {
-                    let first = slot.insert(kept);
-                    if let Some(locks) = &self.locks {
-                        lock(locks).set_param(first.pass.as_deref(), uniform(&first.name));
-                    }
-                }
-            }
+            self.live.set_param(renderer, &p, value)?;
         }
         if !std::mem::take(&mut self.unsent) {
             return Ok(());
@@ -1365,16 +1119,17 @@ impl SceneController for SceneProcess {
         let fields: Vec<String> = self
             .data
             .keys()
-            .filter(|n| Address::dotted(n).is_some_and(|at| self.layers.contains_key(at.layer)))
+            .filter(|n| {
+                Address::dotted(n).is_some_and(|at| self.live.index().text(at.layer).is_some())
+            })
             .cloned()
             .collect();
         for name in fields {
             let at = Address::dotted(&name).expect("the name was just matched");
             match self.data.remove(&name) {
                 Some((Feed::Data(values), _)) => {
-                    match renderer.set_layer(&at, Given::Numbers(&values)) {
-                        Ok(()) => self.set_field(&name),
-                        Err(e) => self.refuse_or_fail(&name, e)?,
+                    if let Err(e) = self.live.set_layer(renderer, &at, Given::Numbers(&values)) {
+                        self.refuse_or_fail(&name, e)?;
                     }
                 }
                 Some((Feed::DataU8(_), _)) => {
@@ -1405,56 +1160,16 @@ impl SceneController for SceneProcess {
         }
     }
 
-    fn on_param(&mut self, pass: Option<&str>, name: &str, value: &ParamValue) {
-        let Some(ticked) = self.tick_name(pass, name) else {
-            return;
-        };
-        if let Some(held) = self.values.get_mut(&ticked) {
-            *held = value.to_json();
-        }
-    }
-
     fn rebuilt(&mut self) {
         for (_, unsent) in self.data.values_mut() {
             *unsent = true;
         }
         self.unsent = !self.data.is_empty();
-        self.rebuilt = !self.kept.is_empty();
+        self.live.rebuilt();
     }
 
-    fn on_layer(&mut self, at: &Address, value: &Value) {
-        self.tuned.set(at);
-        if let (None, "text") = (at.effect, at.field) {
-            if let Some(held) = self.values.get_mut(&format!("{}.text", at.layer)) {
-                held.clone_from(value);
-            }
-        }
-    }
-
-    fn on_scene(&mut self, posted: &mut Scene, running: &dyn RenderTarget) {
-        let locks = self
-            .locks
-            .as_ref()
-            .map(|l| lock(l).clone())
-            .unwrap_or_default();
-        let names: Vec<String> = posted.layers().map(|l| l.name().to_string()).collect();
-        for name in names {
-            let (Some(now), Some(layer)) = (running.layer(&name), posted.layer(&name)) else {
-                continue;
-            };
-            let look = layer.to_dict();
-            let kept = self.tuned.applied(look.clone(), &now, &locks);
-            if kept == look {
-                continue;
-            }
-            let put = Layer::from_dict("the layer", &kept).and_then(|mut layer| {
-                posted.load_layer(&mut layer)?;
-                posted.replace_layer(layer)
-            });
-            if let Err(e) = put {
-                crate::report::warn(format!("{}: layer {name}: {e:#}", self.name));
-            }
-        }
+    fn live(&mut self) -> Option<&mut Live> {
+        Some(&mut self.live)
     }
 }
 
@@ -1758,6 +1473,7 @@ fn write_ticks(mut stdin: ChildStdin, outbox: Arc<(Mutex<Outbox>, Condvar)>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::draw::Call;
     use crate::testing::{script, SCRIPTS};
 
     /// A process that answers the probe, then hands over a scene.
@@ -1814,6 +1530,24 @@ printf '\004\004mask\004\000\000\000\000\100\200\377'
 printf '\000\005state\002\000\000\000\000\000\200\076\000\000\200\077'
 sleep 60
 "#;
+
+    /// A console's set of the param `name` of pass `pass`, None for the
+    /// scene's, as the process's live state takes it.
+    fn console_param(f: &mut SceneProcess, pass: Option<&str>, name: &str, value: ParamValue) {
+        let ty = match value {
+            ParamValue::Str(_) => "string",
+            _ => "float",
+        };
+        f.live
+            .console_param(&Stub::default(), pass, name, ty, &value)
+            .unwrap();
+    }
+
+    /// A console's set of the live field `at`, as the process's live state
+    /// takes it.
+    fn console_layer(f: &mut SceneProcess, at: &Address, value: Value) {
+        f.live.console_layer(&Stub::default(), at, &value).unwrap();
+    }
 
     fn tmpdir(tag: &str) -> crate::testing::TempDir {
         crate::testing::TempDir::new(&format!("proc-{tag}"))
@@ -2297,11 +2031,11 @@ sleep 60
         f.bind(&scene);
         f.tick(0, 0.0, 0.016).unwrap();
         ticks(&d, 1);
-        f.on_param(None, "text", &ParamValue::Str("WOW".to_string()));
-        f.on_param(Some("main"), "amt", &ParamValue::Float(0.5));
+        console_param(&mut f, None, "text", ParamValue::Str("WOW".to_string()));
+        console_param(&mut f, Some("main"), "amt", ParamValue::Float(0.5));
         // not a param of this scene, and no scene param amt
-        f.on_param(None, "nosuch", &ParamValue::Str("x".to_string()));
-        f.on_param(None, "amt", &ParamValue::Float(0.7));
+        console_param(&mut f, None, "nosuch", ParamValue::Str("x".to_string()));
+        console_param(&mut f, None, "amt", ParamValue::Float(0.7));
         f.tick(1, 0.016, 0.016).unwrap();
         let second = ticks(&d, 2).remove(1);
         assert_eq!(
@@ -2325,7 +2059,7 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
         f.bind(&scene);
         f.tick(0, 0.0, 0.016).unwrap();
         ticks(&d, 1);
-        f.on_param(Some("second"), "amt", &ParamValue::Float(0.5));
+        console_param(&mut f, Some("second"), "amt", ParamValue::Float(0.5));
         f.tick(1, 0.016, 0.016).unwrap();
         let seen = ticks(&d, 2);
         assert_eq!(
@@ -2433,7 +2167,7 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
         assert_eq!(refused_names(&f), ["gain"]);
         f.tick(1, 0.0, 1.0 / 60.0).unwrap();
         ticks(&d, 2);
-        f.on_param(None, "words", &ParamValue::Str("GHEE".to_string()));
+        console_param(&mut f, None, "words", ParamValue::Str("GHEE".to_string()));
         f.tick(2, 0.0, 1.0 / 60.0).unwrap();
         let seen = ticks(&d, 3);
         assert_eq!(
@@ -3086,7 +2820,7 @@ while IFS= read -r line; do :; done
             effect: None,
             field: "text",
         };
-        f.on_layer(&at, &Value::from("from the console"));
+        console_layer(&mut f, &at, Value::from("from the console"));
         f.tick(2, 0.0, 1.0 / 60.0).unwrap();
         let seen: Vec<Value> = ticks(&d, 3)
             .into_iter()
@@ -3171,7 +2905,7 @@ while IFS= read -r line; do :; done
             effect: None,
             field: "text",
         };
-        f.on_layer(&at, &Value::from("from the console"));
+        console_layer(&mut f, &at, Value::from("from the console"));
         f.tick(0, 0.0, 1.0 / 60.0).unwrap();
         let seen = ticks(&d, 1);
         assert_eq!(
@@ -3266,7 +3000,7 @@ while IFS= read -r line; do :; done
         );
         assert_eq!(refused_names(&f), ["dot"]);
         // the words of the layer that left go out with no tick
-        assert!(!f.values.contains_key("title.text"));
+        assert!(!f.live.tick_params().contains_key("title.text"));
     }
 
     #[test]
@@ -3298,8 +3032,7 @@ while IFS= read -r line; do :; done
         let path = script(&d, "looks", &body);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        let locks = Arc::new(Mutex::new(Locks::default()));
-        f.lock_into(Arc::clone(&locks));
+        let locks = f.locks();
         assert!(wait_until(Duration::from_secs(5), || {
             f.drain();
             f.incoming.iter().any(|(n, _)| n == "title.y")
@@ -3316,7 +3049,7 @@ while IFS= read -r line; do :; done
             ]
         );
         // the process's own words, which no tick carries back
-        assert_eq!(f.sent.get("title.text"), Some(&Value::from("ho")));
+        assert!(!f.live.tick_params().contains_key("title.text"));
         assert_eq!(
             lock(&locks).to_json()["fields"],
             serde_json::json!([
@@ -3349,15 +3082,14 @@ while IFS= read -r line; do :; done
         let path = script(&d, "kept", &body);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        let locks = Arc::new(Mutex::new(Locks::default()));
-        f.lock_into(Arc::clone(&locks));
+        let locks = f.locks();
         let at = |effect, field| Address {
             layer: "title",
             effect,
             field,
         };
-        f.on_layer(&at(None, "opacity"), &Value::from(0.5));
-        f.on_layer(&at(Some("glow"), "strength"), &Value::from(0.25));
+        console_layer(&mut f, &at(None, "opacity"), Value::from(0.5));
+        console_layer(&mut f, &at(Some("glow"), "strength"), Value::from(0.25));
         assert!(wait_until(Duration::from_secs(5), || {
             f.drain();
             !f.incoming.is_empty()
@@ -3407,7 +3139,6 @@ while IFS= read -r line; do :; done
         let path = script(&d, "rebuilt", &body);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        f.lock_into(Arc::new(Mutex::new(Locks::default())));
         assert!(wait_until(Duration::from_secs(5), || {
             f.drain();
             !f.incoming.is_empty()
@@ -3431,7 +3162,7 @@ while IFS= read -r line; do :; done
         )
         .unwrap();
         stub.now = serde_json::json!({"name": "title", "text": "ho", "font_size": 9});
-        f.on_scene(&mut posted, &stub);
+        f.live.console_scene(&stub, &mut posted).unwrap();
         let title = posted.layer("title").unwrap().to_dict();
         assert_eq!(
             (&title["text"], &title["font_size"], &title["text_align"]),
@@ -3473,8 +3204,7 @@ while IFS= read -r line; do :; done
         let path = script(&d, "locks", &body);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        let locks = Arc::new(Mutex::new(Locks::default()));
-        f.lock_into(Arc::clone(&locks));
+        let locks = f.locks();
         assert!(wait_until(Duration::from_secs(5), || {
             f.drain();
             f.incoming.iter().any(|(n, _)| n == "amt")

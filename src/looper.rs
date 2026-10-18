@@ -22,7 +22,8 @@ use anyhow::{bail, Result};
 use crate::draw::Call;
 use crate::engine::{Feed, Given, Provider, Refused, Renderer, Taken};
 use crate::layer::Address;
-use crate::scene::{ArraySize, ParamValue, Scene};
+use crate::live::Live;
+use crate::scene::{ArraySize, ParamValue};
 use crate::stats::{monotonic, FrameRate};
 use serde_json::Value;
 
@@ -389,26 +390,18 @@ pub trait SceneController {
         None
     }
 
-    /// A host set the param `name` of pass `pass`, None for the scene's. The
-    /// next tick carries it.
-    fn on_param(&mut self, _pass: Option<&str>, _name: &str, _value: &ParamValue) {}
-
     /// The host set the scene up again under this controller. The setup
     /// emptied every array and gave every param the value in the scene, so
     /// the next update() hands the renderer again the arrays and the param
     /// values that the controller set.
     fn rebuilt(&mut self) {}
 
-    /// A host set the live field `at` of a layer to `value`, written as the
-    /// scene format writes the key. The next tick carries a text layer's
-    /// `text`.
-    fn on_layer(&mut self, _at: &Address, _value: &Value) {}
-
-    /// A host sets `posted` up in place of the running scene, which
-    /// `running` draws. Each key of a layer that the program set goes back
-    /// into `posted` at its running value, and each other key of a layer
-    /// that `posted` changes counts as the host's, as on_layer() counts it.
-    fn on_scene(&mut self, _posted: &mut Scene, _running: &dyn RenderTarget) {}
+    /// The live state of the scene that the controller runs, for a host
+    /// whose console sets params and layers in it. None for a controller
+    /// that keeps none.
+    fn live(&mut self) -> Option<&mut Live> {
+        None
+    }
 
     /// Per-frame hook before the draw (e.g. set live params).
     fn update(&mut self, _renderer: &mut dyn RenderTarget, _frame: u64, _t: f64) -> Result<()> {

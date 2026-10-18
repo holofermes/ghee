@@ -34,7 +34,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   refuses a message with too many and logs it. 0.4.0 took the first values.
 - Update a Rust host for the new signatures ([Rust](docs/rust.md)):
   `SceneProcess::start` takes a `size`, `render_loop` takes the renderer,
-  and a `ConsoleHost` implements `set_layer` and `save`.
+  a `ConsoleHost` implements `set_layer` and `save`, and a
+  `SceneController` gives the console its `ghee::live::Live` through
+  `live()` instead of taking `on_param`.
 
 ### Added
 

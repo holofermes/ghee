@@ -331,10 +331,10 @@ these types:
 ## The console from Python
 
 To serve the [console](console.md) from `ghee.open`, pass `serve=8090` and
-open the address that ghee prints, `http://127.0.0.1:8090/`. The console locks each param and layer key
-that your code sets. In a drawing, those are the keys that each call passes.
-Leave a key out to tune it in the console, and your value stays from frame
-to frame.
+open the address that ghee prints, `http://127.0.0.1:8090/`. The console
+locks each param and layer key that your code sets. In a drawing, those are
+the keys that each call passes. Leave a key out to tune it in the console,
+and your value stays from frame to frame.
 
 ## Building a scene in Python
 

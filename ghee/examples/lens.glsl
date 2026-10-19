@@ -18,23 +18,28 @@
 //     ghee render --demo lens -o frame.####.png --frames 100 --timestep 0.05
 //     ghee render --demo lens --serve
 
+// The print at p, in its pixels from its top left, y down.
+vec4 print_at(vec2 p) {
+  vec2 size = iChannelResolution[0].xy;
+  return texture2D(iChannel0, vec2(p.x, size.y - p.y) / size);
+}
+
 // The ink under the lens at frame point p, in pixels, blended between pixel
 // centres.
 float under_at(vec2 p) {
   vec2 b = floor(p - 0.5);
   vec2 f = p - 0.5 - b;
   b.y = clamp(b.y, 0.0, iResolution.y - 2.0) + iResolution.y;
-  vec2 texel = 1.0 / iChannelResolution[0].xy;
-  vec2 at = (b + 0.5) * texel;
-  float c00 = texture2D(iChannel0, at).r;
-  float c10 = texture2D(iChannel0, at + vec2(texel.x, 0.0)).r;
-  float c01 = texture2D(iChannel0, at + vec2(0.0, texel.y)).r;
-  float c11 = texture2D(iChannel0, at + texel).r;
+  float c00 = print_at(b + 0.5).r;
+  float c10 = print_at(b + vec2(1.5, 0.5)).r;
+  float c01 = print_at(b + vec2(0.5, 1.5)).r;
+  float c11 = print_at(b + 1.5).r;
   return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
 }
 
 void main() {
-  vec2 px = uv * iResolution.xy;
+  // The page lays out from the frame's top left, y down.
+  vec2 px = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y);
   float width = iResolution.x;
   float aspect = iResolution.y / width;
   vec2 q = px / width;
@@ -50,7 +55,7 @@ void main() {
     vec4 page = vec4(0.0);
     vec2 fringe = vec2(0.0);
     if (gl_FragCoord.x >= 0.0) {
-      page = texture2D(iChannel0, (px + vec2(0.0, iResolution.y)) / iChannelResolution[0].xy);
+      page = print_at(px + vec2(0.0, iResolution.y));
       fringe = vec2(page.r);
       if (rho >= 0.4) {
         float r4 = rho * rho * rho * rho;
@@ -81,7 +86,7 @@ void main() {
     vec2 next = vec2(px.x, mod(i + k + 1.0, iResolution.y) + 0.5);
     if (i > iResolution.y - 1.5) next.y = 2.0 * iResolution.y - 0.5;
     if (gl_FragCoord.x >= 0.0) {
-      page = mix(texture2D(iChannel0, here / iChannelResolution[0].xy), texture2D(iChannel0, next / iChannelResolution[0].xy), s.x - k);
+      page = mix(print_at(here), print_at(next), s.x - k);
     }
     col = mix(paper * (page.g / 0.9) + foxing * page.b, ink, page.r);
     vec2 below = (q - centre - vec2(0.09, 0.12) * radius) / radius;

@@ -41,7 +41,7 @@ float seg(vec2 p, vec2 a, vec2 b) {
 
 void main() {
   vec2 asp = vec2(ASPECT, 1.0);
-  vec2 uva = uv * asp;
+  vec2 uva = vec2(uv.x, 1.0 - uv.y) * asp;
 
   // The fade dithers below one level, so an 8-bit buffer fades smoothly and
   // reaches black.

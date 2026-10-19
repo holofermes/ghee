@@ -1,5 +1,6 @@
-// Positions are in uv, x across and y down. The flow and the strokes work in
-// heights, uv times (ASPECT, 1), so a swirl keeps its shape at any frame size.
+// Positions are in the picture, 0 to 1, x across and y down. The flow and the
+// strokes work in heights, positions times (ASPECT, 1), so a swirl keeps its
+// shape at any frame size.
 #define ASPECT (iOutputResolution.x / iOutputResolution.y)
 
 float hash(vec2 p) {

@@ -16,7 +16,8 @@
 //     ghee render --demo assets --serve
 
 void main() {
-  vec2 px = uv * iResolution.xy + vec2(iTime * drift, 0.0);
+  // The checker lays out from the top left, y down, as the layers do.
+  vec2 px = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y) + vec2(iTime * drift, 0.0);
   px += wobble * sin(px.yx * 0.035 + iTime * 1.6);
   vec2 d = vec2(px.x + px.y, px.x - px.y) / (tile * 1.4142);
   vec2 cell = floor(d);
@@ -27,7 +28,7 @@ void main() {
   // berry's box draws nothing.
   vec2 middle = vec2(cell.x + cell.y + 1.0, cell.x - cell.y) * 0.5 * tile * 1.4142;
   vec2 q = (px - middle) / berry + 0.5;
-  vec4 s = texture2D(stamp_tex, clamp(q, 0.0, 1.0));
+  vec4 s = texture2D(stamp_tex, clamp(vec2(q.x, 1.0 - q.y), 0.0, 1.0));
   col = mix(col, s.rgb, s.a * square * pattern);
 
   float h = ghee_hash(cell);

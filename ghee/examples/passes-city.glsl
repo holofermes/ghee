@@ -2,8 +2,9 @@ float print_time() {
   return floor(iTime * rate) / rate;
 }
 
+// The picture point at `at`, a uv, y down from the top, as `horizon` counts.
 vec2 view(vec2 at) {
-  return (at - 0.5) / zoom + 0.5 + pan;
+  return (vec2(at.x, 1.0 - at.y) - 0.5) / zoom + 0.5 + pan;
 }
 
 // The skyline at a point: x is 1 on a far building, 2 on a near one and 0

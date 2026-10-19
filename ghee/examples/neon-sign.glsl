@@ -174,7 +174,8 @@ vec4 upstairs(vec2 s, vec3 b, float px) {
 }
 
 void main() {
-  vec2 s = row_at(uv);
+  vec2 at = vec2(uv.x, 1.0 - uv.y);
+  vec2 s = row_at(at);
   vec3 b = shop_at(s);
   float px = 1.0 / (row_height() * iResolution.y);
   vec4 col = vec4(0.0);
@@ -212,11 +213,11 @@ void main() {
     col += lit(lantern * 0.075, px, lanterns * ribs) + vec4(0.0, 0.0, 0.0, 0.5 * exp(-dot(l, l) * 900.0));
   }
 
-  vec2 led = led_at(uv);
+  vec2 led = led_at(at);
   if (led.x > 0.0 && led.x < 56.0 && led.y > 0.0 && led.y < 8.0) {
     float dot_mask = mix(1.0, 1.0 - smoothstep(0.3, 0.42, length(fract(led) - 0.5)), smoothstep(1.5, 2.5, led_pitch()));
     float on = 0.0;
-    if (gl_FragCoord.x >= 0.0) on = texture2D(iChannel0, led / vec2(56.0, 8.0)).a;
+    if (gl_FragCoord.x >= 0.0) on = texture2D(iChannel0, vec2(led.x / 56.0, 1.0 - led.y / 8.0)).a;
     col += dot_mask * vec4(leds * mix(0.1, 1.0, on), 0.6 * on);
   }
   gl_FragColor = col;

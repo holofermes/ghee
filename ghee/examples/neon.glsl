@@ -114,8 +114,9 @@ float across(float dy, float width) {
 
 void main() {
   float aspect = iResolution.x / iResolution.y;
-  vec2 at = uv;
-  float below = uv.y - base;
+  vec2 p = vec2(uv.x, 1.0 - uv.y);
+  vec2 at = p;
+  float below = p.y - base;
   vec4 st = vec4(0.5, 0.5, 1.0, 0.5);
   float wet = 0.0;
   float shine = 0.0;
@@ -125,32 +126,33 @@ void main() {
   float far = base - 0.02;
   float near = base + 0.1 * road;
   float width = max(0.6 / iResolution.y, 0.003);
-  float x = (uv.x - 0.5) * aspect;
+  float x = (p.x - 0.5) * aspect;
   float back = streaks(x, -1.0, 1.0);
   float front = streaks(x, 1.0, 2.0);
   if (below > 0.0) {
     float z = 0.2 / (below + 0.3);
-    vec2 ground = vec2((uv.x - 0.5) * aspect * z, z);
+    vec2 ground = vec2((p.x - 0.5) * aspect * z, z);
     vec2 g = mod(ground * vec2(6.0, 4.0), 2.0);
     st = texture2D(iChannel3, 1.0 - abs(1.0 - g));
     float puddle = smoothstep(0.0, 0.08, 1.0 - length((ground - vec2(0.02, 0.38)) / vec2(0.15, 0.07)) + 0.4 * ghee_noise(ground * 14.0) - 0.2);
     vec2 n = mix((st.rg * 2.0 - 1.0) * sign(1.0 - g), ripples(ground * 6.0), puddle);
     float tilt = (st.a - 0.5) * st.b * (1.0 - puddle);
-    at = vec2(uv.x + n.x * 0.02, 2.0 * base - uv.y + n.y * 0.06 + tilt * 0.1);
+    at = vec2(p.x + n.x * 0.02, 2.0 * base - p.y + n.y * 0.06 + tilt * 0.1);
     wet = mix(mix(0.9, 0.3, st.b), 0.9, puddle);
     shine = mix(0.25 + 0.75 * clamp(-n.y, 0.0, 1.0), 0.0, puddle);
-    above = texture2D(iChannel2, vec2(uv.x, base - 0.2)).rgb * halo_gain * exp(-below * 6.0);
+    above = texture2D(iChannel2, vec2(p.x, 1.2 - base)).rgb * halo_gain * exp(-below * 6.0);
     float dr = 3.0 * width + 0.01 * abs(n.y);
     float smear = 0.05 * road;
-    float rf = uv.y - 2.0 * base + far + n.y * 0.01;
-    float rn = uv.y - near - 0.12 * road + n.y * 0.01;
+    float rf = p.y - 2.0 * base + far + n.y * 0.01;
+    float rn = p.y - near - 0.12 * road + n.y * 0.01;
     road_light = wet * (taillights * back * (across(rf, dr) + 0.4 * across(rf - smear, smear)) + headlights * front * (across(rn, dr) + 0.4 * across(rn - smear, smear)));
     road_light += texture2D(iChannel1, uv).rgb * glow_gain;
   }
 
-  vec4 sign = texture2D(iChannel0, at);
-  vec3 light = texture2D(iChannel1, at).rgb * glow_gain;
-  if (gl_FragCoord.x >= 0.0) light += texture2D(iChannel2, at).rgb * halo_gain;
+  vec2 t = vec2(at.x, 1.0 - at.y);
+  vec4 sign = texture2D(iChannel0, t);
+  vec3 light = texture2D(iChannel1, t).rgb * glow_gain;
+  if (gl_FragCoord.x >= 0.0) light += texture2D(iChannel2, t).rgb * halo_gain;
   vec3 neon = sign.rgb + sign.a * core + light;
 
   vec3 col = wall(at) * (ambient + light * 3.0) + neon;
@@ -160,6 +162,6 @@ void main() {
     col *= smoothstep(0.0, 0.01, below) * 0.6 + 0.4;
     col += road_light;
   }
-  col += taillights * back * across(uv.y - far, width) + headlights * front * across(uv.y - near, width);
+  col += taillights * back * across(p.y - far, width) + headlights * front * across(p.y - near, width);
   gl_FragColor = vec4(1.0 - exp(-col * exposure), 1.0);
 }

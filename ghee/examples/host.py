@@ -38,8 +38,8 @@ void main() {
     vec3 col = paper;
     for (int r = 0; r < ROWS; r++) {
         float row = float(r);
-        float v = walk_sample2(vec2(uv.x, (row + 0.5) / float(ROWS)));
-        float y = 1.0 - (row + 1.0) * gap - 0.45 * gap * v;
+        float v = walk_sample2(vec2(uv.x, 1.0 - (row + 0.5) / float(ROWS)));
+        float y = (row + 1.0) * gap + 0.45 * gap * v;
         float d = abs(uv.y - y) * iResolution.y;
         float ink = 1.0 - smoothstep(0.5 * weight, 0.5 * weight + 1.0, d);
         float newest = max(1.0 - row, 0.0);

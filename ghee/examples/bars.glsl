@@ -29,7 +29,8 @@ vec3 pick(float k) {
 }
 
 void main() {
-  vec2 px = uv * iResolution.xy;
+  // The grid splits from the top left, y down.
+  vec2 px = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y);
   float m = margin * min(iResolution.x, iResolution.y);
   vec2 box = iResolution.xy - 2.0 * m;
   vec2 p = (px - m) / box;

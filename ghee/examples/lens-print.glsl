@@ -114,8 +114,8 @@ float ink_at(vec2 q, float px) {
   return max(c, r);
 }
 
-// The top half holds the page as it lies and the bottom half the page as the
-// lens shows it. Each pixel holds its ink, then its paper's shares of `paper`
+// The page lays out from its top left, y down. The top half holds the page as
+// it lies and the bottom half the page as the lens shows it. Each pixel holds its ink, then its paper's shares of `paper`
 // (times 0.9) and of `foxing`. The page lies still, so the top half keeps the
 // last frame's pixels. It sets anew each pixel that holds no paper yet, as in
 // a new buffer, and one band of 8 rows a frame, which brings in new words.
@@ -126,7 +126,7 @@ float ink_at(vec2 q, float px) {
 // never reaches on a scrolling strip, holds the page row after the ring's
 // last.
 void main() {
-  vec2 px = uv * iResolution.xy;
+  vec2 px = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y);
   float width = iResolution.x;
   float height = 0.5 * iResolution.y;
   float aspect = height / width;
@@ -139,7 +139,7 @@ void main() {
   float m = 1.0;
   if (px.y < height) {
     float row = mod(px.y - rows.x, height);
-    if (gl_FragCoord.x >= 0.0) o = texture2D(iChannel0, px / iResolution.xy);
+    if (gl_FragCoord.x >= 0.0) o = texture2D(iChannel0, uv);
     bool came = rows.x + row > before + height - 1.0 || rows.x < before;
     set = o.g < 0.01 || came || floor(mod(float(iFrame) + 0.5, ceil(height / 8.0))) == floor(px.y / 8.0);
     if (set) page = page_of(vec2(px.x, row) / width, width, rows);

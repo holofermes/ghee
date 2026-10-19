@@ -60,7 +60,7 @@
     },
     {
       "name": "image",
-      "fragment": "void main() {\n  vec2 o = 2.0 / iResolution.xy;\n  float ink = 0.0;\n  float halo = 0.0;\n  if (gl_FragCoord.x >= 0.0) {\n    ink = texture2D(iChannel0, uv).r;\n    halo = texture2D(iChannel0, uv + vec2(o.x, 0.0)).r + texture2D(iChannel0, uv - vec2(o.x, 0.0)).r\n         + texture2D(iChannel0, uv + vec2(0.0, o.y)).r + texture2D(iChannel0, uv - vec2(0.0, o.y)).r;\n  }\n  float px = 1.0 / iResolution.y;\n  float y = uv.y - waterline(uv.x);\n  vec3 col = mix(background, deep, clamp(y * 2.0, 0.0, 1.0));\n  col += tail * glow * halo * 0.25;\n  col = mix(col, tail, smoothstep(0.0, 0.45, ink));\n  col = mix(col, head, smoothstep(0.5, 0.9, ink));\n  float line = 1.0 - smoothstep(0.5 * px, 1.5 * px, abs(y));\n  gl_FragColor = vec4(mix(col, surface, line * surface_glow), 1.0);\n}\n",
+      "fragment": "void main() {\n  vec2 o = 2.0 / iResolution.xy;\n  float ink = 0.0;\n  float halo = 0.0;\n  if (gl_FragCoord.x >= 0.0) {\n    ink = texture2D(iChannel0, uv).r;\n    halo = texture2D(iChannel0, uv + vec2(o.x, 0.0)).r + texture2D(iChannel0, uv - vec2(o.x, 0.0)).r\n         + texture2D(iChannel0, uv + vec2(0.0, o.y)).r + texture2D(iChannel0, uv - vec2(0.0, o.y)).r;\n  }\n  float px = 1.0 / iResolution.y;\n  float y = 1.0 - uv.y - waterline(uv.x);\n  vec3 col = mix(background, deep, clamp(y * 2.0, 0.0, 1.0));\n  col += tail * glow * halo * 0.25;\n  col = mix(col, tail, smoothstep(0.0, 0.45, ink));\n  col = mix(col, head, smoothstep(0.5, 0.9, ink));\n  float line = 1.0 - smoothstep(0.5 * px, 1.5 * px, abs(y));\n  gl_FragColor = vec4(mix(col, surface, line * surface_glow), 1.0);\n}\n",
       "channels": [{"buffer": "trails"}],
       "params": {
         "background": {"type": "color", "value": "#000000"},

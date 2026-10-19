@@ -49,13 +49,15 @@ void main() {
   vec2 shake = (vec2(ghee_hash(vec2(t, 1.0)), ghee_hash(vec2(t, 2.0))) - 0.5) * jitter;
   vec2 shake2 = (vec2(ghee_hash(vec2(t, 3.0)), ghee_hash(vec2(t, 4.0))) - 0.5) * jitter;
 
-  float pink_ink = halftone(uv - (pink_shift + shake) * px, iChannelResolution[0].xy);
-  float blue_tone = texture2D(iChannel1, uv - blue_shift * px).r;
+  // The shifts run y down, and uv y up.
+  vec2 down = vec2(1.0, -1.0) * px;
+  float pink_ink = halftone(uv - (pink_shift + shake) * down, iChannelResolution[0].xy);
+  float blue_tone = texture2D(iChannel1, uv - blue_shift * down).r;
   vec3 press = texture2D(iChannel3, uv).rgb;
   float yellow_ink = 0.0;
-  if (gl_FragCoord.x >= 0.0) yellow_ink = texture2D(iChannel2, uv - (yellow_shift + shake2) * px).r;
+  if (gl_FragCoord.x >= 0.0) yellow_ink = texture2D(iChannel2, uv - (yellow_shift + shake2) * down).r;
 
-  float line = 0.1 + 0.8 * fract((gl_FragCoord.y - blue_shift.y) / 3.0);
+  float line = 0.1 + 0.8 * fract((iResolution.y - gl_FragCoord.y - blue_shift.y) / 3.0);
   float blue_ink = smoothstep(line - 0.1, line + 0.1, blue_tone);
   pink_ink *= 1.0 - patchy * press.r;
   blue_ink *= 1.0 - patchy * press.g;

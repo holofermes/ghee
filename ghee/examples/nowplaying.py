@@ -80,7 +80,7 @@ void reel(vec2 p, vec2 c, float r, float wound, float turn, inout vec3 col) {{
 
 void main() {{
     float pad = float(padding);
-    vec2 b = floor(uv * iResolution.xy);
+    vec2 b = floor(vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y));
     vec2 far = iResolution.xy - pad - 1.0;
     float r = clamp(floor(reels * floor((iResolution.y - 10.0 - 2.0 * pad) / 2.0) + 0.5), 3.0, floor((iResolution.y - 10.0 - 2.0 * pad) / 2.0));
     vec3 col = background;

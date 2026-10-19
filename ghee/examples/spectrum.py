@@ -72,7 +72,7 @@ float envelope(float x) {
 }
 
 void main() {
-    vec2 px = uv * iResolution.xy;
+    vec2 px = gl_FragCoord.xy;
     float span = 0.56 * iResolution.x;
     float count = clamp(floor(ridges + 0.5), 1.0, ROWS);
     float gap = 0.9 * iResolution.y / (count + 0.5 * height);
@@ -84,7 +84,7 @@ void main() {
     vec3 ahead = vec3(sin(turn) * cos(pitch), -sin(pitch), max(cos(turn) * cos(pitch), 0.001));
     vec3 across = vec3(cos(turn), 0.0, -sin(turn));
     vec3 up = vec3(sin(turn) * sin(pitch), cos(pitch), cos(turn) * sin(pitch));
-    vec2 at = vec2(px.x - 0.5 * iResolution.x, 0.94 * iResolution.y - px.y - 0.5 * count * gap);
+    vec2 at = vec2(px.x - 0.5 * iResolution.x, px.y - 0.06 * iResolution.y - 0.5 * count * gap);
     at = at / zoom + vec2(pan_x, pan_y) * iResolution.y;
     vec3 eye = vec3(0.0, 0.0, 0.5 * count * deep) + at.x * across + at.y * up;
     slant = cos(pitch);
@@ -116,7 +116,7 @@ void main() {
         x = p.x / span + 0.5;
         x = clamp(x, 0.0, 1.0);
         i = min(floor(x * (BANDS - 1.0)), BANDS - 2.0);
-        float v = (row + 0.5) / ROWS;
+        float v = 1.0 - (row + 0.5) / ROWS;
         if (gl_FragCoord.x >= 0.0) {
             a = history_sample2(vec2((i + 0.5) / BANDS, v));
             b = history_sample2(vec2((i + 1.5) / BANDS, v));

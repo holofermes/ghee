@@ -1,3 +1,6 @@
+// The street lays out from the frame's top: a frame point `at` runs from 0
+// to 1, y down, as `base` does.
+//
 // The row of shopfronts, in row heights: x across the frame from its middle,
 // y up from the pavement. The row stands as tall as the wall in a wide
 // frame, and in a narrower one a third of the frame's width, under the

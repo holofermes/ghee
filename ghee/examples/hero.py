@@ -62,8 +62,8 @@ JUMP = 0.1
 SCENE_COMMON = (
     look.WAVE
     + """
-// Everything downstream works in [0, 1] uv, so the flow and the particles look
-// the same at every render size.
+// Everything downstream works in the picture, [0, 1] with y down, so the flow
+// and the particles look the same at every render size.
 float waterline(float x) {
     return 0.55 - wave(x, iTime * wave_speed * 6.28318);
 }
@@ -233,7 +233,7 @@ float sdSeg(vec2 p, vec2 a, vec2 b) {
 
 void main() {
     vec2 asp = vec2(ASPECT, 1.0);
-    vec2 uva = uv * asp;
+    vec2 uva = vec2(uv.x, 1.0 - uv.y) * asp;
 
     // Last frame's ink, decayed. The sub-LSB dither is what keeps an 8-bit
     // buffer fading smoothly instead of banding into contour rings.
@@ -289,14 +289,15 @@ void main() {
     // The texture reads come before the surface: with `wet` computed ahead of
     // them, VC4 reads it back wrong in 4x4 blocks and the glyph body goes dry
     // in patches under the wave.
-    float v = (uv.y - text_y + text_height * 0.5) / text_height;
-    float u = fract(uv.x * ASPECT / (text_height * TEXT_ASPECT) - iTime * text_speed)
+    vec2 p = vec2(uv.x, 1.0 - uv.y);
+    float v = (p.y - text_y + text_height * 0.5) / text_height;
+    float u = fract(p.x * ASPECT / (text_height * TEXT_ASPECT) - iTime * text_speed)
             * (1.0 + GAP);
     float glow = texture2D(iChannel0, uv).r;
-    float m = texture2D(iChannel1, vec2(u, v)).a * step(0.0, v) * step(v, 1.0) * step(u, 1.0);
+    float m = texture2D(iChannel1, vec2(u, 1.0 - v)).a * step(0.0, v) * step(v, 1.0) * step(u, 1.0);
     m = smoothstep(0.35, 0.55, m);
 
-    float wet = step(waterline(uv.x), uv.y);
+    float wet = step(waterline(p.x), p.y);
     float ink = glow * wet;
     vec3 col = mix(mix(background, water, wet), particle_color, ink);
     gl_FragColor = vec4(mix(col, mix(ink_background, ink_water, wet), m), 1.0);

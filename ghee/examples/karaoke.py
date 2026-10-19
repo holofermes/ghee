@@ -160,7 +160,7 @@ vec4 dialog(vec2 q, vec4 b, float th) {
 }
 
 void main() {
-    vec2 p = floor(gl_FragCoord.xy);
+    vec2 p = floor(vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y));
     vec2 res = iResolution.xy;
     float hz = floor(res.y * horizon);
     float th = bayer(p);
@@ -238,7 +238,8 @@ void main() {
         float keep = step(-0.5, sin(p.y * 2.3 - iTime * 4.0 + row * 3.0)) * step(0.2, ghee_hash(vec2(floor(at.x / 3.0), p.y)));
         fade = keep * (0.8 - 0.5 * d);
         col = mix(col, box.rgb * vec3(0.85, 0.85, 1.0), box.a * fade * (1.0 - real));
-        vec4 words = texture2D(iChannel0, (at + 0.5) * cell / iOutputResolution.xy);
+        vec2 w = (at + 0.5) * cell / iOutputResolution.xy;
+        vec4 words = texture2D(iChannel0, vec2(w.x, 1.0 - w.y));
         col = col * (1.0 - words.a * fade) + words.rgb * vec3(0.85, 0.85, 1.0) * fade;
     }
 
@@ -257,11 +258,11 @@ void main() {
 
 MAIN = """
 void main() {
-    vec2 px = uv * iResolution.xy;
+    vec2 px = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y);
     vec2 art = (floor(px / CELL) + 0.5) / iChannelResolution[0].xy;
-    vec3 sea = texture2D(iChannel0, art).rgb;
+    vec3 sea = texture2D(iChannel0, vec2(art.x, 1.0 - art.y)).rgb;
     vec4 words = vec4(0.0);
-    if (gl_FragCoord.x >= 0.0) words = texture2D(iChannel1, px / iResolution.xy);
+    if (gl_FragCoord.x >= 0.0) words = texture2D(iChannel1, uv);
     gl_FragColor = vec4(words.rgb + sea * (1.0 - words.a), 1.0);
 }
 """

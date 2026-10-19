@@ -191,8 +191,9 @@ fn main() -> anyhow::Result<()> {
 the console. Implement `persists` to return true when your sink keeps
 showing its last frame, and ghee then skips a frame that would come out the
 same. Implement `turn_on` and `turn_off` for a sink with a power state, such
-as a backlight: ghee turns it on with the first frame, and off while the
-render pauses and when it ends.
+as a backlight: ghee turns it on before it writes the first frame, and
+before the first frame after a pause, and off while the render pauses and
+when it ends.
 
 ## Stop and pause
 

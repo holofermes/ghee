@@ -788,15 +788,15 @@ impl<'a> Loop<'a> {
             sleep(idle);
             return Ok(());
         }
-        self.clock.drawn(&m, &*self.renderer);
-        let drew = self.draw_frame(scanout, m.t)?;
         if !*lit {
-            // the display now holds a frame to light
+            // a sink takes its first frame turned on
             *lit = true;
             for s in self.sinks.iter_mut() {
                 s.turn_on()?;
             }
         }
+        self.clock.drawn(&m, &*self.renderer);
+        let drew = self.draw_frame(scanout, m.t)?;
         self.frame += 1;
         self.drawn += 1;
         let end = monotonic();
@@ -1148,6 +1148,9 @@ mod tests {
         on: u32,
         off: u32,
         cleared: u32,
+        /// The frames that write() took before each turn_on and turn_off,
+        /// in order, as (on, frames).
+        power: Vec<(bool, usize)>,
         lent: Vec<usize>,
         submitted: Vec<usize>,
     }
@@ -1168,6 +1171,7 @@ mod tests {
                 on: 0,
                 off: 0,
                 cleared: 0,
+                power: Vec::new(),
                 lent: Vec::new(),
                 submitted: Vec::new(),
             }
@@ -1261,11 +1265,13 @@ mod tests {
 
         fn turn_on(&mut self) -> Result<()> {
             self.on += 1;
+            self.power.push((true, self.frames.len()));
             Ok(())
         }
 
         fn turn_off(&mut self) -> Result<()> {
             self.off += 1;
+            self.power.push((false, self.frames.len()));
             Ok(())
         }
 
@@ -1829,8 +1835,7 @@ mod tests {
             lp.run().unwrap();
         }
         assert_eq!(s.on, 1);
-        // the backlight comes up over a drawn frame
-        assert!(!s.frames.is_empty());
+        assert_eq!(s.power[0], (true, 0), "on before the first frame");
     }
 
     #[test]
@@ -1871,6 +1876,8 @@ mod tests {
         assert_eq!(s.frames.len(), 2);
         assert_eq!(s.on, 2);
         assert_eq!(s.off, 2, "once for the hold, once on the way out");
+        // on before each frame that follows a turn off
+        assert_eq!(s.power, [(true, 0), (false, 1), (true, 1), (false, 2)]);
         assert_eq!(polled.get(), 5, "a held iteration still drains the host");
     }
 

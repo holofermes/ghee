@@ -1295,6 +1295,10 @@ async function boot(){
   // the frame's size, for a pass's size
   try { lastStats = await jget("/stats"); if (lastStats.display) lastDisplay = lastStats.display; } catch (_) {}
   const s = await readScenes();
+  // a page that opens on a scene whose files changed takes the new files, as
+  // the reload of the files-changed notice does
+  if (s.active && lastStats && lastStats.active === s.active && lastStats.stale)
+    await fetch("/switch?name=" + enc(s.active), {method: "POST"}).catch(() => {});
   if (s.active) await loadScene(s.active); else showEmpty();
   startStream();
   loadHwinfo();
@@ -1315,7 +1319,7 @@ function buildPicker(){
   sel.innerHTML = "";
   sel.disabled = !sceneList.length;
   if (!sceneList.length){ const o = el("option", null, "no scene"); o.value = ""; sel.appendChild(o); return; }
-  [["scenes", n => !mine.includes(n) && !procedural.includes(n)], ["programs", n => procedural.includes(n)],
+  [["scenes", n => !mine.includes(n) && !procedural.includes(n)], ["programs", n => procedural.includes(n) && !mine.includes(n)],
    ["my scenes", n => mine.includes(n)]].forEach(([label, test]) => {
     const names = sceneList.filter(test);
     if (!names.length) return;

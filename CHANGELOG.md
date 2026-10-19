@@ -184,6 +184,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   program's value.
 - A change that a scene's program makes to its layers gives the scene a new
   `ETag`.
+- The console runs a program among your own scenes as `ghee render` runs
+  it, and lists a folder there that holds only a program.
 - A console that `ghee.open(serve=...)` serves locks its shaders, passes,
   channels, filters and new params in the page.
 
@@ -211,6 +213,7 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   changes, under the `ETag` that names them, instead of an older scene.
 - The console locks a text layer's `font_family` and `text_align` that a
   program passes, instead of taking a change that snaps back.
+- A page that opens on a scene whose files changed takes the new files.
 - `ghee.open(display="kms")` refuses a card whose GL runs in software, as
   `ghee render` does, instead of drawing through llvmpipe.
 - The console's `/stats` gives `display.format` as `rgb565` under

@@ -83,7 +83,10 @@ of your scenes, upload it from its layer: a `.png`, `.jpg`, `.ttf` or
 `.otf` file of up to 32 MiB. The file lands in the scene's folder.
 
 To render one of your scenes without the console, pass its folder to `ghee
-render` ([Where ghee finds a scene](scenes.md#where-ghee-finds-a-scene)).
+render` ([Where ghee finds a scene](scenes.md#where-ghee-finds-a-scene)). A
+[program](procedural.md) in a scene's folder runs in the console as `ghee
+render` runs it. After you change a scene's files, reload the page to take
+them.
 
 ## Saving
 

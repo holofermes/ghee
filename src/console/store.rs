@@ -14,7 +14,8 @@
 //! their own, one directory per scene: `name/name.scene.json`, the GLSL of
 //! each pass in a file of its own, and the scene's files. A save writes the
 //! edits of such a scene into its files, and no state file lays edits over
-//! it. That directory lists scene files alone, so no program there ever runs.
+//! it. A program in one of those directories runs as `ghee render` runs it:
+//! beside the scene file, in its place.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -237,13 +238,9 @@ impl SceneStore {
         self.here.is_some() || self.file(name).is_ok_and(|p| self.program(&p).is_some())
     }
 
-    /// The program that writes the scene of `path`, its file. A scene in
-    /// `mine` has none.
+    /// The program that writes the scene of `path`, its file.
     fn program(&self, path: &str) -> Option<String> {
-        match self.in_mine(path) {
-            true => None,
-            false => process::executable(path),
-        }
+        process::executable(path)
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -1202,13 +1199,12 @@ fn scan(dir: &str) -> Vec<(String, String)> {
     out
 }
 
-/// Every `name/name.scene.json` in `dir`, by name.
+/// The scene of each directory in `dir`, by name.
 fn scan_mine(dir: &str) -> Vec<(String, String)> {
     entries(dir)
         .iter()
         .filter(|n| Path::new(&format!("{dir}/{n}")).is_dir())
         .filter_map(|n| package(dir, n))
-        .filter(|p| p.document)
         .map(|p| (p.name, p.path))
         .collect()
 }
@@ -1688,23 +1684,26 @@ mod tests {
         assert_eq!(store.names(), ["one", "two", "later", "own"]);
     }
 
-    /// The console never runs a program in its own scenes: neither a scene
-    /// file's executable beside it nor an executable of its own lists.
+    /// A program among the console's own scenes runs as `ghee render` runs
+    /// it: beside its scene file, in the file's place, and alone in its
+    /// directory. Each of the console's own scenes is a directory.
     #[test]
-    fn no_program_among_the_consoles_own_scenes_runs() {
+    fn a_program_among_the_consoles_own_scenes_runs_as_render_runs_it() {
         let (_d, m, store) = mine("own-programs");
-        write_scene(&format!("{m}/own/own.py"), "#!/bin/sh\nexit 1\n");
-        write_scene(&format!("{m}/run.py"), "#!/bin/sh\nexit 1\n");
+        let doc: Value = serde_json::from_str(SCENE).unwrap();
+        let body = format!("#!/bin/sh\nprintf '%s\\n' '{doc}'\ncat >/dev/null\n");
         fs::create_dir_all(format!("{m}/prog")).unwrap();
-        write_scene(&format!("{m}/prog/prog.py"), "#!/bin/sh\nexit 1\n");
+        for (dir, name) in [("own", "own.py"), ("", "run.py"), ("prog", "prog.py")] {
+            crate::testing::script(&format!("{m}/{dir}"), name, &body);
+        }
         store.rescan();
-        assert_eq!(store.names(), ["one", "own"]);
-        assert!(store.procedural_names().is_empty());
-        assert_eq!(
-            store.file("own").unwrap(),
-            format!("{m}/own/own{SCENE_SUFFIX}")
-        );
-        assert!(store.start("own", SIZE).unwrap().1.is_none());
+        assert_eq!(store.names(), ["one", "own", "prog"]);
+        assert_eq!(store.procedural_names(), ["own", "prog"]);
+        assert_eq!(store.mine_names(), ["own"]);
+        let _spawn = crate::testing::SCRIPTS.read().unwrap();
+        for name in ["own", "prog"] {
+            assert!(store.start(name, SIZE).unwrap().1.is_some(), "{name}");
+        }
     }
 
     /// An own scene as a person writes it: shaders in files of their own

@@ -1830,9 +1830,8 @@ impl ConsoleHost for RenderLoopHost {
         let console = &self.console;
         console.with_active(|name, copy| {
             if console.store.is_mine(name) {
-                console
-                    .store
-                    .write(name, &copy.defaults_doc, &copy.edits(None))?;
+                let edits = console.with_locks(name, |locks| copy.edits(locks));
+                console.store.write(name, &copy.defaults_doc, &edits)?;
                 let size = lock(&console.scene_size).unwrap_or((console.hub.w, console.hub.h));
                 let (resolved, read) = collect(|| console.store.resolve(name, size));
                 copy.opened.defaults = resolved?;

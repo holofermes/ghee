@@ -26,6 +26,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io;
 
 use anyhow::{anyhow, bail, Result};
 use serde_json::{Map, Value};
@@ -2258,6 +2259,27 @@ fn keep_bypassed(old: &Layer, was: &Value, look: &Value) -> Option<Value> {
     kept.map(Value::Object)
 }
 
+/// Why Scene::load() loaded no scene.
+#[derive(Debug)]
+pub enum SceneError {
+    /// The scene file would not read.
+    Read { path: String, error: io::Error },
+    /// The file is not JSON, breaks a rule of the scene format, or names a
+    /// file that won't load. The message says which.
+    Invalid(String),
+}
+
+impl std::fmt::Display for SceneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SceneError::Read { path, error } => write!(f, "{path}: {}", strerror(error)),
+            SceneError::Invalid(why) => f.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for SceneError {}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene {
     pub passes: Vec<Pass>,
@@ -3243,16 +3265,24 @@ impl Scene {
 
     /// Load a scene file. Its files resolve beside it, with the reach of a
     /// scene that its user runs.
-    pub fn load(path: &str) -> Result<Scene> {
+    pub fn load(path: &str) -> Result<Scene, SceneError> {
         Scene::load_in(path, None, Reach::Any)
     }
 
     /// Load a scene file whose files resolve in `dir`, else beside the file,
     /// as far as `reach` allows.
-    pub fn load_in(path: &str, dir: Option<&str>, reach: Reach) -> Result<Scene> {
-        let text = fs::read_to_string(path).map_err(|e| anyhow!("{path}: {}", strerror(&e)))?;
+    pub fn load_in(path: &str, dir: Option<&str>, reach: Reach) -> Result<Scene, SceneError> {
+        let text = fs::read_to_string(path).map_err(|error| SceneError::Read {
+            path: path.to_string(),
+            error,
+        })?;
+        Scene::parse_in(path, &text, dir, reach).map_err(|e| SceneError::Invalid(format!("{e:#}")))
+    }
+
+    /// load_in() of the scene file `path` that holds `text`.
+    fn parse_in(path: &str, text: &str, dir: Option<&str>, reach: Reach) -> Result<Scene> {
         let data: Value =
-            serde_json::from_str(&text).map_err(|e| anyhow!("{path}: invalid JSON: {e}"))?;
+            serde_json::from_str(text).map_err(|e| anyhow!("{path}: invalid JSON: {e}"))?;
         crate::sources::record(path);
         let abs = abspath(path);
         let base = match (dir, abs.rfind('/')) {

@@ -71,7 +71,7 @@ fn gpu(w: usize, h: usize) -> (MutexGuard<'static, ()>, Renderer) {
     );
     let mut errs = Vec::new();
     for dev in probe_dri_devices() {
-        match Renderer::new(w as i32, h as i32, 4, Some(&dev), false, false) {
+        match Renderer::builder(w as u32, h as u32).device(&dev).build() {
             Ok(r) => return (guard, r),
             Err(e) => errs.push(format!("{dev}: {e}")),
         }
@@ -2322,7 +2322,7 @@ fn slug_words_changed_many_times_draw_what_a_scene_built_with_them_draws() {
     let (_g, mut r) = gpu(256, 24);
     let mut fresh = probe_dri_devices()
         .iter()
-        .find_map(|d| Renderer::new(256, 24, 4, Some(d), false, false).ok())
+        .find_map(|d| Renderer::builder(256, 24).device(d).build().ok())
         .unwrap();
     render(&mut r, &pixel_pair("AV 42", "x"));
     for words in &steps {

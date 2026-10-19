@@ -853,15 +853,18 @@ impl RenderTarget for SharedRenderer {
 fn make_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
     let (w, h) = (console.hub.w, console.hub.h);
     let mut r = match card {
-        Some(card) => Renderer::on_card(card, w, h, console.rgb565)?,
-        None => Renderer::new(
-            w,
-            h,
-            console.components,
-            console.dri.as_deref(),
-            false,
-            false,
-        )?,
+        Some(card) => Renderer::builder(w as u32, h as u32)
+            .display(card)
+            .rgb565(console.rgb565)
+            .build()?,
+        None => {
+            let b = Renderer::builder(w as u32, h as u32).components(console.components as u32);
+            match &console.dri {
+                Some(dri) => b.device(dri),
+                None => b,
+            }
+            .build()?
+        }
     };
     if console.drop {
         r.set_drop(true)?;
@@ -2046,7 +2049,10 @@ pub fn run(opts: Options) -> Result<()> {
         .or_else(state::default_edits_dir);
     store.keep_in(state_dir, edits_dir);
     let size = size
-        .or_else(|| display.as_ref().map(Card::size))
+        .or_else(|| {
+            let (w, h) = display.as_ref()?.size();
+            Some((w as i32, h as i32))
+        })
         .unwrap_or(DEFAULT_SIZE);
     let mut console = Console::new(store);
     console.display = display.is_some();
@@ -2836,7 +2842,7 @@ mod tests {
     fn gpu(w: i32, h: i32) -> Renderer {
         let mut errs = Vec::new();
         for dev in crate::engine::probe_dri_devices() {
-            match Renderer::new(w, h, 4, Some(&dev), false, false) {
+            match Renderer::builder(w as u32, h as u32).device(&dev).build() {
                 Ok(r) => return r,
                 Err(e) => errs.push(format!("{dev}: {e}")),
             }

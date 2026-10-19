@@ -26,7 +26,7 @@ fn gpu(w: usize, h: usize) -> (MutexGuard<'static, ()>, Renderer) {
     );
     let mut errs = Vec::new();
     for dev in probe_dri_devices() {
-        match Renderer::new(w as i32, h as i32, 4, Some(&dev), false, false) {
+        match Renderer::builder(w as u32, h as u32).device(&dev).build() {
             Ok(r) => return (guard, r),
             Err(e) => errs.push(format!("{dev}: {e}")),
         }

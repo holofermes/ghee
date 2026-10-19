@@ -24,7 +24,7 @@ const H: usize = 800;
 fn gpu() -> Renderer {
     let mut errs = Vec::new();
     for dev in probe_dri_devices() {
-        match Renderer::new(W as i32, H as i32, 4, Some(&dev), false, false) {
+        match Renderer::builder(W as u32, H as u32).device(&dev).build() {
             Ok(r) => return r,
             Err(e) => errs.push(format!("{dev}: {e}")),
         }

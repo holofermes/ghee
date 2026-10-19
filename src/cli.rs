@@ -344,7 +344,8 @@ fn panel_of(a: &Ns, card: &mut Option<Card>) -> Result<Panel> {
         return Ok(Panel::None);
     }
     kms_named(a)?;
-    Ok(Panel::Kms(display_card(a, card)?.size()))
+    let (w, h) = display_card(a, card)?.size();
+    Ok(Panel::Kms((w as i32, h as i32)))
 }
 
 /// The card of --display in `card`, opened at the first call and held from
@@ -597,8 +598,18 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
     let controller: ControllerSlot =
         RefCell::new(process.map(|f| Box::new(f) as Box<dyn SceneController>));
     let mut r = match card {
-        Some(card) => Renderer::on_card(card, w, h, a.rgb565)?,
-        None => Renderer::new(w, h, components, dri.as_deref(), kms, a.rgb565)?,
+        Some(card) => Renderer::builder(w as u32, h as u32)
+            .display(card)
+            .rgb565(a.rgb565)
+            .build()?,
+        None => {
+            let b = Renderer::builder(w as u32, h as u32).components(components as u32);
+            match dri {
+                Some(dri) => b.device(dri),
+                None => b,
+            }
+            .build()?
+        }
     };
     if a.drop {
         r.set_drop(true)?;
@@ -1655,7 +1666,10 @@ fn smoke(args: &[&str]) -> Result<()> {
         Some(c) => c.parse()?,
         None => 3,
     };
-    let mut r = Renderer::new(64, 64, components, Some(dri), false, false)?;
+    let mut r = Renderer::builder(64, 64)
+        .components(components as u32)
+        .device(dri)
+        .build()?;
     let scene = Scene::of(vec![Pass::of(
         "main",
         "void main(){ gl_FragColor = vec4(0.25,0.5,0.75,1.0); }",

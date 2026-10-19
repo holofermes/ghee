@@ -739,7 +739,7 @@ mod tests {
         let guard = GPU.lock().unwrap_or_else(|e| e.into_inner());
         let mut errs = Vec::new();
         for dev in probe_dri_devices() {
-            match Renderer::new(64, 48, 4, Some(&dev), false, false) {
+            match Renderer::builder(64, 48).device(&dev).build() {
                 Ok(r) => return (guard, r),
                 Err(e) => errs.push(format!("{dev}: {e}")),
             }

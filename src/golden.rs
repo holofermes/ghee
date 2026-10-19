@@ -64,7 +64,9 @@ fn check_scene(
     dump: Option<&str>,
 ) -> Result<(Option<usize>, Vec<String>, String)> {
     let scene = Scene::load(&entry.path)?;
-    let mut r = Renderer::new(man.width, man.height, man.components, None, false, false)?;
+    let mut r = Renderer::builder(man.width as u32, man.height as u32)
+        .components(man.components as u32)
+        .build()?;
     if let Err(e) = r.setup(&scene) {
         bail!("setup failed: {e}");
     }

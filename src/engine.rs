@@ -832,25 +832,44 @@ pub fn probe_dri_cards() -> Vec<String> {
     }
 }
 
-/// A device node that its open refused, with the errno of that open.
+/// Why Card::open() opened no card.
 #[derive(Debug)]
-pub struct NodeError {
-    pub errno: i32,
-    message: String,
+pub enum CardError {
+    /// The card node named would not open, with the error of that open.
+    Node {
+        device: String,
+        error: std::io::Error,
+    },
+    /// No card that ghee tried drives a connected display. The message
+    /// names each card and why.
+    NoDisplay(String),
+    /// GL on the card runs in software: no render node of a GPU pairs with
+    /// it.
+    Software { device: String },
 }
 
-impl std::fmt::Display for NodeError {
+impl std::fmt::Display for CardError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
+        match self {
+            CardError::Node { device, error } => {
+                write!(f, "{device}: {}", crate::scene::strerror(error))
+            }
+            CardError::NoDisplay(why) => f.write_str(why),
+            CardError::Software { device } => write!(
+                f,
+                "GL on {device} runs in software; no hardware render node pairs with this card"
+            ),
+        }
     }
 }
 
-impl std::error::Error for NodeError {}
+impl std::error::Error for CardError {}
 
 /// A card node that drives a connected display, held open. The kernel puts
 /// its console back on the display at the card's last close, so the card
 /// stays open from the probe that finds the display to the renderer that
 /// draws on it, which takes it over.
+#[derive(Debug)]
 pub struct Card {
     device: String,
     size: (i32, i32),
@@ -862,14 +881,14 @@ impl Card {
     /// open, once GL on it runs on the GPU. The error says why no card
     /// opened: the card node's own error, no connected display, or GL in
     /// software.
-    pub fn open(dri_device: Option<&str>) -> Result<Card> {
+    pub fn open(dri_device: Option<&str>) -> Result<Card, CardError> {
         let card = Card::find(dri_device)?;
         card.check_renders()?;
         Ok(card)
     }
 
     /// Card::open() without the check of GL on the card.
-    fn find(dri_device: Option<&str>) -> Result<Card> {
+    fn find(dri_device: Option<&str>) -> Result<Card, CardError> {
         let named = dri_device.filter(|d| !d.is_empty());
         let devices = match named {
             Some(d) => vec![d.to_string()],
@@ -877,7 +896,12 @@ impl Card {
         };
         let mut why: Vec<String> = Vec::new();
         for device in devices {
-            let cdev = CString::new(device.as_str())?;
+            let Ok(cdev) = CString::new(device.as_str()) else {
+                return Err(CardError::Node {
+                    device,
+                    error: std::io::ErrorKind::InvalidInput.into(),
+                });
+            };
             let (mut w, mut h): (c_int, c_int) = (0, 0);
             let fd = unsafe { ffi::ghee_display_open(cdev.as_ptr(), &mut w, &mut h) };
             if fd >= 0 {
@@ -893,21 +917,15 @@ impl Card {
             // node's own open tells the two apart.
             let failed = fs::OpenOptions::new().read(true).write(true).open(&device);
             why.push(match failed {
-                Err(e) if named.is_some() => {
-                    return Err(NodeError {
-                        errno: e.raw_os_error().unwrap_or(0),
-                        message: format!("{device}: {}", crate::scene::strerror(&e)),
-                    }
-                    .into());
-                }
+                Err(error) if named.is_some() => return Err(CardError::Node { device, error }),
                 Err(e) => format!("{device}: {}", crate::scene::strerror(&e)),
                 Ok(_) => format!("{device}: no connected display"),
             });
         }
-        match named {
-            Some(_) => bail!("{}", why.join("")),
-            None => bail!("no connected display ({})", why.join("; ")),
-        }
+        Err(CardError::NoDisplay(match named {
+            Some(_) => why.join(""),
+            None => format!("no connected display ({})", why.join("; ")),
+        }))
     }
 
     /// The card node.
@@ -916,8 +934,8 @@ impl Card {
     }
 
     /// The mode size of the display, as (width, height).
-    pub fn size(&self) -> (i32, i32) {
-        self.size
+    pub fn size(&self) -> (u32, u32) {
+        (self.size.0 as u32, self.size.1 as u32)
     }
 
     /// True when GL on this card runs on the GPU, as display_renders() says.
@@ -927,14 +945,13 @@ impl Card {
 
     /// Fail unless GL on this card runs on the GPU, as renders() says. ghee
     /// refuses to draw a display through software GL.
-    pub fn check_renders(&self) -> Result<()> {
+    pub fn check_renders(&self) -> Result<(), CardError> {
         if self.renders() {
             return Ok(());
         }
-        bail!(
-            "GL on {} runs in software; no hardware render node pairs with this card",
-            self.device
-        )
+        Err(CardError::Software {
+            device: self.device.clone(),
+        })
     }
 }
 
@@ -1139,9 +1156,9 @@ fn size_repr(size: ArraySize) -> String {
 /// A worker that renders in its own thread creates its own Renderer there.
 /// The raw handle keeps this type off Send.
 pub struct Renderer {
-    pub width: i32,
-    pub height: i32,
-    pub components: i32,
+    pub(crate) width: i32,
+    pub(crate) height: i32,
+    pub(crate) components: i32,
     /// The scene of the last setup, with the live values set since.
     scene: std::cell::RefCell<Option<Scene>>,
     /// The last setup() error text. "" means the setup succeeded.
@@ -1152,7 +1169,7 @@ pub struct Renderer {
     error_line: Option<i64>,
     /// The pass holding the error. Common is the scene's common block.
     error_pass: Option<ErrorPass>,
-    pub display: bool,
+    display: bool,
     /// The card node that the display mode scans out on.
     card: Option<String>,
     /// The display's backlight before the first set_brightness(), which
@@ -1289,22 +1306,88 @@ pub struct Renderer {
     handle: *mut ffi::GheeScene,
 }
 
-impl Renderer {
-    pub fn new(
-        width: i32,
-        height: i32,
-        components: i32,
-        dri_device: Option<&str>,
-        display: bool,
-        rgb565: bool,
-    ) -> Result<Renderer> {
-        Renderer::open(width, height, components, dri_device, display, rgb565, None)
+/// The settings of a Renderer that Renderer::builder() opens.
+#[derive(Debug)]
+pub struct RendererBuilder {
+    width: u32,
+    height: u32,
+    components: u32,
+    device: Option<PathBuf>,
+    card: Option<Card>,
+    rgb565: bool,
+}
+
+impl RendererBuilder {
+    /// Read the frames back as RGB with 3, or as RGBA with 4, the default.
+    pub fn components(mut self, components: u32) -> RendererBuilder {
+        self.components = components;
+        self
     }
 
-    /// A renderer that scans out to the display of `card` at width x
-    /// height, as Renderer::new does with display, on the open card.
-    pub fn on_card(card: Card, width: i32, height: i32, rgb565: bool) -> Result<Renderer> {
-        Renderer::open(width, height, 4, None, true, rgb565, Some(card))
+    /// Render on the DRI node `device`, such as `/dev/dri/renderD128`,
+    /// instead of `$GHEE_DRI` or the first render node that opens.
+    pub fn device(mut self, device: impl Into<PathBuf>) -> RendererBuilder {
+        self.device = Some(device.into());
+        self
+    }
+
+    /// Scan the frames out to the display of `card`, from Card::open(). A
+    /// display reads RGBA back.
+    pub fn display(mut self, card: Card) -> RendererBuilder {
+        self.card = Some(card);
+        self
+    }
+
+    /// Scan the display out in RGB565.
+    pub fn rgb565(mut self, on: bool) -> RendererBuilder {
+        self.rgb565 = on;
+        self
+    }
+
+    /// Open the renderer.
+    pub fn build(self) -> Result<Renderer> {
+        let side = |n: u32| i32::try_from(n).map_err(|_| anyhow!("a side of {n} pixels"));
+        let (width, height) = (side(self.width)?, side(self.height)?);
+        // The engine reads back GL_RGB for 3 components and GL_RGBA otherwise.
+        // Any other count sizes the frame buffer under what the engine writes.
+        let components = match (self.components, &self.card) {
+            (_, Some(_)) => 4,
+            (n @ (3 | 4), None) => n as i32,
+            (n, None) => bail!("components takes 3 or 4, got {n}"),
+        };
+        let device = match &self.device {
+            Some(d) => Some(
+                d.to_str()
+                    .ok_or_else(|| anyhow!("{}: not a UTF-8 path", d.display()))?,
+            ),
+            None => None,
+        };
+        Renderer::open(width, height, components, device, self.rgb565, self.card)
+    }
+}
+
+impl Renderer {
+    /// A renderer of frames `width` by `height` pixels, which the
+    /// RendererBuilder's own calls set up further before build() opens it.
+    pub fn builder(width: u32, height: u32) -> RendererBuilder {
+        RendererBuilder {
+            width,
+            height,
+            components: 4,
+            device: None,
+            card: None,
+            rgb565: false,
+        }
+    }
+
+    /// The size of the frames, as (width, height).
+    pub fn size(&self) -> (u32, u32) {
+        (self.width as u32, self.height as u32)
+    }
+
+    /// The bytes of a pixel in a frame: 3 for RGB, 4 for RGBA.
+    pub fn components(&self) -> u32 {
+        self.components as u32
     }
 
     fn open(
@@ -1312,16 +1395,10 @@ impl Renderer {
         height: i32,
         components: i32,
         dri_device: Option<&str>,
-        display: bool,
         rgb565: bool,
         card: Option<Card>,
     ) -> Result<Renderer> {
-        // The engine reads back GL_RGB for 3 components and GL_RGBA otherwise.
-        // Any other count sizes the frame buffer under what the engine writes.
-        assert!(
-            components == 3 || components == 4,
-            "components must be 3 or 4, got {components}"
-        );
+        let display = card.is_some();
         let mut r = Renderer {
             width,
             height,
@@ -1392,13 +1469,7 @@ impl Renderer {
             handle: ptr::null_mut(),
         };
         let device = dri_device.filter(|d| !d.is_empty());
-        if display {
-            // Scanout to a KMS connector needs a card node and DRM master.
-            // A render node offers neither.
-            let card = match card {
-                Some(card) => card,
-                None => Card::open(device.map(str::to_string).or_else(env_dri).as_deref())?,
-            };
+        if let Some(card) = card {
             let (dev, fd) = (card.device, card.fd.into_raw_fd());
             let cdev = CString::new(dev.as_str())?;
             let mut err: *mut c_char = ptr::null_mut();
@@ -5705,6 +5776,12 @@ mod tests {
         GPU.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// A renderer on the display of card node `dev`, at `w` x `h`.
+    fn on_display(dev: &str, w: i32, h: i32) -> Result<Renderer> {
+        let card = Card::open(Some(dev))?;
+        Renderer::builder(w as u32, h as u32).display(card).build()
+    }
+
     /// The error text of a setup, "" for one that built.
     fn said(built: Result<(), SetupError>) -> String {
         built.err().map_or_else(String::new, |e| e.to_string())
@@ -5720,14 +5797,11 @@ mod tests {
         let guard = lock();
         let mut errs = Vec::new();
         for dev in probe_dri_devices() {
-            match Renderer::new(
-                w as i32,
-                h as i32,
-                COMPONENTS as i32,
-                Some(&dev),
-                false,
-                false,
-            ) {
+            match Renderer::builder(w as u32, h as u32)
+                .components(COMPONENTS as u32)
+                .device(&dev)
+                .build()
+            {
                 Ok(r) => return (guard, r),
                 Err(e) => errs.push(format!("{dev}: {e}")),
             }
@@ -5863,10 +5937,10 @@ mod tests {
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
         let before_the_master_attempt = ["cannot open DRI device", "eglInitialize failed"];
         // An idle host holds no DRM master. This test takes the master itself.
-        let holder = Renderer::new(w, h, 4, Some(&dev), true, false);
+        let holder = on_display(&dev, w, h);
         let msg = match &holder {
             Err(e) => e.to_string(),
-            Ok(_) => match Renderer::new(w, h, 4, Some(&dev), true, false) {
+            Ok(_) => match on_display(&dev, w, h) {
                 Err(e) => e.to_string(),
                 Ok(_) => panic!("{dev}: two display renderers at once"),
             },
@@ -5886,7 +5960,7 @@ mod tests {
     fn a_display_presents_frames_back_to_back_through_a_blank_with_no_error() {
         let _g = lock();
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
-        let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
+        let mut r = on_display(&dev, w, h).unwrap();
         r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
             .unwrap();
         for _ in 0..30 {
@@ -5913,7 +5987,7 @@ mod tests {
         // The probe's open of the card outlives the Card, so a renderer that
         // opened the card again would find the DRM master taken.
         let probe = card.fd.try_clone().unwrap();
-        let mut r = Renderer::on_card(card, w, h, false).unwrap();
+        let mut r = Renderer::builder(w, h).display(card).build().unwrap();
         r.setup(&flat_scene()).unwrap();
         r.present(None, None).unwrap();
         assert_eq!(r.last_error(), "");
@@ -5929,7 +6003,7 @@ mod tests {
     fn a_panels_present_returns_once_the_panel_took_its_frame() {
         let _g = lock();
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
-        let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
+        let mut r = on_display(&dev, w, h).unwrap();
         r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
             .unwrap();
         for n in 1..=30 {
@@ -5947,7 +6021,7 @@ mod tests {
     fn a_present_with_drop_returns_before_the_display_takes_its_frame_and_the_newest_goes_on() {
         let _g = lock();
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
-        let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
+        let mut r = on_display(&dev, w, h).unwrap();
         r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
             .unwrap();
         r.set_drop(true).unwrap();
@@ -5969,7 +6043,7 @@ mod tests {
     fn a_display_takes_no_frame_that_changes_nothing_and_takes_the_next_change() {
         let _g = lock();
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
-        let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
+        let mut r = on_display(&dev, w, h).unwrap();
         let sc = scene_of(json!([{"name": "main",
             "params": {"level": {"type": "float", "value": 0.5}},
             "fragment": "void main(){ gl_FragColor = vec4(level, 0.25, 0.75, 1.0); }"}]));
@@ -7429,11 +7503,21 @@ mod tests {
         drop(r);
         let dev = probe_dri_devices()
             .into_iter()
-            .find(|d| Renderer::new(8, 8, 3, Some(d), false, false).is_ok())
+            .find(|d| {
+                Renderer::builder(8, 8)
+                    .components(3)
+                    .device(d)
+                    .build()
+                    .is_ok()
+            })
             .unwrap();
         let mut rgb = Vec::new();
         for keep in [false, true] {
-            let mut r3 = Renderer::new(8, 8, 3, Some(&dev), false, false).unwrap();
+            let mut r3 = Renderer::builder(8, 8)
+                .components(3)
+                .device(&dev)
+                .build()
+                .unwrap();
             r3.set_alpha(keep);
             r3.setup(&sc).unwrap();
             r3.set_time(Some(0.0));
@@ -7565,10 +7649,19 @@ mod tests {
         let _g = lock();
         let dev = probe_dri_devices()
             .into_iter()
-            .find(|d| Renderer::new(8, 8, components, Some(d), false, false).is_ok())
+            .find(|d| {
+                Renderer::builder(8, 8)
+                    .components(components as u32)
+                    .device(d)
+                    .build()
+                    .is_ok()
+            })
             .expect("no GL device opens");
-        let mut r =
-            Renderer::new(W as i32, H as i32, components, Some(&dev), false, false).unwrap();
+        let mut r = Renderer::builder(W as u32, H as u32)
+            .components(components as u32)
+            .device(&dev)
+            .build()
+            .unwrap();
         r.set_alpha(alpha);
         let made = unsafe { ffi::ghee_read_linear(r.handle(), linear) };
         let mut f = Vec::new();
@@ -8222,7 +8315,9 @@ mod tests {
         r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
-        let mut other = Renderer::new(16, 16, COMPONENTS as i32, None, false, false)
+        let mut other = Renderer::builder(16, 16)
+            .components(COMPONENTS as u32)
+            .build()
             .expect("a second renderer on the GPU");
         other.setup(&sc).unwrap();
         other.render(None).unwrap();

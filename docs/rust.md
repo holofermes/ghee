@@ -36,9 +36,7 @@ use ghee::scene::{ArraySize, Scene};
 
 fn main() -> anyhow::Result<()> {
     let scene = Scene::load("bars.scene.json")?;
-    // width: i32, height: i32, components: i32,
-    // dri_device: Option<&str> (None probes), display: bool, rgb565: bool
-    let mut r = Renderer::new(320, 240, 4, None, false, false)?;
+    let mut r = Renderer::builder(320, 240).build()?;
     r.setup(&scene)?;
     let frame = r.render(Some(&mut |_name, size| match size {
         ArraySize::Linear(n) => Feed::Data(vec![0.5; n as usize]),
@@ -54,6 +52,12 @@ To find where a scene fails, match the `SetupError` that `setup` returns.
 refused, and `SetupError::Scene` says what the scene asks for that the
 renderer can't hold. After a failed `setup`, the scene before it keeps
 drawing. Create and use a `Renderer` on one thread: GL is thread-affine.
+
+To read the frames back as RGB, call `.components(3)` on the builder before
+`build`. To render on one GPU of several, pass its node to `.device`, such
+as `.device("/dev/dri/renderD129")`. To scan the frames out to a display,
+pass its `Card` to `.display` ([Run the console on a
+display](#run-the-console-on-a-display) opens one).
 
 Give an array's data as `Feed::Data` for floats, or as `Feed::DataU8` for
 bytes, each one read as byte / 255. Give `Feed::Unchanged` when the array
@@ -74,7 +78,7 @@ use ghee::scene::Scene;
 use serde_json::json;
 
 fn main() -> anyhow::Result<()> {
-    let mut r = Renderer::new(128, 32, 4, None, false, false)?;
+    let mut r = Renderer::builder(128, 32).build()?;
     r.setup(&Scene::load("bars.scene.json")?)?;
     let bar = json!({"name": "bar", "shape": "rect", "x": 0, "y": 28, "width": 64, "height": 4});
     r.add_layer("main", 0, &bar)?;

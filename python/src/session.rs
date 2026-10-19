@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use ghee::console::hub::{frame_format, gpu_caps, HwLane, RawFrame};
 use ghee::draw::Call;
 use ghee::engine::{
-    quarter_turns, Card, Feed, Given, NodeError, Refused, Renderer, SetupError, DEFAULT_SIZE,
+    quarter_turns, Card, CardError, Feed, Given, Refused, Renderer, SetupError, DEFAULT_SIZE,
 };
 use ghee::filters::apply_filters;
 use ghee::layer::{is_image_file, Address, Layer};
@@ -84,7 +84,10 @@ fn system_fault(e: anyhow::Error) -> Fault {
 
 fn device_fault(e: anyhow::Error) -> Fault {
     Fault {
-        kind: Kind::Device(e.downcast_ref::<NodeError>().map(|n| n.errno)),
+        kind: Kind::Device(match e.downcast_ref::<CardError>() {
+            Some(CardError::Node { error, .. }) => error.raw_os_error(),
+            _ => None,
+        }),
         message: format!("{e:#}"),
     }
 }
@@ -304,11 +307,13 @@ pub fn display_size(dri: Option<&str>) -> Option<(i32, i32)> {
     let mut held = PROBED.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((asked, card)) = held.as_ref() {
         if asked.as_deref() == dri {
-            return Some(card.size());
+            let (w, h) = card.size();
+            return Some((w as i32, h as i32));
         }
     }
     let card = Card::open(dri).ok()?;
-    let size = card.size();
+    let (w, h) = card.size();
+    let size = (w as i32, h as i32);
     *held = Some((dri.map(str::to_string), card));
     Some(size)
 }
@@ -327,7 +332,7 @@ pub fn probed(dri: Option<&str>) -> Option<Card> {
 fn display_card(dri: Option<&str>) -> Outcome<Card> {
     match probed(dri) {
         Some(card) => Ok(card),
-        None => Card::open(dri).map_err(device_fault),
+        None => Card::open(dri).map_err(|e| device_fault(e.into())),
     }
 }
 
@@ -335,7 +340,10 @@ fn display_card(dri: Option<&str>) -> Outcome<Card> {
 /// its mode, which wins over the host's own size.
 fn geometry(size: Option<(i32, i32)>, card: Option<&Card>) -> ((i32, i32), i32) {
     match card {
-        Some(card) => (card.size(), 4),
+        Some(card) => {
+            let (w, h) = card.size();
+            ((w as i32, h as i32), 4)
+        }
         None => (size.unwrap_or(DEFAULT_SIZE), 4),
     }
 }
@@ -411,14 +419,23 @@ impl Session {
             Sink::None => None,
         };
         let ((w, h), components) = geometry(size, card.as_ref());
-        let kms = matches!(sink, Sink::Kms);
         let rgb565 = opts
             .iter()
             .find(|(k, _)| k == "rgb565")
             .is_some_and(|(_, v)| truthy(v));
         let mut renderer = match card {
-            Some(card) => Renderer::on_card(card, w, h, rgb565),
-            None => Renderer::new(w, h, components, dri.as_deref(), kms, rgb565),
+            Some(card) => Renderer::builder(w as u32, h as u32)
+                .display(card)
+                .rgb565(rgb565)
+                .build(),
+            None => {
+                let b = Renderer::builder(w as u32, h as u32).components(components as u32);
+                match &dri {
+                    Some(dri) => b.device(dri),
+                    None => b,
+                }
+                .build()
+            }
         }
         .map_err(device_fault)?;
         if drop {
@@ -502,11 +519,12 @@ impl Session {
     }
 
     pub fn size(&self) -> (i32, i32) {
-        (self.renderer.width, self.renderer.height)
+        let (w, h) = self.renderer.size();
+        (w as i32, h as i32)
     }
 
     pub fn components(&self) -> i32 {
-        self.renderer.components
+        self.renderer.components() as i32
     }
 
     /// The form that the frames' kept alpha takes on the way out, None when
@@ -573,7 +591,7 @@ impl Session {
         if let Some(hub) = self.console.as_ref().map(Console::hub) {
             self.h264.mirror(hub, &self.renderer);
         }
-        let components = self.renderer.components;
+        let components = self.renderer.components() as i32;
         self.drawn = Some(self.frame);
         self.frame += 1;
         let end = monotonic();
@@ -613,7 +631,8 @@ impl Session {
             buf,
             ..
         } = self;
-        let (w, h) = (renderer.width, renderer.height);
+        let (w, h) = renderer.size();
+        let (w, h) = (w as i32, h as i32);
         // The provider answers each declared array once. An array with no feed
         // keeps what the texture holds.
         let mut provider = |name: &str, _size: ArraySize| -> Feed {
@@ -708,7 +727,7 @@ impl Session {
         let index = self.drawn.unwrap_or_default() as i64;
         let path = expand_pattern(path, index).map_err(scene_fault)?;
         let (width, height) = self.size();
-        let components = self.renderer.components;
+        let components = self.renderer.components() as i32;
         let lower = path.to_ascii_lowercase();
         let bytes = if lower.ends_with(".png") {
             encode_png(Frame {

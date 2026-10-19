@@ -46,10 +46,11 @@ as a still pattern of dots. Small letters break up.
 
 ### frc
 
-To show soft greys on a 1-bit panel that takes about 200 frames a second,
-add `frc`. Each pixel blinks on and off fast enough to read as grey. It
-shows up to 16 greys. An SSD1306 reaches that rate on I2C at 1 MHz, the bus
-speed that [`ghee overlay ssd1306`](displays.md#setting-up-a-panel) sets.
+To show soft greys on a 1-bit panel, add `frc`. Each pixel blinks on and
+off fast enough to read as grey. It shows up to 16 greys, and holds
+steadiest at about 200 frames a second. On a Pi Zero 2 W, an SSD1306 runs
+`frc` at about 110 to 130 frames a second on I2C at 1 MHz, the bus speed
+that [`ghee overlay ssd1306`](displays.md#setting-up-a-panel) sets.
 
 | Its 16 frames, slowed down | What the eye sees at 200 frames a second |
 | --- | --- |

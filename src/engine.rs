@@ -6863,9 +6863,11 @@ mod tests {
         crate::usage::client(&text).memory
     }
 
-    /// Run `n` rounds of setups on `r`, each of two scenes that draw frames
-    /// that nothing reads before the next setup replaces them, as a console
-    /// does between switches, and of rebuilds, as its edits make them.
+    /// Run `n` rounds of setups on `r`, each of two scenes, as a console
+    /// does between switches, and of rebuilds, as its edits make them. Each
+    /// scene's last frame is read back, as a console reads its preview: the
+    /// read waits for the GPU, so the buffers that the next setup frees are
+    /// idle, and the driver's cache hands them on however busy the GPU is.
     fn setup_rounds(r: &mut Renderer, n: usize) {
         let fed = scene_of(json!([
             {"name": "buf", "fragment": FLAT},
@@ -6882,7 +6884,7 @@ mod tests {
                 };
                 assert_eq!(built.unwrap(), "");
                 r.draw(None).unwrap();
-                r.draw(None).unwrap();
+                r.render(None).unwrap();
             }
         }
     }

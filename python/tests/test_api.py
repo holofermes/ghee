@@ -64,6 +64,22 @@ def test_a_scene_loads_from_a_path_a_string_or_a_dict(tmp_path):
             assert pixel(h) == (255, 0, 0, 255)
 
 
+def test_a_pass_draws_the_same_in_glsl_es_1_and_3():
+    es1 = "void main(){ gl_FragColor = vec4(uv, fwidth(uv.x) * 4.0, 1.0); }"
+    es3 = (
+        "#version 300 es\nout vec4 c;\n"
+        "void main(){ c = vec4(uv, fwidth(uv.x) * 4.0, 1.0); }"
+    )
+    frames = []
+    for fragment in (es1, es3):
+        doc = {"version": 1, "passes": [{"name": "main", "fragment": fragment}]}
+        with ghee.open(doc, width=8, height=4) as h:
+            h.frame()
+            frames.append(h.pixels())
+    assert frames[0] == frames[1]
+    assert frames[0][2] == 128
+
+
 def test_a_param_reaches_the_shader_live():
     with ghee.open(RED, width=8, height=8) as h:
         h.feed("level", LEVEL)

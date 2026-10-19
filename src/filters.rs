@@ -196,26 +196,85 @@ impl Filter {
         Value::Object(m)
     }
 
-    /// The filters of `--filters`, separated by commas. Each is a name, then
-    /// `:param=value` for each param that it sets, as in `frc:calm=8`. A
-    /// value that reads as JSON is that value, and any other is a string.
+    /// The filters of `--filters`, in ffmpeg's filtergraph syntax: filters
+    /// separated by commas, each a name, then `=` and its `param=value`
+    /// pairs separated by colons, as in `frc=calm=8:coarse=1`. A backslash
+    /// takes the next character as it is, and so does text between single
+    /// quotes. A value that reads as JSON is that value, and any other is a
+    /// string.
     pub fn parse_list(text: &str) -> Result<Vec<Filter>> {
         let mut out = Vec::new();
-        for item in text.split(',').map(str::trim).filter(|i| !i.is_empty()) {
-            let mut parts = item.split(':');
+        for item in split_unquoted(text, ',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let (name, args) = match first_unquoted(item, '=') {
+                Some(at) => (&item[..at], &item[at + 1..]),
+                None => (item, ""),
+            };
             let mut entry = Map::new();
-            entry.insert("name".to_string(), Value::from(parts.next().unwrap_or("")));
-            for set in parts {
-                let Some((k, v)) = set.split_once('=') else {
+            entry.insert("name".to_string(), Value::from(unquote(name.trim())));
+            for set in split_unquoted(args, ':')
+                .iter()
+                .filter(|_| !args.is_empty())
+            {
+                let Some(at) = first_unquoted(set, '=') else {
                     bail!("filter '{item}': '{set}' needs the form param=value");
                 };
-                let v = serde_json::from_str(v).unwrap_or_else(|_| Value::from(v));
-                entry.insert(k.to_string(), v);
+                let v = unquote(&set[at + 1..]);
+                let v = serde_json::from_str(&v).unwrap_or(Value::from(v));
+                entry.insert(unquote(&set[..at]), v);
             }
             out.push(Filter::from_json(&Value::Object(entry))?);
         }
         Ok(out)
     }
+}
+
+/// The byte offset of the first `sep` in `text` outside quotes and escapes.
+fn first_unquoted(text: &str, sep: char) -> Option<usize> {
+    let (mut quoted, mut escaped) = (false, false);
+    for (i, c) in text.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if !quoted => escaped = true,
+            '\'' => quoted = !quoted,
+            c if c == sep && !quoted => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `text` cut at each `sep` outside quotes and escapes, the quotes and
+/// escapes kept.
+fn split_unquoted(text: &str, sep: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = first_unquoted(rest, sep) {
+        out.push(rest[..at].to_string());
+        rest = &rest[at + sep.len_utf8()..];
+    }
+    out.push(rest.to_string());
+    out
+}
+
+/// `text` with its quotes and escapes taken out.
+fn unquote(text: &str) -> String {
+    let (mut out, mut quoted, mut escaped) = (String::new(), false, false);
+    for c in text.chars() {
+        match c {
+            _ if escaped => {
+                out.push(c);
+                escaped = false;
+            }
+            '\\' if !quoted => escaped = true,
+            '\'' => quoted = !quoted,
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The filters of `first`, then those of `later`. A filter of `later` that
@@ -1218,25 +1277,30 @@ mod tests {
     }
 
     #[test]
-    fn the_command_line_writes_a_filter_s_values_after_colons() {
-        let got = Filter::parse_list("frc:calm=8:coarse=1, dither,,").unwrap();
+    fn the_command_line_writes_filters_in_ffmpegs_filtergraph_syntax() {
+        // ffmpeg-filters(1), "Filtergraph syntax" and "Notes on filtergraph
+        // escaping"
+        let got =
+            Filter::parse_list(r"frc=calm=8:coarse=1, dither,,invert=label='a,b\:c':note=x\,y\'z")
+                .unwrap();
         let want: Vec<Filter> = [
             json!({"name": "frc", "calm": 8, "coarse": 1}),
             json!("dither"),
+            json!({"name": "invert", "label": r"a,b\:c", "note": "x,y'z"}),
         ]
         .iter()
         .map(|v| Filter::from_json(v).unwrap())
         .collect();
         assert_eq!(got, want);
-        let e = Filter::parse_list("frc:calm").unwrap_err();
+        let e = Filter::parse_list("frc=calm").unwrap_err();
         assert_eq!(
             e.to_string(),
-            "filter 'frc:calm': 'calm' needs the form param=value"
+            "filter 'frc=calm': 'calm' needs the form param=value"
         );
         // A later filter of the same name sets its values in the earlier one's place.
-        let first = Filter::parse_list("frc:calm=8,dither").unwrap();
-        let later = Filter::parse_list("dither:levels=4,frc:coarse=1,frc256").unwrap();
-        let both = Filter::parse_list("frc:calm=8:coarse=1,dither:levels=4,frc256").unwrap();
+        let first = Filter::parse_list("frc=calm=8,dither").unwrap();
+        let later = Filter::parse_list("dither=levels=4,frc=coarse=1,frc256").unwrap();
+        let both = Filter::parse_list("frc=calm=8:coarse=1,dither=levels=4,frc256").unwrap();
         assert_eq!(chain(&first, &later), both);
     }
 

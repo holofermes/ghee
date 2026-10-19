@@ -84,8 +84,10 @@ still on a panel that takes about 106 frames a second:
 "filters": [{ "name": "frc", "calm": 8 }]
 ```
 
-On the command line, put each setting after the name, with a colon before
-each, as in `--filters frc:calm=8:coarse=1`. From Python, give
+On the command line, write the filters in ffmpeg's [filtergraph
+syntax](https://ffmpeg.org/ffmpeg-filters.html#Filtergraph-syntax): the
+name, `=`, then the settings separated by colons, and a comma between
+filters, as in `--filters frc=calm=8:coarse=1,dither`. From Python, give
 `ghee.Scene` the same object. In the console, change a setting on the
 filter's pass.
 

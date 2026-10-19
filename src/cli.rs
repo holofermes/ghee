@@ -1309,8 +1309,8 @@ struct RenderArgs {
 
     #[arg(
         long,
-        help = "comma-separated filters applied after the scene's own, each a name and \
-                any settings after colons, e.g. frc:calm=8"
+        help = "filters applied after the scene's own, in ffmpeg's filtergraph syntax, \
+                e.g. frc=calm=8:coarse=1,dither"
     )]
     filters: Option<String>,
 
@@ -2441,7 +2441,7 @@ mod tests {
         assert_eq!(scene.passes[1].name, "dither");
         assert!(process.is_none()); // a JSON scene feeds itself
         let (scene, _) = scene_of(
-            &ns(&["render", &path, "--filters", "dither:levels=4,frc:calm=8"]),
+            &ns(&["render", &path, "--filters", "dither=levels=4,frc=calm=8"]),
             &mut None,
         )
         .unwrap();
@@ -2451,12 +2451,12 @@ mod tests {
             (serde_json::json!(4.0), serde_json::json!(8.0))
         );
         let e = failure(scene_of(
-            &ns(&["render", &path, "--filters", "frc:calm"]),
+            &ns(&["render", &path, "--filters", "frc=calm"]),
             &mut None,
         ));
         assert_eq!(
             e,
-            "render: --filters: filter 'frc:calm': 'calm' needs the form param=value"
+            "render: --filters: filter 'frc=calm': 'calm' needs the form param=value"
         );
         let e = failure(scene_of(
             &ns(&["render", &path, "--filters", "nope"]),

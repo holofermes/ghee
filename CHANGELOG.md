@@ -95,7 +95,7 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   ([Filters](docs/filters.md)).
 - Start a filter at settings of your own with an entry such as
   `{"name": "frc", "calm": 8}` in a scene's `filters`, or with
-  `--filters frc:calm=8` ([Changing a filter's
+  `--filters frc=calm=8` ([Changing a filter's
   settings](docs/filters.md#changing-a-filters-settings)).
 - Keep transparency in the output with `--alpha`, premultiplied or
   unpremultiplied.

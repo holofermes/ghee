@@ -81,9 +81,10 @@ ghee render bars.py --display kms
 ## Running one
 
 Binaries and scripts need the execute bit (`chmod +x`). Without it, ghee
-stops with `no executable bit, and a procedural scene must be executable
-(chmod +x)`. A file whose name ends in `.scene.json` is always a scene file,
-whatever its bits.
+stops with `no scene at bars: need a .scene.json or an executable scene`
+for a program named `bars`, and with `bars.py: no executable bit, and a
+procedural scene must be executable (chmod +x)` for `bars.py`. A file whose
+name ends in `.scene.json` is always a scene file, whatever its bits.
 
 ghee finds a program the same way it finds a scene file ([Where ghee finds a
 scene](scenes.md#where-ghee-finds-a-scene)), so `ghee render bars` finds
@@ -226,6 +227,10 @@ written yet. The next tick carries their params, `frame` jumps, and `dt`
 covers the whole gap. A program that never reads stdin gets no ticks,
 writes its messages on its own clock, and ghee never waits on it.
 
+Under `ghee serve` with no display, ghee draws a frame only while a page or
+a stream watches, or for a request that changes the scene or asks for
+`/frame.png`, so the program gets a tick only then.
+
 #### Params in a tick
 
 When someone changes a param in the [console](console.md), or through
@@ -295,7 +300,8 @@ each mistake:
 - a param that the scene doesn't declare
 - a value of the wrong type, or too few or too many values
 - a layer or a pass that the scene doesn't have
-- JSON that holds no JSON Patch, or an operation that names no layer
+- JSON that holds no JSON Patch, or a patch that fails ([Changing
+  layers](#changing-layers))
 
 ```
   careful  bars.py: param 'nope' is not a param this scene declares, so it changes nothing
@@ -306,8 +312,10 @@ each mistake:
 To add, change, move or take out layers, send kind 6 with an [RFC
 6902](https://www.rfc-editor.org/rfc/rfc6902) JSON Patch. Its document is
 the scene's layers: an object of each pass's name and the list of its
-layers, in the order that they draw. `/main/2` is the third layer of pass
-`main`, `/main/-` the end of its list, `/main/2/x` a key of that layer, and
+layers, in the order that they draw, each layer as a scene file writes it,
+with the keys at their defaults left out. `""` is the whole document,
+`/main` the layers of pass `main`, `/main/2` the third of them, `/main/-`
+the end of its list, `/main/2/x` a key of that layer, and
 `/main/2/glow/strength` a field of its effect. This patch adds a text layer
 as the first of `main`, moves the layer at 2 to the end, and puts the `x`
 of the layer at 1 back to its default:
@@ -318,14 +326,26 @@ of the layer at 1 back to its default:
  {"op": "remove", "path": "/main/1/x"}]
 ```
 
-A `null` value puts a key back to its default, as `remove` does. A
-`replace` of a whole layer gives it the keys of the value. A key that the
+The operations are `add`, `remove`, `replace`, `move`, `copy` and `test`.
+To set a key, use `add`. `replace`, `remove`, and the `from` of `move` and
+`copy` need the key to be there, so they fail on a key at its default. A
+`null` value puts a key back to its default, as `remove` does.
+
+A `replace` of a whole layer gives it the keys of the value. A key that the
 value leaves out keeps the value from the
 [console](console.md#what-a-program-locks), else the scene's own value for a
-layer that the scene declares, else takes its default. A layer keeps its
-name, and moves within its own pass. ghee applies the operations in order,
-and stops at the first one that it refuses, or at a `test` that fails. The
-operations before it stay.
+layer that the scene declares, else takes its default. A layer of the scene
+keeps its name, and moves within its own pass. A pass stays in the scene.
+
+ghee applies the patch whole or not at all, as RFC 6902 does. The
+operations run in order, and ghee checks the layers' names on the result,
+so a `copy` of a layer can take a new name in a later operation. When an
+operation fails, or a `test` finds another value, the patch changes
+nothing, and ghee prints the operation's place in the patch and why:
+
+```
+  careful  wire: kind 6 operation 1 at '/main/0/name': the test found "floor", so the patch changes nothing
+```
 
 ### Checking the wire
 

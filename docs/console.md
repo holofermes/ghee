@@ -128,7 +128,8 @@ out with `..`, fails to load there, even though `ghee render` loads it.
 ## What a program locks
 
 When a [procedural scene](procedural.md) runs, the console locks each param
-and layer key that its program sets.
+and layer key that its program sets. A key stays locked until the program
+ends, after the program puts it back to its default too.
 
 When your Python program serves the console, with
 `ghee.open(serve=...)`, the console locks each param and layer key that the

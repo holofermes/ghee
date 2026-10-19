@@ -235,8 +235,10 @@ float unpack16(vec2 e) {
 
 A feedback pass changes its picture once a frame, so its trail is shorter
 at a higher frame rate. On a display, ghee draws at the display's pace, and
-in the console it draws as fast as it can. To keep the same trail
-everywhere, set the rate with `--fps`, such as `--fps 30`.
+in the console it draws as fast as it can while a page or a stream watches.
+Under `ghee serve` with no display and nobody watching, ghee draws a frame
+only for a request that changes the scene or asks for `/frame.png`. To keep
+the same trail everywhere, set the rate with `--fps`, such as `--fps 30`.
 
 ### Size and sampling
 

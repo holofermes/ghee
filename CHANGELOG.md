@@ -117,8 +117,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Keep transparency in the output with `--alpha`. Raw frames take colour
   premultiplied or unpremultiplied, and a PNG takes it unpremultiplied.
 - Move ghee's cache with `$GHEE_CACHE`.
-- Add, change, move and remove layers from a scene program with a JSON
-  Patch in message kind 6.
+- Add, change, move and remove layers from a scene program with an RFC
+  6902 JSON Patch in message kind 6. A patch applies whole or not at all.
 - Run a scene program in lockstep with `"lockstep": true` in its scene
   ([Procedural scenes](docs/procedural.md)).
 - Pass `ghee.run` a path, a dict or JSON text, as `ghee.open` takes them.

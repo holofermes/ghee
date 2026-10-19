@@ -17,7 +17,12 @@ serde_json = "1"
 
 To pin a release, add `tag = "vX.Y.Z"` with a version from the [releases
 page](https://github.com/holofermes/ghee/releases). The build needs the
-GLES and DRM headers that [Building](building.md) lists.
+GLES and DRM headers that [Building](building.md) lists. To build for a Pi
+from another computer, see [For a Pi, from another
+computer](building.md#for-a-pi-from-another-computer).
+
+To read the documentation of every type and function, run `cargo doc -p
+ghee --open` in your project.
 
 ## Render frames into a buffer
 
@@ -31,7 +36,8 @@ use ghee::scene::{ArraySize, Scene};
 
 fn main() -> anyhow::Result<()> {
     let scene = Scene::load("bars.scene.json")?;
-    // width, height, components, DRI device (None probes), scanout, rgb565
+    // width: i32, height: i32, components: i32,
+    // dri_device: Option<&str> (None probes), display: bool, rgb565: bool
     let mut r = Renderer::new(320, 240, 4, None, false, false)?;
     let err = r.setup(&scene)?;
     anyhow::ensure!(err.is_empty(), "{err}");
@@ -129,7 +135,8 @@ source gets ghee's placeholder data.
 
 Use `pacer` to cap the frame rate. `pacer(Some(fps), Sinks::Display)` caps
 the console and its display at `fps`. With None, the display's refresh
-paces the render.
+paces the render. Pass `Sinks::Display` for any console, with a display or
+without one.
 
 Set `filters` to end every scene with the same [filters](filters.md), such
 as `vec![Filter::named("frc")]` with `ghee::filters::Filter`. To start one

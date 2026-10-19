@@ -131,6 +131,7 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   cap its frame rate with `ghee::output::pacer`.
 - The PyPI wheel carries the `ghee` command. It starts in 111 ms on a Pi
   Zero 2 W.
+- Pass `--filters ""` to draw a scene without its own filters.
 
 ### Changed
 

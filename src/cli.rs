@@ -255,8 +255,9 @@ fn scene_args_help(a: &Ns) -> Result<()> {
 }
 
 /// The scene of this run, and the process behind it. The filters apply in
-/// order: the scene's own first, then --filters. A scene process sizes
-/// itself on the display's card, which `card` holds from then on.
+/// order: the scene's own first, then --filters. An empty --filters draws
+/// with no filters at all. A scene process sizes itself on the display's
+/// card, which `card` holds from then on.
 fn scene_of(a: &Ns, card: &mut Option<Card>) -> Result<(Scene, Option<SceneProcess>)> {
     let path = match &a.here {
         Some(here) => here.path.clone(),
@@ -282,7 +283,13 @@ fn scene_of(a: &Ns, card: &mut Option<Card>) -> Result<(Scene, Option<SceneProce
     };
     let given =
         Filter::parse_list(text(&a.filters)).map_err(|e| exit(format!("--filters: {e}")))?;
-    let wanted = filters::chain(&scene.filters, &given);
+    let wanted = match a.filters.as_deref() {
+        Some("") => {
+            scene.filters.clear();
+            Vec::new()
+        }
+        _ => filters::chain(&scene.filters, &given),
+    };
     apply_filters(&mut scene, &wanted, None).map_err(|e| match e.is::<filters::Unknown>() {
         true => exit(e.to_string()),
         false => e,
@@ -1298,7 +1305,7 @@ struct RenderArgs {
     #[arg(
         long,
         help = "filters applied after the scene's own, in ffmpeg's filtergraph syntax, \
-                e.g. frc=calm=8:coarse=1,dither"
+                e.g. frc=calm=8:coarse=1,dither. \"\" draws with no filters"
     )]
     filters: Option<String>,
 
@@ -2449,6 +2456,22 @@ mod tests {
             &mut None,
         ));
         assert!(e.starts_with("unknown filter: nope (known: dither"), "{e}");
+    }
+
+    #[test]
+    fn an_empty_filters_flag_draws_with_no_filters() {
+        let d = tmpdir("nofilters");
+        let path = format!("{d}/f.scene.json");
+        fs::write(
+            &path,
+            SCENE.replace(r#""version":1,"#, r#""version":1,"filters":["dither"],"#),
+        )
+        .unwrap();
+        let (scene, _) = scene_of(&ns(&["render", &path]), &mut None).unwrap();
+        assert_eq!(scene.passes.len(), 2);
+        let (scene, _) = scene_of(&ns(&["render", &path, "--filters", ""]), &mut None).unwrap();
+        assert_eq!(scene.passes.len(), 1);
+        assert!(scene.filters.is_empty());
     }
 
     /// A console's saved edit reaches a render and the console alike, and

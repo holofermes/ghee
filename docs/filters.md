@@ -22,6 +22,9 @@ connected panel ([Hardware displays](displays.md#hardware-displays)):
 ghee render --demo bars --filters frc --display kms
 ```
 
+To draw a scene without its own filters, such as to judge the picture
+before `frc`, pass `--filters ""`.
+
 From Python, give `ghee.Scene` the same list, as in
 `ghee.Scene(passes=[...], filters=["frc"])`. In the
 [console](console.md), add one with its filter picker.

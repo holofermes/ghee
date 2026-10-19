@@ -678,16 +678,15 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
         closed = closed.and(s.close());
     }
     r.close();
-    if a.control.signal().is_some() {
-        return Ok(());
-    }
-    ran?;
-    closed?;
-    if given(&a.output) && text(&a.output) != "-" {
-        report::step("wrote", format!("{drawn} frame(s) to {}", text(&a.output)));
-    }
-    if given(&a.h264) && text(&a.h264) != "-" {
-        report::step("wrote", format!("{drawn} frame(s) to {}", text(&a.h264)));
+    if a.control.signal().is_none() {
+        ran?;
+        closed?;
+        if given(&a.output) && text(&a.output) != "-" {
+            report::step("wrote", format!("{drawn} frame(s) to {}", text(&a.output)));
+        }
+        if given(&a.h264) && text(&a.h264) != "-" {
+            report::step("wrote", format!("{drawn} frame(s) to {}", text(&a.h264)));
+        }
     }
     if a.stats {
         print_stats(&times.borrow(), elapsed, &out, &used);

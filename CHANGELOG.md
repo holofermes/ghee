@@ -212,6 +212,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - `--rgb565`, and `opts={"rgb565": True}` in `ghee.open`, refuse a display
   that takes no RGB565 frames, such as an SSD1306, instead of drawing
   nothing and ending with status 0.
+- `--stats` prints its summary when a Ctrl-C or a SIGTERM ends the render
+  too, instead of nothing.
 
 ## 0.4.0 - 2026-08-06
 

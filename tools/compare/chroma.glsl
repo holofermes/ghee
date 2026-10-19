@@ -18,7 +18,7 @@ float wrap(float x, float n) {
 }
 
 vec3 palette(float column, float step) {
-  vec2 at = (vec2(column, wrap(step, 255.0)) + 0.5) / palette_size;
+  vec2 at = vec2(column + 0.5, palette_size.y - wrap(step, 255.0) - 0.5) / palette_size;
   return floor(texture2D(palette_tex, at).rgb * 255.0 + 0.5);
 }
 
@@ -111,7 +111,7 @@ vec3 effect(float k, vec2 p, float step) {
 }
 
 void main() {
-  vec2 p = floor(uv * iResolution.xy * 0.5);
+  vec2 p = floor(vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y) * 0.5);
   float step = float(iFrame) + first;
   float i = wrap(step, 500.0);
   float k = wrap((step - i) / 500.0, 4.0);

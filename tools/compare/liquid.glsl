@@ -5,10 +5,10 @@
 // pixel's block is found from its centre.
 
 void main() {
-  vec2 p = floor(uv * iResolution.xy);
+  vec2 p = floor(vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y));
   vec2 b = floor((p + 0.5) / blocksize) * blocksize;
   float anim = 0.02 * (float(iFrame) + first + 1.0);
   vec2 wave = vec2(sine(anim + b.x * freq), sine(anim + b.y * freq));
   vec2 src = floor(b + wave * amplitude + shift) + p - b;
-  gl_FragColor = texture2D(liquid_tex, (src + 0.5) / liquid_size);
+  gl_FragColor = texture2D(liquid_tex, vec2(src.x + 0.5, liquid_size.y - src.y - 0.5) / liquid_size);
 }

@@ -2,7 +2,7 @@
   "version": 1,
   "passes": [{
     "name": "main",
-    "fragment": "void main() { float bar = step(0.72, uv.y) * uv.x; gl_FragColor = vec4(vec3(bar), 1.0); }",
+    "fragment": "void main() { float bar = step(uv.y, 0.28) * uv.x; gl_FragColor = vec4(vec3(bar), 1.0); }",
     "layers": [
       { "name": "clock", "text": "12:34", "y": 0, "font_size": 18, "glow": {} }
     ]

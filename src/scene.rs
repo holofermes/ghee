@@ -20,7 +20,8 @@
 //! layer, then one uniform for each param under the param's name. The C
 //! engine sets each uniform by looking up that same name in the compiled
 //! program, so a name that the preamble writes is the contract between the
-//! two.
+//! two. The shader is in the GLSL of the pass, GLSL ES 1.00 or 3.00, and
+//! ghee writes its own parts once, in GLSL ES 1.00, for either.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -80,14 +81,44 @@ const GLSL_FUNCTIONS: &str = "\
     smoothstep sqrt step tan texture2D texture2DLod texture2DProj \
     texture2DProjLod textureCube textureCubeLod";
 
+/// The keywords of GLSL ES 3.00 and the keywords that it reserves for future
+/// use, as its specification lists them in section 3.8, past those of GLSL ES
+/// 1.00.
+const GLSL3_KEYWORDS: &str = "\
+    layout centroid smooth case mat2x2 mat2x3 mat2x4 mat3x2 mat3x3 mat3x4 \
+    mat4x2 mat4x3 mat4x4 uint uvec2 uvec3 uvec4 samplerCubeShadow \
+    sampler2DArray sampler2DArrayShadow isampler2D isampler3D isamplerCube \
+    isampler2DArray usampler2D usampler3D usamplerCube usampler2DArray \
+    coherent restrict readonly writeonly resource atomic_uint noperspective \
+    patch sample subroutine common partition active filter image1D image2D \
+    image3D imageCube iimage1D iimage2D iimage3D iimageCube uimage1D uimage2D \
+    uimage3D uimageCube image1DArray image2DArray iimage1DArray iimage2DArray \
+    uimage1DArray uimage2DArray imageBuffer iimageBuffer uimageBuffer \
+    sampler1DArray sampler1DArrayShadow isampler1D isampler1DArray usampler1D \
+    usampler1DArray isampler2DRect usampler2DRect samplerBuffer \
+    isamplerBuffer usamplerBuffer sampler2DMS isampler2DMS usampler2DMS \
+    sampler2DMSArray isampler2DMSArray usampler2DMSArray";
+
+/// The built-in functions of GLSL ES 3.00, as its specification lists them in
+/// section 8, past those of GLSL ES 1.00.
+const GLSL3_FUNCTIONS: &str = "\
+    sinh cosh tanh asinh acosh atanh trunc round roundEven modf isnan isinf \
+    floatBitsToInt floatBitsToUint intBitsToFloat uintBitsToFloat \
+    packSnorm2x16 unpackSnorm2x16 packUnorm2x16 unpackUnorm2x16 packHalf2x16 \
+    unpackHalf2x16 outerProduct transpose determinant inverse textureSize \
+    texture textureProj textureLod textureOffset texelFetch texelFetchOffset \
+    textureProjOffset textureLodOffset textureProjLod textureProjLodOffset \
+    textureGrad textureGradOffset textureProjGrad textureProjGradOffset dFdx \
+    dFdy fwidth";
+
 /// Why GLSL keeps `name` for itself, None when the name is free: a keyword, a
-/// built-in function, or main.
-fn glsl_word(name: &str) -> Option<String> {
+/// built-in function, or main. `es3` adds the words of GLSL ES 3.00.
+fn glsl_word(name: &str, es3: bool) -> Option<String> {
     let holds = |words: &str| words.split_whitespace().any(|w| w == name);
-    if holds(GLSL_KEYWORDS) {
+    if holds(GLSL_KEYWORDS) || es3 && holds(GLSL3_KEYWORDS) {
         return Some(format!("'{name}' is a GLSL keyword"));
     }
-    if holds(GLSL_FUNCTIONS) {
+    if holds(GLSL_FUNCTIONS) || es3 && holds(GLSL3_FUNCTIONS) {
         return Some(format!("'{name}' is a GLSL function"));
     }
     if name == "main" {
@@ -1829,7 +1860,9 @@ impl Pass {
     /// the array readers that hold on any GPU. `assets` are the scene's assets.
     /// A pass of the scene's own declares the scene's assets. A filter pass
     /// declares only its filter's, each under the name the filter wrote.
-    /// `texts` names the scene's text layers.
+    /// `texts` names the scene's text layers. The shader is in the GLSL of the
+    /// pass, as version() gives it, and in GLSL ES 1.00 for a version line
+    /// that ghee takes neither way.
     pub fn glsl(
         &self,
         scene_params: Option<&ParamMap>,
@@ -1841,12 +1874,16 @@ impl Pass {
         // A hidden pass, as Scene::drawn_passes() leaves it, runs ghee's copy
         // in its code, which reads neither the common block nor a text.
         if !self.visible {
+            let head = Glsl::Es100.head(vec![]);
             let l =
-                self.preamble_reading(scene_params, assets, texts, hw_linear, vec![], |_| false);
-            return with_main(l, &self.fragment, self.channels.len());
+                self.preamble_reading(head, scene_params, assets, texts, hw_linear, vec![], |_| {
+                    false
+                });
+            return with_main(Glsl::Es100, l, &self.fragment);
         }
+        let version = self.version().unwrap_or(Glsl::Es100);
         let common_code = common.unwrap_or_default();
-        let (fragment, mut directives) = extensions(&self.fragment);
+        let (fragment, mut directives) = self.code();
         // An author writes a filter on its own, and ghee appends it to any
         // scene. The scene's common block never reaches it, so a filter name
         // never collides with a scene name.
@@ -1863,19 +1900,48 @@ impl Pass {
             _ => fragment,
         };
         let noise = crate::noise::lines(&glsl_tokens(&body));
-        let mut l = self.preamble_reading(scene_params, assets, texts, hw_linear, noise, |t| {
-            calls_cover(common_code, t) || calls_cover(&self.fragment, t)
-        });
-        // GLSL ES 1.00 takes an #extension line only ahead of every
-        // declaration, so the lines go right after #version.
-        l.splice(1..1, directives);
-        with_main(l, &body, self.channels.len())
+        let l = self.preamble_reading(
+            version.head(directives),
+            scene_params,
+            assets,
+            texts,
+            hw_linear,
+            noise,
+            |t| calls_cover(common_code, t) || calls_cover(&self.fragment, t),
+        );
+        with_main(version, l, &body)
     }
 
-    /// The preamble, with the `<name>_size` of each text layer of `texts`,
-    /// the coverage reader of each for which `reads` holds, and `functions`.
+    /// The GLSL that the pass is written in: GLSL ES 3.00 when its fragment
+    /// opens with `#version 300 es`, GLSL ES 1.00 with `#version 100` or no
+    /// version line. Err holds a version line that ghee takes neither way.
+    pub(crate) fn version(&self) -> std::result::Result<Glsl, String> {
+        match version_line(&self.fragment) {
+            None => Ok(Glsl::Es100),
+            Some((_, w)) if w == ["100"] => Ok(Glsl::Es100),
+            Some((_, w)) if w == ["300", "es"] => Ok(Glsl::Es300),
+            Some((r, _)) => Err(self.fragment[r].trim().to_string()),
+        }
+    }
+
+    /// The pass's fragment as its shader holds it, with its `#version` and
+    /// `#extension` lines left empty, so every other line keeps its number,
+    /// and its `#extension` lines.
+    pub(crate) fn code(&self) -> (String, Vec<String>) {
+        let mut f = self.fragment.clone();
+        if let Some((r, _)) = version_line(&f) {
+            f.replace_range(r, "");
+        }
+        extensions(&f)
+    }
+
+    /// The preamble after `head`, with the `<name>_size` of each text layer of
+    /// `texts`, the coverage reader of each for which `reads` holds, and
+    /// `functions`.
+    #[allow(clippy::too_many_arguments)]
     fn preamble_reading(
         &self,
+        head: Vec<String>,
         scene_params: Option<&ParamMap>,
         assets: &[Asset],
         texts: &[&str],
@@ -1883,7 +1949,7 @@ impl Pass {
         functions: Vec<String>,
         reads: impl Fn(&str) -> bool,
     ) -> Vec<String> {
-        let mut l: Vec<String> = PRECISION.iter().map(|l| l.to_string()).collect();
+        let mut l = head;
         l.extend(
             [
                 "uniform vec3 iResolution;",
@@ -1990,20 +2056,92 @@ pub(crate) fn extensions(glsl: &str) -> (String, Vec<String>) {
     (kept.join("\n"), found)
 }
 
+/// The GLSL of a pass: GLSL ES 1.00, the GLSL of OpenGL ES 2.0, or GLSL ES
+/// 3.00, the GLSL of OpenGL ES 3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Glsl {
+    Es100,
+    Es300,
+}
+
+impl Glsl {
+    /// A pass's lines up to its precision, the author's `#extension` lines
+    /// `directives` among them, since GLSL takes those ahead of every
+    /// declaration. GLSL ES 1.00 turns on the derivatives where the GPU has
+    /// them.
+    fn head(self, directives: Vec<String>) -> Vec<String> {
+        let version: &[&str] = match self {
+            Glsl::Es100 => &[
+                "#version 100",
+                "#ifdef GL_OES_standard_derivatives",
+                "#extension GL_OES_standard_derivatives : enable",
+                "#endif",
+            ],
+            Glsl::Es300 => &["#version 300 es"],
+        };
+        let mut l: Vec<String> = version.iter().map(|l| l.to_string()).collect();
+        l.extend(directives);
+        l.extend(PRECISION[1..].iter().map(|l| l.to_string()));
+        // ghee writes its own GLSL once, with texture2D, which GLSL ES 3.00
+        // calls texture. with_main undefines it ahead of the author's GLSL.
+        if self == Glsl::Es300 {
+            l.push("#define texture2D texture".to_string());
+        }
+        l
+    }
+}
+
+/// The byte range of the `#version` line that opens `glsl`, past any comment
+/// and white space, and its words after `version`.
+fn version_line(glsl: &str) -> Option<(std::ops::Range<usize>, Vec<&str>)> {
+    let mut at = 0;
+    loop {
+        let rest = &glsl[at..];
+        let t = rest.trim_start();
+        at += rest.len() - t.len();
+        if t.starts_with("//") {
+            at += t.find('\n').unwrap_or(t.len());
+        } else if let Some(c) = t.strip_prefix("/*") {
+            at += c.find("*/").map_or(t.len(), |k| k + 4);
+        } else {
+            break;
+        }
+    }
+    let end = glsl[at..].find('\n').map_or(glsl.len(), |k| at + k);
+    let words = glsl[at..end]
+        .strip_prefix('#')?
+        .trim_start()
+        .strip_prefix("version")?;
+    if !words.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some((at..end, words.split_whitespace().collect()))
+}
+
 /// The preamble lines `l`, then `body` under ghee's own main, which sets `uv`
 /// and gl_FragCoord before it calls the body's main, or the body's mainImage
-/// when the body defines it and names no main. `channels` is the number of
-/// the pass's channels. A body that names neither meets the GL's own error
-/// for a missing main.
-fn with_main(mut l: Vec<String>, body: &str, channels: usize) -> String {
-    if !glsl_tokens(body).contains(&"main") {
-        if !functions(body).contains("mainImage") {
+/// when the body defines it and names no main. A body that names neither
+/// meets the GL's own error for a missing main.
+fn with_main(version: Glsl, mut l: Vec<String>, body: &str) -> String {
+    let main = glsl_tokens(body).contains(&"main");
+    let toy = !main && functions(body).contains("mainImage");
+    if toy {
+        l.extend(shadertoy_lines(version));
+    }
+    if version == Glsl::Es300 {
+        l.push("#undef texture2D".to_string());
+    }
+    if !main {
+        if !toy {
             return format!("{}\n\n{body}", l.join("\n"));
         }
-        l.extend(shadertoy_lines(channels));
+        let out = match version {
+            Glsl::Es100 => "gl_FragColor",
+            Glsl::Es300 => "ghee_colour",
+        };
         return format!(
             "{}\n\n{body}\nvoid main() {{ ghee_centre(); \
-             mainImage(gl_FragColor, vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y)); }}",
+             mainImage({out}, vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y)); }}",
             l.join("\n")
         );
     }
@@ -2014,33 +2152,39 @@ fn with_main(mut l: Vec<String>, body: &str, channels: usize) -> String {
     )
 }
 
-/// The GLSL that a pass written for Shadertoy reads beside the preamble, for
-/// a pass of `channels` channels: `texture` and `texelFetch` with y up, and
-/// `tanh`. `texelFetch(iChannelN, p, lod)` reads the size of channel N
-/// through the macro `iChannelN()`. The preprocessor expands that macro only
-/// where a call follows the name, so the sampler keeps its name.
-fn shadertoy_lines(channels: usize) -> Vec<String> {
-    let mut l: Vec<String> = [
-        "vec4 ghee_texture(sampler2D s, vec2 p) { return texture2D(s, vec2(p.x, 1.0 - p.y)); }",
+/// The GLSL that a pass written for Shadertoy reads beside the preamble: the
+/// texture reads with y up, through ghee_up. GLSL ES 3.00 adds the colour
+/// that mainImage writes, and its other reads by position.
+fn shadertoy_lines(version: Glsl) -> Vec<String> {
+    let mut l: Vec<&str> = Vec::new();
+    if version == Glsl::Es300 {
+        l.push("out vec4 ghee_colour;");
+    }
+    l.extend([
+        "vec2 ghee_up(vec2 p) { return vec2(p.x, 1.0 - p.y); }",
+        "vec4 ghee_texture(sampler2D s, vec2 p) { return texture2D(s, ghee_up(p)); }",
         "vec4 ghee_texture(sampler2D s, vec2 p, float bias) {",
-        "  return texture2D(s, vec2(p.x, 1.0 - p.y), bias);",
+        "  return texture2D(s, ghee_up(p), bias);",
         "}",
         "#define texture ghee_texture",
-        "vec4 ghee_fetch(sampler2D s, vec3 size, ivec2 p) {",
-        "  vec2 c = (vec2(p) + 0.5) / size.xy;",
-        "  return texture2D(s, vec2(c.x, 1.0 - c.y));",
-        "}",
-        "#define texelFetch(s, p, lod) ghee_fetch(s, s(), p)",
-    ]
-    .map(str::to_string)
-    .into();
-    l.extend((0..channels).map(|i| format!("#define iChannel{i}() iChannelResolution[{i}]")));
-    for t in ["float", "vec2", "vec3", "vec4"] {
-        l.push(format!(
-            "{t} tanh({t} x) {{ return 1.0 - 2.0 / (exp(2.0 * x) + 1.0); }}"
-        ));
+    ]);
+    if version == Glsl::Es300 {
+        l.extend([
+            "vec4 ghee_texture_lod(sampler2D s, vec2 p, float lod) {",
+            "  return textureLod(s, ghee_up(p), lod);",
+            "}",
+            "#define textureLod ghee_texture_lod",
+            "vec4 ghee_texture_grad(sampler2D s, vec2 p, vec2 dx, vec2 dy) {",
+            "  return textureGrad(s, ghee_up(p), dx * vec2(1.0, -1.0), dy * vec2(1.0, -1.0));",
+            "}",
+            "#define textureGrad ghee_texture_grad",
+            "vec4 ghee_fetch(sampler2D s, ivec2 p, int lod) {",
+            "  return texelFetch(s, ivec2(p.x, textureSize(s, lod).y - 1 - p.y), lod);",
+            "}",
+            "#define texelFetch ghee_fetch",
+        ]);
     }
-    l
+    l.into_iter().map(str::to_string).collect()
 }
 
 /// True when `glsl` names the coverage reader of text layer `name`. A reader
@@ -2755,29 +2899,33 @@ impl Scene {
     /// a pass param or an array its own pass.
     pub(crate) fn name_clash(&self) -> Option<String> {
         // Each declaration as its kind, its name, where it is declared,
-        // whether the built-in names are closed to it, and whether GLSL takes
-        // its name as it is. A pass name never reaches GLSL, and a layer's
-        // reaches it with a suffix, so both may take a built-in name. A param
-        // that holds no string is a uniform of its own name.
-        let mut kinds: Vec<(&str, &str, String, bool, bool)> = Vec::new();
+        // whether the built-in names are closed to it, whether GLSL takes its
+        // name as it is, and whether it reaches a GLSL ES 3.00 pass. A pass
+        // name never reaches GLSL, and a layer's reaches it with a suffix, so
+        // both may take a built-in name. A param that holds no string is a
+        // uniform of its own name.
+        let es3 = |p: &Pass| p.version() == Ok(Glsl::Es300);
+        let any_es3 = self.passes.iter().any(es3);
+        let mut kinds: Vec<(&str, &str, String, bool, bool, bool)> = Vec::new();
         for p in &self.passes {
-            kinds.push(("pass", &p.name, String::new(), false, false));
+            kinds.push(("pass", &p.name, String::new(), false, false, false));
         }
         for l in self.layers() {
-            kinds.push(("layer", l.name(), String::new(), false, false));
+            kinds.push(("layer", l.name(), String::new(), false, false, false));
         }
         for p in self.params.values() {
             let bare = p.ty != "string";
-            kinds.push(("scene param", &p.name, String::new(), true, bare));
+            kinds.push(("scene param", &p.name, String::new(), true, bare, any_es3));
         }
         for a in &self.assets {
             match a.from_filter.as_str() {
-                "" => kinds.push(("asset", &a.name, String::new(), true, false)),
+                "" => kinds.push(("asset", &a.name, String::new(), true, false, false)),
                 f => kinds.push((
                     "asset",
                     a.local_name(),
                     format!(" of filter '{f}'"),
                     true,
+                    false,
                     false,
                 )),
             }
@@ -2785,20 +2933,21 @@ impl Scene {
         for pass in &self.passes {
             let at = format!(" in pass '{}'", pass.name);
             for p in pass.params.values() {
-                kinds.push(("param", &p.name, at.clone(), true, p.ty != "string"));
+                let bare = p.ty != "string";
+                kinds.push(("param", &p.name, at.clone(), true, bare, es3(pass)));
             }
             for a in &pass.arrays {
-                kinds.push(("array", &a.name, at.clone(), true, false));
+                kinds.push(("array", &a.name, at.clone(), true, false, false));
             }
         }
-        for (kind, name, at, closed, bare) in &kinds {
+        for (kind, name, at, closed, bare, es3) in &kinds {
             if let Some(why) = name_fault(name) {
                 return Some(format!("{kind} name {}{at} {why}", py_str_repr(name)));
             }
             if *closed && built_in(name) {
                 return Some(format!("{kind} '{name}'{at}: '{name}' is built in"));
             }
-            if let Some(why) = glsl_word(name).filter(|_| *bare) {
+            if let Some(why) = glsl_word(name, *es3).filter(|_| *bare) {
                 return Some(format!("{kind} '{name}'{at}: {why}"));
             }
         }
@@ -5049,6 +5198,71 @@ mod tests {
         let mut d = named(extra, pass);
         d["passes"][1]["layers"][0]["name"] = json!("step");
         assert!(Scene::from_dict(&d, None, None).is_ok());
+    }
+
+    #[test]
+    fn a_param_that_reaches_a_glsl_es_3_pass_takes_no_word_of_glsl_es_3() {
+        let f = json!({"type": "float", "value": 1.0});
+        let es3 = json!("#version 300 es\nout vec4 c;\nvoid main(){ c = vec4(1.0); }");
+        for (extra, pass, want) in [
+            (
+                json!({}),
+                json!({"fragment": es3, "params": {"sample": f}}),
+                "param 'sample' in pass 'a': 'sample' is a GLSL keyword",
+            ),
+            (
+                json!({"params": {"round": f}}),
+                json!({"fragment": es3}),
+                "scene param 'round': 'round' is a GLSL function",
+            ),
+        ] {
+            assert_eq!(named_err(extra, pass), format!("scene: {want}"));
+        }
+        // Pass b is GLSL ES 1.00, and its param reaches no other pass.
+        let mut d = named(json!({}), json!({"fragment": es3}));
+        d["passes"][1]["params"] = json!({"sample": f, "round": f});
+        assert!(Scene::from_dict(&d, None, None).is_ok());
+    }
+
+    #[test]
+    fn a_pass_is_glsl_es_3_when_its_first_line_says_so() {
+        for (fragment, want) in [
+            ("void main(){}", Ok(Glsl::Es100)),
+            ("#version 100\nvoid main(){}", Ok(Glsl::Es100)),
+            (
+                "// a note\n/* and\n more */  #version 300 es\nvoid main(){}",
+                Ok(Glsl::Es300),
+            ),
+            ("#  version   300   es  \nvoid main(){}", Ok(Glsl::Es300)),
+            (
+                "#version 310 es\nvoid main(){}",
+                Err("#version 310 es".to_string()),
+            ),
+            (
+                "#version 300\nvoid main(){}",
+                Err("#version 300".to_string()),
+            ),
+            ("#versions 300 es\nvoid main(){}", Ok(Glsl::Es100)),
+            ("void main(){}\n#version 300 es", Ok(Glsl::Es100)),
+        ] {
+            assert_eq!(
+                Pass::of("a", fragment).unwrap().version(),
+                want,
+                "{fragment}"
+            );
+        }
+        let p = Pass::of(
+            "a",
+            "#version 300 es\n#extension GL_X : enable\nvoid main(){}",
+        )
+        .unwrap();
+        assert_eq!(
+            p.code(),
+            (
+                "\n\nvoid main(){}".to_string(),
+                vec!["#extension GL_X : enable".to_string()]
+            )
+        );
     }
 
     #[test]

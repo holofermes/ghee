@@ -55,7 +55,7 @@ use crate::layer::{
     TextLayer, GLSL_NAME,
 };
 use crate::run::{Candidate, Class, Mode, Open};
-use crate::scene::{ArraySize, Look, ParamValue, Pass, Sampling, Scene};
+use crate::scene::{ArraySize, Glsl, Look, ParamValue, Pass, Sampling, Scene};
 use crate::shape::ShapeLayer;
 use crate::text::{self, Fault, Layout};
 
@@ -1179,6 +1179,9 @@ pub struct Renderer {
     /// shader, on a GL that filters a float texture itself.
     #[cfg(test)]
     shader_lerp: bool,
+    /// A test sets it to refuse GLSL ES 3.00 as a GPU with OpenGL ES 2.0 does.
+    #[cfg(test)]
+    gles2: bool,
     /// A test sets it to give the glyphs of every text layer this fragment
     /// shader.
     #[cfg(test)]
@@ -1286,6 +1289,8 @@ impl Renderer {
             atlas_cache: None,
             #[cfg(test)]
             shader_lerp: false,
+            #[cfg(test)]
+            gles2: false,
             #[cfg(test)]
             glyphs_fragment: None,
             #[cfg(test)]
@@ -1499,6 +1504,24 @@ impl Renderer {
         }) {
             self.error = e;
             return Ok(self.error.clone());
+        }
+        for p in drawn.iter() {
+            let refusal = match p.version() {
+                Err(line) => Some(format!(
+                    "pass '{}' opens with '{line}', and a pass takes '#version 100' or \
+                     '#version 300 es'",
+                    p.name
+                )),
+                Ok(Glsl::Es300) if !self.gles3() => Some(format!(
+                    "pass '{}' is GLSL ES 3.00, and this GPU compiles GLSL ES 1.00 alone",
+                    p.name
+                )),
+                Ok(_) => None,
+            };
+            if let Some(e) = refusal {
+                self.error = e;
+                return Ok(self.error.clone());
+            }
         }
         let last = &drawn[n - 1];
         let npot = self.trilinear_npot();
@@ -1833,9 +1856,9 @@ impl Renderer {
                 let err = or_else(self.last_error(), "compile error");
                 self.compile_error = unsafe { ffi::ghee_last_error_is_compile(self.handle) };
                 unsafe { ffi::ghee_mp_abort(self.handle) };
-                // The assembled source holds the code with its #extension
-                // lines moved out.
-                let code = crate::scene::extensions(&p.fragment).0;
+                // The assembled source holds the code with its #version and
+                // #extension lines moved out.
+                let code = p.code().0;
                 let common = scene
                     .common
                     .as_deref()
@@ -5443,6 +5466,15 @@ impl Renderer {
         unsafe { ffi::ghee_mipmaps_npot(self.handle) }
     }
 
+    /// True when the GPU runs OpenGL ES 3 and compiles GLSL ES 3.00.
+    fn gles3(&self) -> bool {
+        #[cfg(test)]
+        if self.gles2 {
+            return false;
+        }
+        unsafe { ffi::ghee_gles3(self.handle) }
+    }
+
     /// The programs that the renderer linked since it was created: each
     /// pass's, each distinct batch's, and its own.
     pub fn compiled(&self) -> i32 {
@@ -5982,6 +6014,29 @@ mod tests {
     }
 
     #[test]
+    fn a_compile_log_names_the_authors_line_under_either_preamble() {
+        for head in ["", "#version 300 es\n"] {
+            let fragment = format!("{head}void main(){{\n  nope();\n}}");
+            let pass = Pass::of("a", &fragment).unwrap();
+            let common = "float k() { return 1.0; }";
+            let glsl = pass.glsl(None, Some(common), &[], &[], false);
+            let at = |text: &str| glsl.lines().position(|l| l == text).unwrap() + 1;
+            let (pass_line, common_line) = (at("  nope();"), at(common));
+            let log = format!("0:{pass_line}(3): error: nope\n0:{common_line}(1): error: k");
+            let want = format!(
+                "0:{}(3): error: nope\n0:1(1): error: k",
+                head.lines().count() + 2
+            );
+            let code = pass.code().0;
+            assert_eq!(
+                authors_log(&log, &glsl, &code, Some(common)),
+                want,
+                "{head}"
+            );
+        }
+    }
+
+    #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn setup_rejects_a_scene_with_no_passes() {
         let (_g, mut r) = gpu();
@@ -6353,8 +6408,8 @@ mod tests {
     }
 
     /// Pass `a` draws a picture that runs one way in y, at a quarter of the
-    /// frame, and pass `c` reads `b` two pixels down. `b` reads `a`, by
-    /// `texture` and `texelFetch`, and itself one pixel up.
+    /// frame, and pass `c` reads `b` two pixels down. `b` reads `a` and
+    /// itself one pixel up.
     fn three_passes(b: &str) -> Scene {
         scene_of(json!([
             {"name": "a", "size": [W / 4, H / 4], "sampling": "nearest",
@@ -6368,11 +6423,16 @@ mod tests {
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_shadertoy_pass_reads_and_feeds_ghee_passes() {
-        let shadertoy = "void mainImage(out vec4 o, in vec2 f) {
+        let shadertoy = "#version 300 es
+        void mainImage(out vec4 o, in vec2 f) {
             vec4 here = texture(iChannel0, f / iResolution.xy);
-            vec4 up = texelFetch(iChannel0, ivec2(f / 4.0) + ivec2(0, 1), 0);
-            vec4 last = texture(iChannel1, (f + vec2(0.0, 1.0)) / iResolution.xy);
-            o = vec4(here.r, up.g, tanh(2.0 * last.b + here.b) * 0.9, 1.0);
+            ivec2 top = textureSize(iChannel0, 0) - 1;
+            vec4 up = texelFetch(iChannel0, min(ivec2(f / 4.0) + ivec2(0, 1), top), 0);
+            vec4 last = textureLod(iChannel1, (f + vec2(0.0, 1.0)) / iResolution.xy, 0.0);
+            float red = textureGrad(iChannel0, f / iResolution.xy, vec2(0.0), vec2(0.0)).r;
+            float odd = float(uint(f.x) & 1u);
+            float r = mix(red, 1.0 - red, odd) * fwidth(f.x);
+            o = vec4(r, up.g, tanh(2.0 * last.b + here.b) * 0.9, 1.0);
         }";
         let ghee = "void main() {
             vec4 here = texture2D(iChannel0, uv);
@@ -6380,7 +6440,8 @@ mod tests {
             vec4 up = texture2D(iChannel0, (q + 0.5) / iChannelResolution[0].xy);
             vec4 last = texture2D(iChannel1, uv - vec2(0.0, 1.0) / iResolution.xy);
             float t = 1.0 - 2.0 / (exp(2.0 * (2.0 * last.b + here.b)) + 1.0);
-            gl_FragColor = vec4(here.r, up.g, t * 0.9, 1.0);
+            float odd = mod(floor(gl_FragCoord.x), 2.0);
+            gl_FragColor = vec4(mix(here.r, 1.0 - here.r, odd), up.g, t * 0.9, 1.0);
         }";
         let (_g, mut r) = gpu();
         r.set_time(Some(0.0));
@@ -6429,20 +6490,24 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn a_pass_takes_derivatives_through_its_extension_line_and_keeps_its_lines() {
+    fn a_pass_takes_derivatives_with_or_without_its_extension_line_and_keeps_its_lines() {
         let (_g, mut r) = gpu();
         let ext = "#extension GL_OES_standard_derivatives : enable";
         // A step of one pixel, in half red.
         let half = 0.5 * W as f64;
         let main = format!(
-            "{ext}\nvoid main(){{ gl_FragColor = vec4(fwidth(uv.x) * {half:.1}, 0.0, 0.0, 1.0); }}"
+            "void main(){{ gl_FragColor = vec4(fwidth(uv.x) * {half:.1}, 0.0, 0.0, 1.0); }}"
         );
-        let toy = format!(
-            "{ext}\nvoid mainImage(out vec4 o, in vec2 f) {{ o = vec4(dFdx(f.x) * 0.5); }}"
-        );
+        let own = format!("{ext}\n{main}");
+        let toy = "void mainImage(out vec4 o, in vec2 f) { o = vec4(dFdx(f.x) * 0.5); }";
         let common = format!("{ext}\nfloat step_x(float x) {{ return dFdx(x); }}");
         let in_common = format!("void main(){{ gl_FragColor = vec4(step_x(uv.x) * {half:.1}); }}");
-        for (fragment, common) in [(&main, None), (&toy, None), (&in_common, Some(&common))] {
+        for (fragment, common) in [
+            (main.as_str(), None),
+            (&own, None),
+            (toy, None),
+            (&in_common, Some(&common)),
+        ] {
             let mut sc = scene_of(json!([{"fragment": fragment}]));
             sc.common = common.cloned();
             assert_eq!(r.setup(&sc).unwrap(), "", "{fragment}");
@@ -6452,6 +6517,87 @@ mod tests {
         let sc = scene_of(json!([{"fragment": format!("{ext}\nvoid main(){{\n  nope();\n}}")}]));
         assert_ne!(r.setup(&sc).unwrap(), "");
         assert_eq!(r.error_line, Some(3));
+    }
+
+    /// `glsl`, GLSL ES 1.00, in GLSL ES 3.00: `texture2D` read as `texture`,
+    /// and `gl_FragColor` as an output of its own, declared when `main`
+    /// holds the pass's main.
+    fn in_es3(glsl: &str, main: bool) -> String {
+        let mut out = String::new();
+        let mut rest = glsl;
+        while let Some(c) = rest.chars().next() {
+            let n = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len())
+                .max(c.len_utf8());
+            out.push_str(match &rest[..n] {
+                "texture2D" => "texture",
+                "gl_FragColor" => "colour",
+                w => w,
+            });
+            rest = &rest[n..];
+        }
+        match main {
+            true => format!("#version 300 es\nout vec4 colour;\n{out}"),
+            false => out,
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn every_shipped_scene_draws_the_same_in_glsl_es_3() {
+        let (_g, mut r) = gpu();
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/ghee/examples");
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".scene.json"))
+            .collect();
+        names.sort();
+        assert!(!names.is_empty());
+        for n in names {
+            let es1 = Scene::load(&format!("{dir}/{n}")).unwrap();
+            let mut es3 = es1.clone();
+            es3.common = es1.common.as_deref().map(|c| in_es3(c, false));
+            for p in es3.passes.iter_mut().filter(|p| p.has_fragment()) {
+                p.fragment = in_es3(&p.fragment, true);
+            }
+            let mut frames = Vec::new();
+            for sc in [&es1, &es3] {
+                r.set_time(Some(0.0));
+                assert_eq!(r.setup(sc).unwrap(), "", "{n}");
+                for _ in 0..3 {
+                    r.render(None).unwrap();
+                }
+                frames.push(r.render(None).unwrap().to_vec());
+            }
+            assert!(frames[0] == frames[1], "{n}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_gpu_without_gles_3_refuses_a_glsl_es_3_pass_and_any_version_but_two() {
+        let (_g, mut r) = gpu();
+        let es3 = "#version 300 es\nout vec4 c;\nvoid main(){ c = vec4(1.0); }";
+        let sc = scene_of(
+            json!([{"name": "a", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"},
+                                  {"name": "b", "fragment": es3}]),
+        );
+        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.gles2 = true;
+        assert_eq!(
+            r.setup(&sc).unwrap(),
+            "pass 'b' is GLSL ES 3.00, and this GPU compiles GLSL ES 1.00 alone"
+        );
+        r.gles2 = false;
+        let sc = scene_of(json!([{"fragment": "// a comment\n#version 310 es\nvoid main(){}"}]));
+        assert_eq!(
+            r.setup(&sc).unwrap(),
+            "pass 'main' opens with '#version 310 es', and a pass takes '#version 100' or \
+             '#version 300 es'"
+        );
     }
 
     #[test]

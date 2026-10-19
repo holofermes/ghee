@@ -245,6 +245,7 @@ struct GheeScene {
     size_t rgba_scratch_size;
     bool has_float_tex, has_float_linear;   // OES_texture_float[_linear] on this GL
     bool has_npot;                       // mipmaps a texture of any size: GLES 3 or OES_texture_npot
+    bool gles3;                          // the GL is OpenGL ES 3, which compiles GLSL ES 3.00
     // The arrays: each is a texture of count x rows values, sampled as
     // <name>_tex, which a shader reads at a computed index in one fetch. VC4
     // caps the size of a uniform array that a shader indexes with a variable,
@@ -377,16 +378,27 @@ struct GheeScene {
 // pass draws into it unmirrored. uv stays as it is either way, and a pass's
 // preamble turns gl_FragCoord.y by ghee_yflip, so a pass's own GLSL reads the
 // same coordinates.
+#define QUAD_MAIN \
+    "uniform float ghee_vflip;" \
+    "void main() {" \
+    "   gl_Position = vec4(position.x, position.y * ghee_vflip, position.z, position.w);" \
+    "   uv = texCoord;" \
+    "}"
 static const char *vertex_shader_source =
     "#version 100\n"
     "attribute vec4 position;"
     "attribute vec2 texCoord;"
-    "uniform float ghee_vflip;"
     "varying vec2 uv;"
-    "void main() {"
-    "   gl_Position = vec4(position.x, position.y * ghee_vflip, position.z, position.w);"
-    "   uv = texCoord;"
-    "}";
+    QUAD_MAIN;
+
+// GLSL ES links a program of shaders of one version alone, so a GLSL ES 3.00
+// pass takes the quad in GLSL ES 3.00.
+static const char *vertex_shader_es3_source =
+    "#version 300 es\n"
+    "in vec4 position;"
+    "in vec2 texCoord;"
+    "out vec2 uv;"
+    QUAD_MAIN;
 
 // Present blit: sample the final pass texture onto the scanout target. flipY
 // mirrors it for the window surface, which Mesa stores top row first, `turn`
@@ -559,7 +571,9 @@ static const char *const batch_attribs[MP_BATCH_ATTRIBS] = {
 
 // A program on the shared full-screen quad vertex shader.
 static GLuint create_shader_program(GheeScene *g, const char *fragment_shader_source) {
-    return create_program(g, vertex_shader_source, fragment_shader_source, quad_attribs, 2);
+    const bool es3 = strncmp(fragment_shader_source, "#version 300 es", 15) == 0;
+    return create_program(g, es3 ? vertex_shader_es3_source : vertex_shader_source,
+                          fragment_shader_source, quad_attribs, 2);
 }
 
 static char *suffixed(GheeScene *g, const char *name, const char *suffix);
@@ -932,8 +946,8 @@ static GheeScene *create_impl(int width, int height, int components, const char 
     g->has_float_tex = glexts && strstr(glexts, "GL_OES_texture_float") != NULL;
     g->has_float_linear = glexts && strstr(glexts, "GL_OES_texture_float_linear") != NULL;
     const char *version = (const char *)glGetString(GL_VERSION);
-    g->has_npot = (glexts && strstr(glexts, "GL_OES_texture_npot") != NULL) ||
-                  (version && strncmp(version, "OpenGL ES 3", 11) == 0);
+    g->gles3 = version && strncmp(version, "OpenGL ES 3", 11) == 0;
+    g->has_npot = (glexts && strstr(glexts, "GL_OES_texture_npot") != NULL) || g->gles3;
     SAY(2, "   format  data texture %s%s\n",
             g->has_float_tex ? "float" : "8-bit LUMINANCE",
             g->has_float_tex && g->has_float_linear ? " (linear)" : " (nearest)");
@@ -3764,6 +3778,8 @@ int ghee_gl_fd(GheeScene *g) {
 bool ghee_data_texture_linear(GheeScene *g) { return g && g->has_float_tex && g->has_float_linear; }
 
 bool ghee_mipmaps_npot(GheeScene *g) { return g && g->has_npot; }
+
+bool ghee_gles3(GheeScene *g) { return g && g->gles3; }
 
 int ghee_compiled(GheeScene *g) { return g ? g->compiled : 0; }
 

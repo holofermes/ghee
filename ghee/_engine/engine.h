@@ -288,6 +288,7 @@ int  ghee_max_texture_size(GheeScene *g);    // GL_MAX_TEXTURE_SIZE, the most pi
 int  ghee_gl_fd(GheeScene *g);               // the DRM descriptor that GL renders through
 bool ghee_data_texture_linear(GheeScene *g); // GPU linear-filters data textures
 bool ghee_mipmaps_npot(GheeScene *g);        // GPU mipmaps a texture of any size
+bool ghee_gles3(GheeScene *g);               // GPU runs OpenGL ES 3, so GLSL ES 3.00
 int  ghee_compiled(GheeScene *g);            // programs that the renderer linked since its create
 uint64_t ghee_draws(GheeScene *g);           // frames that the renderer drew since its create, none for a repeat
 

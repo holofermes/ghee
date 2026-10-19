@@ -113,25 +113,33 @@ fn a_compile_error_prints_once_naming_the_pass_and_the_authors_line() {
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_compile_error_prints_every_error_of_the_log_at_the_authors_lines() {
     let dir = Dir::new("compile-log");
-    // Enough errors that the GL's log runs to a few kilobytes.
-    let body: String = (2..=31)
-        .map(|n| format!("  gl_FragColor = vec4(undeclared{n});\\n"))
-        .collect();
-    let scene =
-        format!(r#"{{"passes": [{{"name": "main", "fragment": "void main() {{\n{body}}}"}}]}}"#);
-    let out = render(&dir.0, &scene, &[]);
-    assert_eq!(out.status.code(), Some(1), "{out:?}");
-    let err = String::from_utf8(out.stderr).unwrap();
-    for n in 2..=31 {
-        let name = format!("undeclared{n}");
-        let line = err
-            .lines()
-            .find(|l| l.contains(&format!("{name}'")) || l.contains(&format!("{name}\"")))
-            .unwrap_or_else(|| panic!("no error names {name}: {err}"));
-        assert!(
-            line.contains(&format!(":{n}(")) || line.contains(&format!("({n})")),
-            "{name} is on line {n}: {line}"
+    // Enough errors that the GL's log runs to a few kilobytes, in either GLSL,
+    // the first on line 2 of the pass and on line 4.
+    for (head, colour, first) in [
+        ("", "gl_FragColor", 2),
+        ("#version 300 es\\nout vec4 colour;\\n", "colour", 4),
+    ] {
+        let body: String = (0..30)
+            .map(|n| format!("  {colour} = vec4(undeclared{n});\\n"))
+            .collect();
+        let scene = format!(
+            r#"{{"passes": [{{"name": "main", "fragment": "{head}void main() {{\n{body}}}"}}]}}"#
         );
+        let out = render(&dir.0, &scene, &[]);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let err = String::from_utf8(out.stderr).unwrap();
+        for n in 0..30 {
+            let name = format!("undeclared{n}");
+            let line = err
+                .lines()
+                .find(|l| l.contains(&format!("{name}'")) || l.contains(&format!("{name}\"")))
+                .unwrap_or_else(|| panic!("no error names {name}: {err}"));
+            let at = first + n;
+            assert!(
+                line.contains(&format!(":{at}(")) || line.contains(&format!("({at})")),
+                "{name} is on line {at}: {line}"
+            );
+        }
     }
 }
 

@@ -77,7 +77,8 @@ def test_a_pass_draws_the_same_in_glsl_es_1_and_3():
             h.frame()
             frames.append(h.pixels())
     assert frames[0] == frames[1]
-    assert frames[0][2] == 128
+    # 0.5 lies halfway between two levels, and GL may write either
+    assert frames[0][2] in (127, 128)
 
 
 def test_a_param_reaches_the_shader_live():

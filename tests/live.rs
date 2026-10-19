@@ -109,7 +109,7 @@ fn write_pictures(dir: &Path) {
 }
 
 fn render(r: &mut Renderer, sc: &Scene) -> Vec<u8> {
-    assert_eq!(r.setup(sc).unwrap(), "");
+    r.setup(sc).unwrap();
     again(r)
 }
 
@@ -426,7 +426,7 @@ fn a_new_speed_carries_the_motion_on_from_where_it_is() {
     // Each frame: the pinned time, else the time step, and the speed set
     // before it from frame 10 on.
     let run = |r: &mut Renderer, pinned: bool| -> Vec<Vec<u8>> {
-        assert_eq!(r.setup(&dir.load(&doc)).unwrap(), "");
+        r.setup(&dir.load(&doc)).unwrap();
         r.set_dt(dt);
         (0..16)
             .map(|k| {
@@ -481,7 +481,7 @@ fn a_shader_reads_a_hidden_layers_words_as_a_shown_ones_and_its_new_words_at_onc
     };
     let (_g, mut r) = gpu(64, 32);
     let frame = |r: &mut Renderer, visible: bool, words: &str| {
-        assert_eq!(r.setup(&dir.load(&doc(visible, words))).unwrap(), "");
+        r.setup(&dir.load(&doc(visible, words))).unwrap();
         r.set_time(Some(0.0));
         r.render(None).unwrap().to_vec()
     };
@@ -508,13 +508,13 @@ fn a_hidden_layer_that_moves_draws_no_frame_and_shows_where_its_motion_went() {
     };
     let dt = 0.0625;
     let (_g, mut r) = gpu(160, 48);
-    assert_eq!(r.setup(&dir.load(&doc(true))).unwrap(), "");
+    r.setup(&dir.load(&doc(true))).unwrap();
     let mut shown = Vec::new();
     for k in 0..8 {
         r.set_time(Some(f64::from(k) * dt));
         shown = r.render(None).unwrap().to_vec();
     }
-    assert_eq!(r.setup(&dir.load(&doc(false))).unwrap(), "");
+    r.setup(&dir.load(&doc(false))).unwrap();
     r.set_time(Some(0.0));
     let hidden = r.render(None).unwrap().to_vec();
     let draws = r.draws();

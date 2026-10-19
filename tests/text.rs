@@ -526,7 +526,7 @@ fn set_words(r: &Renderer, layer: &str, words: &str) {
 }
 
 fn render(r: &mut Renderer, sc: &Scene) -> Vec<u8> {
-    assert_eq!(r.setup(sc).unwrap(), "");
+    r.setup(sc).unwrap();
     r.set_time(Some(0.0));
     r.render(None).unwrap().to_vec()
 }
@@ -1949,7 +1949,7 @@ fn a_scene_whose_font_never_loaded_fails_its_setup_naming_the_font() {
     let sc = Scene::from_dict(&label_scene(SANS, "I", Align::Left, fit), None, None).unwrap();
     let (_g, mut r) = gpu(W, H);
     assert_eq!(
-        r.setup(&sc).unwrap(),
+        r.setup(&sc).unwrap_err().to_string(),
         "layer 'label': font 'face' was never loaded, the scene was built without a directory"
     );
 }
@@ -1962,7 +1962,7 @@ fn a_filter_after_a_layer_compiles() {
     let (_g, mut r) = gpu(W, H);
     let mut sc = loaded(&label_scene(SANS, "I", Align::Left, fit));
     apply_filters(&mut sc, &[Filter::named("dither")], None).unwrap();
-    assert_eq!(r.setup(&sc).unwrap(), "");
+    r.setup(&sc).unwrap();
 }
 
 // Text problems
@@ -2990,7 +2990,7 @@ fn a_layer_past_the_texture_units_fails_naming_the_layer() {
         false => "this GPU has",
     };
     assert_eq!(
-        r.setup(&loaded(&doc)).unwrap(),
+        r.setup(&loaded(&doc)).unwrap_err().to_string(),
         format!(
             "layer 'label' needs {} texture units, {past} {units}",
             units + 1
@@ -3102,7 +3102,7 @@ fn a_text_set_after_a_reset_reaches_no_layer_of_the_dropped_scene() {
 
 /// The frame of `doc` at time `t`.
 fn render_at(r: &mut Renderer, sc: &Scene, t: f64) -> Vec<u8> {
-    assert_eq!(r.setup(sc).unwrap(), "");
+    r.setup(sc).unwrap();
     r.set_time(Some(t));
     r.render(None).unwrap().to_vec()
 }

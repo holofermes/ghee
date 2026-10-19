@@ -1073,7 +1073,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(r.setup(&scene).unwrap(), "");
+        r.setup(&scene).unwrap();
         let mut enc = HardwareH264::new(&r, 64, 48, 30, 1_000_000).unwrap();
         assert_eq!((enc.w, enc.h), (192, 144));
         let mut key = None;

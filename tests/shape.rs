@@ -51,7 +51,7 @@ fn loaded(doc: &Value) -> Scene {
 }
 
 fn render(r: &mut Renderer, sc: &Scene) -> Vec<u8> {
-    assert_eq!(r.setup(sc).unwrap(), "");
+    r.setup(sc).unwrap();
     again(r)
 }
 

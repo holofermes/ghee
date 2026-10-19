@@ -123,7 +123,7 @@ fn loaded(doc: &Value, dir: &Path) -> Scene {
 }
 
 fn render(r: &mut Renderer, sc: &Scene) -> Vec<u8> {
-    assert_eq!(r.setup(sc).unwrap(), "");
+    r.setup(sc).unwrap();
     r.set_time(Some(0.0));
     r.render(None).unwrap().to_vec()
 }
@@ -516,7 +516,7 @@ fn an_image_layer_past_the_texture_units_fails_naming_the_layer() {
         false => "this GPU has",
     };
     assert_eq!(
-        r.setup(&loaded(&doc, dir.path())).unwrap(),
+        r.setup(&loaded(&doc, dir.path())).unwrap_err().to_string(),
         format!(
             "layer 'icon' needs {} texture units, {past} {units}",
             units + 1
@@ -534,7 +534,7 @@ fn an_image_layer_of_a_scene_built_without_a_directory_names_its_file() {
     let sc = Scene::from_dict(&doc, None, None).unwrap();
     let (_g, mut r) = gpu(8, 8);
     assert_eq!(
-        r.setup(&sc).unwrap(),
+        r.setup(&sc).unwrap_err().to_string(),
         "layer 'icon': 'pic.png' was never loaded, the scene was built without a directory"
     );
 }

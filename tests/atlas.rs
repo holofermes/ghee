@@ -64,7 +64,7 @@ fn frame(r: &mut Renderer, code: &str, visible: bool) -> Vec<u8> {
     });
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
     sc.load_assets(FONTS).unwrap();
-    assert_eq!(r.setup(&sc).unwrap(), "");
+    r.setup(&sc).unwrap();
     r.set_time(Some(0.0));
     r.render(None).unwrap().to_vec()
 }

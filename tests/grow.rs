@@ -149,7 +149,7 @@ fn with(doc: &Value, pass: &str, index: usize, layer: &Value) -> Value {
 }
 
 fn render(r: &mut Renderer, sc: &Scene) -> Vec<u8> {
-    assert_eq!(r.setup(sc).unwrap(), "");
+    r.setup(sc).unwrap();
     again(r)
 }
 
@@ -308,16 +308,13 @@ fn an_added_layer_leaves_the_running_state_of_the_scene_alone() {
         r.render(Some(&mut provider)).unwrap().to_vec()
     };
     let times = [0.0, 0.25, 0.5, 0.75, 1.0];
-    assert_eq!(
-        r.setup(&dir.load(&with(&doc, "main", 1, &shape))).unwrap(),
-        ""
-    );
+    r.setup(&dir.load(&with(&doc, "main", 1, &shape))).unwrap();
     let want: Vec<Vec<u8>> = times
         .iter()
         .enumerate()
         .map(|(i, t)| feed(&mut r, *t, i == 0))
         .collect();
-    assert_eq!(r.setup(&dir.load(&doc)).unwrap(), "");
+    r.setup(&dir.load(&doc)).unwrap();
     for (i, t) in times.iter().enumerate() {
         if *t == 0.5 {
             let compiled = r.compiled();
@@ -584,13 +581,13 @@ fn a_layer_built_again_carries_its_motion_on_and_leaves_the_rest_running() {
         r.render(Some(&mut provider)).unwrap().to_vec()
     };
     let times = [0.0, 0.25, 0.5, 0.75, 1.0];
-    assert_eq!(r.setup(&dir.load(&doc(news(22, "lime")))).unwrap(), "");
+    r.setup(&dir.load(&doc(news(22, "lime")))).unwrap();
     let want: Vec<Vec<u8>> = times
         .iter()
         .enumerate()
         .map(|(i, t)| feed(&mut r, *t, i == 0))
         .collect();
-    assert_eq!(r.setup(&dir.load(&doc(news(16, "white")))).unwrap(), "");
+    r.setup(&dir.load(&doc(news(16, "white")))).unwrap();
     for (i, t) in times.iter().enumerate() {
         if *t == 0.5 {
             r.replace_layer(&news(22, "lime")).unwrap();

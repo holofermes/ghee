@@ -95,6 +95,58 @@ impl ErrorPass {
     }
 }
 
+/// Why Renderer::setup() built nothing.
+#[derive(Debug)]
+pub enum SetupError {
+    /// The GPU refused the GLSL of a pass, of the common block or of a
+    /// layer. `line` counts the lines of the author's own code, from the top
+    /// of the common block when `pass` is Common.
+    Compile {
+        message: String,
+        pass: Option<ErrorPass>,
+        line: Option<i64>,
+    },
+    /// The scene asks for more than this renderer holds, such as more passes
+    /// or a bigger buffer than the GPU takes, or a channel names a pass that
+    /// the scene lacks.
+    Scene {
+        message: String,
+        pass: Option<ErrorPass>,
+    },
+    /// GL or the engine failed.
+    Engine(String),
+}
+
+impl SetupError {
+    /// The shader or the pass that the error names.
+    pub fn pass(&self) -> Option<ErrorPass> {
+        match self {
+            SetupError::Compile { pass, .. } | SetupError::Scene { pass, .. } => *pass,
+            SetupError::Engine(_) => None,
+        }
+    }
+
+    /// The line of a compile error, in the author's own code.
+    pub fn line(&self) -> Option<i64> {
+        match self {
+            SetupError::Compile { line, .. } => *line,
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for SetupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SetupError::Compile { message, .. }
+            | SetupError::Scene { message, .. }
+            | SetupError::Engine(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for SetupError {}
+
 /// What a provider returns for one declared array.
 ///
 /// DataU8 is the same array from bytes, where the value is byte / 255. A mask
@@ -1093,13 +1145,13 @@ pub struct Renderer {
     /// The scene of the last setup, with the live values set since.
     scene: std::cell::RefCell<Option<Scene>>,
     /// The last setup() error text. "" means the setup succeeded.
-    pub error: String,
+    error: String,
     /// The last setup() error is the GL's log of a GLSL compile or link.
-    pub compile_error: bool,
+    compile_error: bool,
     /// The user-code line of the last setup() compile error.
-    pub error_line: Option<i64>,
+    error_line: Option<i64>,
     /// The pass holding the error. Common is the scene's common block.
-    pub error_pass: Option<ErrorPass>,
+    error_pass: Option<ErrorPass>,
     pub display: bool,
     /// The card node that the display mode scans out on.
     card: Option<String>,
@@ -1410,25 +1462,44 @@ impl Renderer {
         self.pass_index(name)
     }
 
-    /// Build the scene's passes.
-    ///
-    /// Returns "" on success. Returns an error string for a compile error, or
-    /// for a scene the engine refuses.
-    /// A compile error sets compile_error, and error_line and error_pass to
-    /// the user-code line.
-    /// An error in the scene's common block sets error_pass to Common.
-    /// error_line then counts from the start of that block.
-    pub fn setup(&mut self, scene: &Scene) -> Result<String> {
-        self.build(scene, false)
+    /// Build the scene's passes. On an error the scene that ran before keeps
+    /// drawing.
+    pub fn setup(&mut self, scene: &Scene) -> Result<(), SetupError> {
+        let built = self.build(scene, false);
+        self.outcome(built)
     }
 
     /// setup() for an edit of the scene that runs. A pass that same_pass()
     /// finds in the running scene goes on from that pass's buffers, when the
     /// two have the same size and format.
-    pub(crate) fn rebuild(&mut self, scene: &Scene) -> Result<String> {
-        self.build(scene, true)
+    pub(crate) fn rebuild(&mut self, scene: &Scene) -> Result<(), SetupError> {
+        let built = self.build(scene, true);
+        self.outcome(built)
     }
 
+    /// The SetupError of build()'s error text, from the error fields that
+    /// build() set.
+    fn outcome(&self, built: Result<String>) -> Result<(), SetupError> {
+        match built {
+            Ok(message) if message.is_empty() => Ok(()),
+            Ok(message) if self.compile_error => Err(SetupError::Compile {
+                message,
+                pass: self.error_pass,
+                line: self.error_line,
+            }),
+            Ok(message) => Err(SetupError::Scene {
+                message,
+                pass: self.error_pass,
+            }),
+            Err(e) => Err(SetupError::Engine(format!("{e:#}"))),
+        }
+    }
+
+    /// Build the scene's passes. Returns "" on success, else the error text,
+    /// for a compile error or for a scene that the engine refuses. A compile
+    /// error sets compile_error, and error_line and error_pass to the
+    /// user-code line. An error in the scene's common block sets error_pass to
+    /// Common, and error_line then counts from the start of that block.
     fn build(&mut self, scene: &Scene, keep: bool) -> Result<String> {
         #[cfg(test)]
         let batches = std::mem::take(&mut self.test_batches);
@@ -2141,7 +2212,11 @@ impl Renderer {
     /// and error boxes, in the order given. A batch's compile error reports
     /// its pass.
     #[cfg(test)]
-    pub(crate) fn setup_batches(&mut self, scene: &Scene, batches: &[Batch]) -> Result<String> {
+    pub(crate) fn setup_batches(
+        &mut self,
+        scene: &Scene,
+        batches: &[Batch],
+    ) -> Result<(), SetupError> {
         self.test_batches = batches.to_vec();
         self.setup(scene)
     }
@@ -5630,6 +5705,11 @@ mod tests {
         GPU.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The error text of a setup, "" for one that built.
+    fn said(built: Result<(), SetupError>) -> String {
+        built.err().map_or_else(String::new, |e| e.to_string())
+    }
+
     /// One renderer for these tests, with the device lock.
     fn gpu() -> (MutexGuard<'static, ()>, Renderer) {
         gpu_at(W, H)
@@ -5807,11 +5887,8 @@ mod tests {
         let _g = lock();
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
         let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
-        assert_eq!(
-            r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
-                .unwrap(),
-            ""
-        );
+        r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
+            .unwrap();
         for _ in 0..30 {
             r.present(None, None).unwrap();
         }
@@ -5837,7 +5914,7 @@ mod tests {
         // opened the card again would find the DRM master taken.
         let probe = card.fd.try_clone().unwrap();
         let mut r = Renderer::on_card(card, w, h, false).unwrap();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         r.present(None, None).unwrap();
         assert_eq!(r.last_error(), "");
         drop(r);
@@ -5853,11 +5930,8 @@ mod tests {
         let _g = lock();
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
         let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
-        assert_eq!(
-            r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
-                .unwrap(),
-            ""
-        );
+        r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
+            .unwrap();
         for n in 1..=30 {
             r.present(None, None).unwrap();
             assert_eq!(unsafe { ffi::ghee_display_taken(r.handle) }, n);
@@ -5874,11 +5948,8 @@ mod tests {
         let _g = lock();
         let (dev, w, h) = probe_display_device(None).expect("no connected display");
         let mut r = Renderer::new(w, h, 4, Some(&dev), true, false).unwrap();
-        assert_eq!(
-            r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
-                .unwrap(),
-            ""
-        );
+        r.setup(&scene_of(json!([{"name": "main", "fragment": TICKING}])))
+            .unwrap();
         r.set_drop(true).unwrap();
         for _ in 0..3000 {
             r.present(None, None).unwrap();
@@ -5903,7 +5974,7 @@ mod tests {
             "params": {"level": {"type": "float", "value": 0.5}},
             "fragment": "void main(){ gl_FragColor = vec4(level, 0.25, 0.75, 1.0); }"}]));
         for drop in [false, true] {
-            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.setup(&sc).unwrap();
             r.set_drop(drop).unwrap();
             r.present(None, None).unwrap();
             let first = unsafe { ffi::ghee_display_taken(r.handle) };
@@ -6093,7 +6164,9 @@ mod tests {
     fn setup_rejects_a_scene_with_no_passes() {
         let (_g, mut r) = gpu();
         let empty = Scene::of(Vec::new()).unwrap();
-        assert!(r.setup(&empty).unwrap().contains("no passes"));
+        let err = r.setup(&empty).unwrap_err();
+        assert!(matches!(err, SetupError::Scene { .. }), "{err:?}");
+        assert!(err.to_string().contains("no passes"));
     }
 
     #[test]
@@ -6105,7 +6178,7 @@ mod tests {
             {"name": "b", "channels": [{"buffer": "a"}, {"buffer": "typo"}], "fragment": FLAT},
         ]));
         assert_eq!(
-            r.setup(&sc).unwrap(),
+            said(r.setup(&sc)),
             "pass 'b': channel 1 binds to buffer 'typo', which is not a pass in this scene"
         );
     }
@@ -6118,7 +6191,7 @@ mod tests {
         let sc = scene_of(json!([
             {"name": "a", "channels": [{"buffer": null}], "fragment": FLAT},
         ]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
     }
 
     #[test]
@@ -6130,7 +6203,7 @@ mod tests {
             {"name": "b", "fragment": FLAT, "arrays": [{"name": "v", "size": [2, 2]}]},
         ]);
         assert_eq!(
-            r.setup(&scene_of(clash)).unwrap(),
+            said(r.setup(&scene_of(clash))),
             "array 'v' declared at conflicting sizes (4 and (2, 2))"
         );
         // The size clash outranks the bad channel below it.
@@ -6139,7 +6212,7 @@ mod tests {
             {"name": "b", "fragment": FLAT, "channels": [{"buffer": "typo"}],
              "arrays": [{"name": "v", "size": [2, 2]}]},
         ]);
-        assert!(r.setup(&scene_of(both)).unwrap().starts_with("array 'v'"));
+        assert!(said(r.setup(&scene_of(both))).starts_with("array 'v'"));
     }
 
     /// Pass `a` is 8x8, or 8x6 at a scale of 1/8, and paints red right of
@@ -6168,7 +6241,8 @@ mod tests {
             (json!([a, b(true)]), 0.0),
             (json!([a, b(false)]), 0.0),
         ] {
-            assert_eq!(r.setup(&scene_of(passes.clone())).unwrap(), "", "{passes}");
+            r.setup(&scene_of(passes.clone()))
+                .unwrap_or_else(|e| panic!("{passes}: {e}"));
             r.set_time(Some(0.0));
             let f = r.render(None).unwrap().to_vec();
             assert_eq!(px(&f, W, 16, H / 2, 0), red, "{passes}");
@@ -6189,7 +6263,7 @@ mod tests {
             {"name": "leak", "channels": [{"buffer": "bright"}], "fragment": sample},
             {"name": "main", "channels": [{"buffer": null}], "fragment": sample},
         ]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let f = r.render(None).unwrap().to_vec();
         for c in 0..3 {
@@ -6232,7 +6306,8 @@ mod tests {
             (vec!["b", "c"], [255.0, 0.0, 0.0]),
             (vec!["a", "c"], [0.0, 128.0, 0.0]),
         ] {
-            assert_eq!(r.setup(&passes(&hidden)).unwrap(), "", "{hidden:?}");
+            r.setup(&passes(&hidden))
+                .unwrap_or_else(|e| panic!("{hidden:?}: {e}"));
             r.set_time(Some(0.0));
             // A hidden pass keeps its params and arrays, so a set and a feed
             // still land.
@@ -6260,7 +6335,7 @@ mod tests {
             {"name": "c", "channels": [{"buffer": "b"}], "visible": false,
              "fragment": "void main(){ gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0); }"},
         ]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         for want in [64.0, 128.0] {
             let f = r.render(None).unwrap().to_vec();
@@ -6273,7 +6348,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn compile_error_leaves_the_running_scene() {
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
 
@@ -6281,7 +6356,7 @@ mod tests {
             {"name": "main", "fragment": FLAT},
             {"name": "broken", "channels": [{"buffer": "main"}], "fragment": BROKEN},
         ]));
-        assert!(!r.setup(&bad).unwrap().is_empty());
+        r.setup(&bad).unwrap_err();
         assert_eq!(r.error_pass, Some(ErrorPass::Index(1)));
         assert_eq!(r.render(None).unwrap(), before);
     }
@@ -6290,7 +6365,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn unallocatable_pass_buffer_fails_loudly() {
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
 
@@ -6311,7 +6386,7 @@ mod tests {
     fn a_glsl_compile_error_alone_reads_as_a_compile_error() {
         let (_g, mut r) = gpu();
         let broken = scene_of(json!([{"name": "main", "fragment": BROKEN}]));
-        assert!(!r.setup(&broken).unwrap().is_empty());
+        r.setup(&broken).unwrap_err();
         assert!(r.compile_error);
         // A pass buffer that the GL refuses, after the compile error.
         let (name, raw) = (
@@ -6325,7 +6400,7 @@ mod tests {
         let typo = scene_of(json!([
             {"name": "main", "channels": [{"buffer": "typo"}], "fragment": FLAT},
         ]));
-        assert!(!r.setup(&typo).unwrap().is_empty());
+        r.setup(&typo).unwrap_err();
         assert!(!r.compile_error);
     }
 
@@ -6335,7 +6410,7 @@ mod tests {
         let (_g, mut r) = gpu();
         r.glyphs_fragment = Some(BROKEN);
         let scene = run_scene(&[words("t", "A", 0.0, 0.0, 8.0)]);
-        let err = r.setup(&scene).unwrap();
+        let err = said(r.setup(&scene));
         // The fragment shader fails before a link, so its log alone is the
         // GL's message, whatever vertex shader comes with it.
         let vertex = CString::new(crate::shape::program().0).unwrap();
@@ -6356,7 +6431,7 @@ mod tests {
         r.reset();
         r.render(None).unwrap();
         assert!(r.last_error().contains("no passes"));
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
     }
 
     #[test]
@@ -6366,7 +6441,7 @@ mod tests {
         // A zero or negative dimension falls through to the full-frame readback.
         // The buffer check sizes for that readback.
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         r.set_time(Some(0.0));
         for bad in [(0, 6), (8, 0), (-4, -6)] {
             let mut out: Vec<u8> = vec![0u8; 8 * 6 * COMPONENTS];
@@ -6389,7 +6464,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn downscaled_readback_matches_the_full_frame() {
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         r.set_time(Some(0.0));
         let full = r.render(None).unwrap().to_vec();
         let small = r.render_scaled(None, (8, 6)).unwrap();
@@ -6412,11 +6487,8 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_whole_multiple_readback_repeats_each_pixel() {
         let (_g, mut r) = gpu();
-        assert_eq!(
-            r.setup(&scene_of(json!([{"name": "main", "fragment": SPECKLE}])))
-                .unwrap(),
-            ""
-        );
+        r.setup(&scene_of(json!([{"name": "main", "fragment": SPECKLE}])))
+            .unwrap();
         r.set_time(Some(0.0));
         let full = r.render(None).unwrap().to_vec();
         for k in [2, 3] {
@@ -6448,7 +6520,7 @@ mod tests {
                      vec4 last = texture2D(iChannel0, uv + vec2(0.5 / iResolution.x, 0.0)); \
                      gl_FragColor = iFrame == 0 ? vec4(vec3(s), 1.0) : last; }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let stripes = r.render_scaled(None, (W as i32 * 2, H as i32 * 2)).unwrap();
         assert_ne!(px(&stripes, W * 2, 0, 0, 0), px(&stripes, W * 2, 2, 0, 0));
@@ -6499,7 +6571,7 @@ mod tests {
         r.set_time(Some(0.0));
         let mut frames = Vec::new();
         for b in [shadertoy, ghee] {
-            assert_eq!(r.setup(&three_passes(b)).unwrap(), "");
+            r.setup(&three_passes(b)).unwrap();
             for _ in 0..3 {
                 r.render(None).unwrap();
             }
@@ -6527,7 +6599,7 @@ mod tests {
             float tanh(float x) { return 0.5; }
             void mainImage(out vec4 o, in vec2 f) { o = vec4(1.0); }
             void main() { gl_FragColor = vec4(texture(vec2(0.25, 0.0)), tanh(0.0), 0.0, 1.0); }";
-        assert_eq!(r.setup(&scene_of(json!([{"fragment": own}]))).unwrap(), "");
+        r.setup(&scene_of(json!([{"fragment": own}]))).unwrap();
         let f = r.render(None).unwrap();
         assert!(
             (px(f, W, 0, 0, 0) - 64.0).abs() <= 1.0 && (px(f, W, 0, 0, 1) - 128.0).abs() <= 1.0
@@ -6536,7 +6608,7 @@ mod tests {
             json!([{"fragment": "void mainImage(out vec4 o, in vec2 f) {\n  o = nope;\n}"}]),
         );
         sc.common = Some("float k() { return 1.0; }".to_string());
-        assert_ne!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap_err();
         assert_eq!(r.error_line, Some(2));
     }
 
@@ -6562,12 +6634,12 @@ mod tests {
         ] {
             let mut sc = scene_of(json!([{"fragment": fragment}]));
             sc.common = common.cloned();
-            assert_eq!(r.setup(&sc).unwrap(), "", "{fragment}");
+            r.setup(&sc).unwrap_or_else(|e| panic!("{fragment}: {e}"));
             let f = r.render(None).unwrap();
             assert!((px(f, W, 0, 0, 0) - 128.0).abs() <= 1.0, "{fragment}");
         }
         let sc = scene_of(json!([{"fragment": format!("{ext}\nvoid main(){{\n  nope();\n}}")}]));
-        assert_ne!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap_err();
         assert_eq!(r.error_line, Some(3));
     }
 
@@ -6618,7 +6690,7 @@ mod tests {
             let mut frames = Vec::new();
             for sc in [&es1, &es3] {
                 r.set_time(Some(0.0));
-                assert_eq!(r.setup(sc).unwrap(), "", "{n}");
+                r.setup(sc).unwrap_or_else(|e| panic!("{n}: {e}"));
                 for _ in 0..3 {
                     r.render(None).unwrap();
                 }
@@ -6637,16 +6709,16 @@ mod tests {
             json!([{"name": "a", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"},
                                   {"name": "b", "fragment": es3}]),
         );
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.gles2 = true;
         assert_eq!(
-            r.setup(&sc).unwrap(),
+            said(r.setup(&sc)),
             "pass 'b' is GLSL ES 3.00, and this GPU compiles GLSL ES 1.00 alone"
         );
         r.gles2 = false;
         let sc = scene_of(json!([{"fragment": "// a comment\n#version 310 es\nvoid main(){}"}]));
         assert_eq!(
-            r.setup(&sc).unwrap(),
+            said(r.setup(&sc)),
             "pass 'main' opens with '#version 310 es', and a pass takes '#version 100' or \
              '#version 300 es'"
         );
@@ -6656,7 +6728,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn render_into_a_caller_buffer() {
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         r.set_time(Some(0.0));
         let full = r.render(None).unwrap().to_vec();
         let mut buf = vec![0u8; H * W * COMPONENTS];
@@ -6676,10 +6748,10 @@ mod tests {
             "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv) \
                      + vec4(0.1, 0.0, 0.0, 1.0); }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let one = r.render(None).unwrap().to_vec();
-        assert_eq!(r.setup(&sc).unwrap(), ""); // setup() gives fresh buffers, cleared to black.
+        r.setup(&sc).unwrap(); // setup() gives fresh buffers, cleared to black.
         r.draw(None).unwrap();
         let two = r.render(None).unwrap().to_vec();
         assert!(mean(&channel(&two, 0)) as i64 > mean(&channel(&one, 0)) as i64);
@@ -6788,7 +6860,7 @@ mod tests {
         let (_g, mut r) = gpu_at(32, 16);
         let mut wrong = Vec::new();
         for (what, steps, want) in rows {
-            assert_eq!(r.setup(&scene_of(base())).unwrap(), "");
+            r.setup(&scene_of(base())).unwrap();
             for _ in 0..3 {
                 r.draw(None).unwrap();
             }
@@ -6796,7 +6868,7 @@ mod tests {
             for (doc, keep) in steps {
                 let sc = scene_of(doc);
                 let built = if keep { r.rebuild(&sc) } else { r.setup(&sc) };
-                assert_eq!(built.unwrap(), "", "{what}");
+                built.unwrap_or_else(|e| panic!("{what}: {e}"));
                 frame = r.render(None).unwrap().to_vec();
             }
             let got = [frame[0], frame[1], frame[2]];
@@ -6832,7 +6904,7 @@ mod tests {
                          + vec4(0.0, 0.0, shared_at(2), 0.0); }",
             },
         ]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let mut calls: Vec<String> = Vec::new();
         let f = {
@@ -6877,7 +6949,7 @@ mod tests {
             )
             .unwrap();
             sc.load_assets(fonts).unwrap();
-            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.setup(&sc).unwrap();
             let assets = r.scene_assets.borrow();
             let held = assets.iter().any(|n| n == "ghee_t_curves" || n == GLYPHS);
             assert_eq!(held, reads, "{code} {render}");
@@ -6934,7 +7006,7 @@ mod tests {
                 } else {
                     r.setup(scene)
                 };
-                assert_eq!(built.unwrap(), "");
+                built.unwrap();
                 r.draw(None).unwrap();
                 r.render(None).unwrap();
             }
@@ -7037,7 +7109,7 @@ mod tests {
                     "image" => image(i),
                     _ => text(i),
                 };
-                assert_eq!(r.setup(&sc).unwrap(), "", "{kind} {i}");
+                r.setup(&sc).unwrap_or_else(|e| panic!("{kind} {i}: {e}"));
                 r.set_time(Some(0.0));
                 let f = r.render(None).unwrap();
                 assert_eq!(f[1], 200, "{kind} {i}");
@@ -7067,7 +7139,7 @@ mod tests {
         assert!(r.setup(&scene_of(Value::from(passes))).is_err());
         let two = scene_of(json!([{"name": "a", "fragment": FLAT},
             {"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]));
-        assert_eq!(r.setup(&two).unwrap(), "");
+        r.setup(&two).unwrap();
         r.set_time(Some(0.0));
         assert_eq!(&r.render(None).unwrap()[..4], [255; 4]);
     }
@@ -7076,7 +7148,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn texture_unit_budget_rejects_a_greedy_pass() {
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
 
@@ -7093,7 +7165,7 @@ mod tests {
             },
         ]));
         assert_eq!(
-            r.setup(&greedy).unwrap(),
+            said(r.setup(&greedy)),
             over_units(&r, "pass 'main'", units + 1)
         );
         assert_eq!(r.render(None).unwrap(), before);
@@ -7121,7 +7193,7 @@ mod tests {
                 "void main(){{ gl_FragColor = vec4(texture2D(iChannel{}, uv).r, \
                  m4_at(0), 0.0, 1.0); }}", units - 6)},
         ]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let mut feed = |name: &str, _size: ArraySize| match name {
             "a11" => Feed::Data(vec![0.25; 4]),
@@ -7159,7 +7231,7 @@ mod tests {
             components: 1,
             pixels: Pixels::U8(vec![191]),
         });
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let mut feed = |_: &str, _: ArraySize| Feed::Data(vec![0.5; 4]);
         let f = r.render(Some(&mut feed)).unwrap();
@@ -7181,9 +7253,9 @@ mod tests {
                 .map(|i| json!({"name": format!("p{i}"), "fragment": FLAT}))
                 .collect()
         };
-        assert_eq!(r.setup(&scene_of(json!(passes(16)))).unwrap(), "");
+        r.setup(&scene_of(json!(passes(16)))).unwrap();
         assert_eq!(
-            r.setup(&scene_of(json!(passes(17)))).unwrap(),
+            said(r.setup(&scene_of(json!(passes(17))))),
             "17 passes, over the cap of 16"
         );
         let mut filtered = scene_of(json!(passes(15)));
@@ -7197,7 +7269,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            r.setup(&filtered).unwrap(),
+            said(r.setup(&filtered)),
             "17 passes, 2 of them filters, over the cap of 16"
         );
     }
@@ -7215,7 +7287,7 @@ mod tests {
             "fragment": "void main(){ gl_FragColor = vec4(vec3(floor(uv.x * 16.0) / 16.0), 1.0); }"}]));
         crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc")], None)
             .unwrap();
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let corr = |a: &[f64], b: &[f64]| {
             let n = a.len() as f64;
             let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
@@ -7312,13 +7384,13 @@ mod tests {
             (&two, [(1..=units).sum::<usize>(), 0]),
             (&only_a, [0, (units + 1..=units + 4).sum::<usize>()]),
         ] {
-            assert_eq!(r.setup(sc).unwrap(), "");
+            r.setup(sc).unwrap();
             r.set_time(Some(0.0));
             let f = r.render(None).unwrap();
             assert_eq!([f[0] as usize, f[1] as usize], want);
         }
         assert_eq!(
-            r.setup(&scene(json!([{"buffer": "a"}]))).unwrap(),
+            said(r.setup(&scene(json!([{"buffer": "a"}])))),
             over_units(&r, "pass 'main'", units + 1)
         );
     }
@@ -7326,7 +7398,7 @@ mod tests {
     const HALF: &str = "void main(){ gl_FragColor = vec4(0.25, 0.5, 0.0, 0.5); }";
 
     fn first_frames(r: &mut Renderer, sc: &Scene, n: usize) -> Vec<u8> {
-        assert_eq!(r.setup(sc).unwrap(), "");
+        r.setup(sc).unwrap();
         let mut f = Vec::new();
         for i in 0..n {
             r.set_time(Some(i as f64 / 60.0));
@@ -7363,7 +7435,7 @@ mod tests {
         for keep in [false, true] {
             let mut r3 = Renderer::new(8, 8, 3, Some(&dev), false, false).unwrap();
             r3.set_alpha(keep);
-            assert_eq!(r3.setup(&sc).unwrap(), "");
+            r3.setup(&sc).unwrap();
             r3.set_time(Some(0.0));
             rgb.push(r3.render(None).unwrap().to_vec());
         }
@@ -7386,11 +7458,8 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_repeated_frame_reads_back_the_bytes_of_the_frame_drawn_before_it() {
         let (_g, mut r) = gpu();
-        assert_eq!(
-            r.setup(&scene_of(json!([{"name": "main", "fragment": GRADIENT}])))
-                .unwrap(),
-            ""
-        );
+        r.setup(&scene_of(json!([{"name": "main", "fragment": GRADIENT}])))
+            .unwrap();
         for (pw, ph) in [(0, 0), (W as i32 / 2, H as i32 / 2)] {
             let size = (pw > 0).then_some((pw, ph));
             let n = if pw > 0 { (pw * ph) as usize } else { W * H } * COMPONENTS;
@@ -7474,7 +7543,8 @@ mod tests {
             let mut pass = pass;
             pass["name"] = json!("main");
             r.set_alpha(false);
-            assert_eq!(r.setup(&scene_of(json!([pass]))).unwrap(), "", "{what}");
+            r.setup(&scene_of(json!([pass])))
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
             r.set_time(Some(0.0));
             r.render(None).unwrap();
             change(&mut r);
@@ -7508,7 +7578,7 @@ mod tests {
                 0 => r.setup(&sc),
                 _ => r.rebuild(&sc),
             };
-            assert_eq!(err.unwrap(), "");
+            err.unwrap();
             r.set_time(Some(0.0));
             f = r.render(None).unwrap().to_vec();
         }
@@ -7604,11 +7674,8 @@ mod tests {
         ];
         let (_g, mut r) = gpu();
         for (fragment, same) in rows {
-            assert_eq!(
-                r.setup(&scene_of(json!([{"name": "main", "fragment": fragment}])))
-                    .unwrap(),
-                ""
-            );
+            r.setup(&scene_of(json!([{"name": "main", "fragment": fragment}])))
+                .unwrap();
             let mut sink = Kept(Vec::new());
             {
                 let mut lp = crate::looper::Loop::new(&mut r, vec![&mut sink]);
@@ -7670,7 +7737,7 @@ mod tests {
         let mut sc = flat_scene();
         sc.passes[0].fragment = String::new();
         assert_eq!(
-            r.setup(&sc).unwrap(),
+            said(r.setup(&sc)),
             "pass 'main' has no 'fragment' and no 'layers'"
         );
     }
@@ -7679,7 +7746,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn channel_source_pass_is_bound_checked() {
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         assert!(!unsafe { ffi::ghee_mp_set_channel(r.handle(), 0, 0, 7) });
         assert!(unsafe { ffi::ghee_mp_set_channel(r.handle(), 0, 0, -1) });
         assert!(unsafe { ffi::ghee_mp_set_channel(r.handle(), 0, 0, 0) });
@@ -7693,7 +7760,7 @@ mod tests {
             "name": "main",
             "fragment": "void main(){ gl_FragColor = vec4(mod(iTime * 37.0, 1.0), 0.0, 0.0, 1.0); }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(1.0));
         let pinned = r.render(None).unwrap().to_vec();
         assert_eq!(r.render(None).unwrap(), pinned);
@@ -7718,7 +7785,7 @@ mod tests {
                 "channels": [{"buffer": "src"}],
             },
         ]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let near = |frame: &[u8], want: f64| {
             (0..2).all(|c| channel(frame, c).iter().all(|v| (v - want).abs() <= 1.0))
@@ -7751,7 +7818,7 @@ mod tests {
              "fragment": format!("void main(){{ gl_FragColor = uv.x < 0.5 ? \
                               texture2D(iChannel0, uv) : {own}; }}")},
         ]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let f = r.render(None).unwrap().to_vec();
         let rgb = |x| [0, 1, 2].map(|c| px(&f, W, x, H / 2, c));
         assert_eq!(rgb(1), [8.0, 4.0, 255.0]);
@@ -7774,7 +7841,7 @@ mod tests {
                           if (uv.x > 0.5) s = iChannelResolution[2]; \
                           gl_FragColor = vec4(s.xy / 255.0, s.z, 1.0); }"},
         ]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let f = r.render(None).unwrap().to_vec();
         let rgb = |x| [0, 1, 2].map(|c| px(&f, W, x, H / 2, c));
         assert_eq!(rgb(W / 8), [8.0, 4.0, 255.0]);
@@ -7797,7 +7864,7 @@ mod tests {
             {"name": "main", "channels": [{"buffer": "a"}],
              "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
         ]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let f = r.render(None).unwrap().to_vec();
         assert_eq!(
             [0, 1, 2].map(|c| px(&f, W, W / 2, H / 2, c)),
@@ -7820,7 +7887,7 @@ mod tests {
                          gl_FragColor = vec4(vec3(g), 1.0); }"}]));
         crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc16")], None)
             .unwrap();
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let mut avg = vec![0.0; W * H];
         for _ in 0..16 {
@@ -7861,7 +7928,7 @@ mod tests {
                 {"name": "main", "channels": [{"buffer": "a"}],
                  "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
             ]));
-            assert_eq!(r.setup(&sc).unwrap(), "", "{scale}");
+            r.setup(&sc).unwrap_or_else(|e| panic!("{scale}: {e}"));
             let f = r.render(None).unwrap().to_vec();
             let side = |n: f64, s: f64| (n * s).round().max(1.0);
             assert_eq!(
@@ -7876,7 +7943,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_scale_past_the_caps_of_a_sized_pass_is_refused_and_the_scene_runs_on() {
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         let before = r.render(None).unwrap().to_vec();
         for (scale, want) in [
             (
@@ -7892,7 +7959,7 @@ mod tests {
                 {"name": "a", "scale": scale, "fragment": FLAT},
                 {"name": "main", "channels": [{"buffer": "a"}], "fragment": FLAT},
             ]));
-            assert_eq!(r.setup(&sc).unwrap(), want);
+            assert_eq!(said(r.setup(&sc)), want);
             assert_eq!(r.render(None).unwrap(), before);
         }
     }
@@ -7901,7 +7968,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_pass_an_array_or_an_image_past_the_gpus_texture_size_is_refused_and_the_scene_runs_on() {
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         let before = r.render(None).unwrap().to_vec();
         let max = r.max_texture_size();
         let over = max + 1;
@@ -7956,7 +8023,7 @@ mod tests {
             rows.push((sc, want));
         }
         for (sc, want) in rows {
-            assert_eq!(r.setup(&sc).unwrap(), want);
+            assert_eq!(said(r.setup(&sc)), want);
             assert_eq!(r.render(None).unwrap(), before, "{want}");
         }
         // A host's asset, and a file set live as a layer's image.
@@ -7979,7 +8046,7 @@ mod tests {
         )
         .unwrap();
         sc.load_assets(&dir).unwrap();
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let shown = r.render(None).unwrap().to_vec();
         let at = Address {
             layer: "pic",
@@ -8000,7 +8067,7 @@ mod tests {
         let max = gpu().1.max_texture_size();
         let (_g, mut r) = gpu_at(max as usize + 1, 1);
         assert_eq!(
-            r.setup(&flat_scene()).unwrap(),
+            said(r.setup(&flat_scene())),
             format!(
                 "the frame is {}x1, over this GPU's {max} pixel cap of a side",
                 max + 1
@@ -8034,7 +8101,7 @@ mod tests {
         )
         .unwrap();
         sc.load_assets(".").unwrap();
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         for grey in [20, 30, 40] {
             assert!(r.update_layer(&look(grey)).unwrap());
             assert_eq!(r.render(None).unwrap()[0], grey);
@@ -8059,7 +8126,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_param("main", "gain", "float", &ParamValue::Float(0.25))
             .unwrap();
         r.set_param("main", "mode", "string", &ParamValue::Str("b".into()))
@@ -8085,7 +8152,7 @@ mod tests {
             "name": "main",
             "fragment": "void main(){ gl_FragColor = vec4(float(iFrame) / 255.0, iTime * 0.2, iTimeDelta * 12.0, 1.0); }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let drawn = |r: &mut Renderer| {
             let f = r.render(None).unwrap().to_vec();
             [0, 1, 2].map(|c| px(&f, W, 0, 0, c))
@@ -8124,7 +8191,7 @@ mod tests {
             "name": "main",
             "fragment": "void main(){ gl_FragColor = vec4(float(iFrame) / 255.0, 0.0, 0.0, 1.0); }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         for want in [0.0, 1.0, 2.0] {
             let f = r.render(None).unwrap().to_vec();
             assert_eq!(px(&f, W, 0, 0, 0), want);
@@ -8140,7 +8207,7 @@ mod tests {
             "fragment": "void main(){ vec2 uv = vec2(0.0); \
                      gl_FragColor = vec4(floor(gl_FragCoord.x) / 255.0, uv, 1.0); }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let f = r.render(None).unwrap().to_vec();
         for x in [0, 5, W - 1] {
             assert_eq!(px(&f, W, x, H / 2, 0), x as f64);
@@ -8152,12 +8219,12 @@ mod tests {
     fn closing_a_second_renderer_leaves_the_first_alive() {
         let (_g, mut r) = gpu();
         let sc = flat_scene();
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let before = r.render(None).unwrap().to_vec();
         let mut other = Renderer::new(16, 16, COMPONENTS as i32, None, false, false)
             .expect("a second renderer on the GPU");
-        assert_eq!(other.setup(&sc).unwrap(), "");
+        other.setup(&sc).unwrap();
         other.render(None).unwrap();
         other.close();
         assert_eq!(r.render(None).unwrap(), before);
@@ -8176,7 +8243,7 @@ mod tests {
         }]));
         for shader_lerp in [false, true] {
             r.shader_lerp = shader_lerp;
-            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.setup(&sc).unwrap();
             r.set_time(Some(0.0));
             let mut provider = |_: &str, _: ArraySize| Feed::Data(vec![1.0, 0.0, 0.0, 0.0]);
             let f = r.render(Some(&mut provider)).unwrap().to_vec();
@@ -8199,7 +8266,7 @@ mod tests {
             "fragment": "void main(){ gl_FragColor = vec4(mask_sample2(vec2(0.75, 0.25)), \
                      vals_at(1), 0.0, 1.0); }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let mut provider = |name: &str, _size: ArraySize| match name {
             // This feed holds half a 2x2 mask. The second row zero-pads.
@@ -8220,7 +8287,7 @@ mod tests {
             "arrays": [{"name": "vals", "size": 4}],
             "fragment": "void main(){ gl_FragColor = vec4(vals_at(0), 0.0, 0.0, 1.0); }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let mut half = |_: &str, _: ArraySize| Feed::Data(vec![0.5; 4]);
         let fed = r.render(Some(&mut half)).unwrap().to_vec();
@@ -8247,14 +8314,16 @@ mod tests {
             None,
         )
         .unwrap();
-        let e = r.setup(&sc).unwrap();
+        let err = r.setup(&sc).unwrap_err();
+        assert!(matches!(err, SetupError::Compile { .. }), "{err:?}");
+        assert_eq!(err.pass(), Some(ErrorPass::Common));
+        assert_eq!(err.line(), Some(2)); // The author wrote nope() on line 2.
+        let e = err.to_string();
         // The GL's own log follows, once.
         let log = e
             .strip_prefix("pass 'main', line 2 of the common block: ")
             .unwrap_or_else(|| panic!("{e}"));
         assert!(log.contains("nope") && !log.contains("pass '"), "{e}");
-        assert_eq!(r.error_pass, Some(ErrorPass::Common));
-        assert_eq!(r.error_line, Some(2)); // The author wrote nope() on line 2.
     }
 
     #[test]
@@ -8274,16 +8343,17 @@ mod tests {
             None,
         )
         .unwrap();
-        let e = r.setup(&sc).unwrap();
+        let err = r.setup(&sc).unwrap_err();
+        assert_eq!(err.pass(), Some(ErrorPass::Index(1)));
+        assert_eq!(err.line(), Some(3));
+        let e = err.to_string();
         // The GL's own log follows, once.
         let log = e
             .strip_prefix("pass 'b', line 3 of its fragment: ")
             .unwrap_or_else(|| panic!("{e}"));
         assert!(log.contains("nope") && !log.contains("pass '"), "{e}");
-        assert_eq!(r.error_pass, Some(ErrorPass::Index(1)));
-        assert_eq!(r.error_line, Some(3));
         // A good compile clears the attribution.
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         assert!(r.error_pass.is_none() && r.error_line.is_none());
     }
 
@@ -8313,7 +8383,7 @@ mod tests {
             "vals",
             json!(N),
         );
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let vals = ramp(N);
         let mut provider = |_: &str, _: ArraySize| Feed::Data(vals.clone());
         let f = r.render(Some(&mut provider)).unwrap().to_vec();
@@ -8335,7 +8405,7 @@ mod tests {
             "vals",
             json!(N),
         );
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let vals = ramp(N);
         let mut provider = |_: &str, _: ArraySize| Feed::Data(vals.clone());
         let f = r.render(Some(&mut provider)).unwrap().to_vec();
@@ -8364,7 +8434,7 @@ mod tests {
             ),
         ] {
             let sc = array_scene(code, "vals", size.clone());
-            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.setup(&sc).unwrap();
             let fed = floats.clone();
             let mut as_f32 = |_: &str, _: ArraySize| Feed::Data(fed.clone());
             let want = Sha256::digest(r.render(Some(&mut as_f32)).unwrap());
@@ -8390,7 +8460,7 @@ mod tests {
         r.set_asset("logo", 2, 2, 4, false, AssetData::U8(&[128u8; 16]))
             .unwrap();
         let sc = scene_of(json!([{"name": "main", "fragment": code}]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         r.set_asset("late", 1, 1, 1, false, AssetData::U8(&[64u8]))
             .unwrap();
@@ -8431,7 +8501,7 @@ mod tests {
         );
         for shader_lerp in [false, true] {
             r.shader_lerp = shader_lerp;
-            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.setup(&sc).unwrap();
             let fed = vals.clone();
             let mut provider = |_: &str, _: ArraySize| Feed::Data(fed.clone());
             let f = r.render(Some(&mut provider)).unwrap().to_vec();
@@ -8464,7 +8534,7 @@ mod tests {
                 uv.0, uv.1
             );
             let sc = array_scene(&code, "mask", json!([2, 2]));
-            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.setup(&sc).unwrap();
             let fed = m.clone();
             let mut provider = |_: &str, _: ArraySize| Feed::Data(fed.clone());
             let f = r.render(Some(&mut provider)).unwrap().to_vec();
@@ -8510,7 +8580,7 @@ mod tests {
         let (_g, mut r) = gpu_at(N, N);
         for shader_lerp in [false, true] {
             r.shader_lerp = shader_lerp;
-            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.setup(&sc).unwrap();
             let mut provider = |name: &str, _: ArraySize| match name {
                 "grid" => Feed::Data(grid.clone()),
                 _ => Feed::Data(line.clone()),
@@ -8546,7 +8616,8 @@ mod tests {
             .unwrap();
             for shader_lerp in [false, true] {
                 r.shader_lerp = shader_lerp;
-                assert_eq!(r.setup(&sc).unwrap(), "", "{n} shader_lerp {shader_lerp}");
+                r.setup(&sc)
+                    .unwrap_or_else(|e| panic!("{n} shader_lerp {shader_lerp}: {e}"));
                 r.render(None).unwrap();
             }
         }
@@ -8612,7 +8683,7 @@ mod tests {
             {"name": "b", "fragment": FLAT, "arrays": [{"name": "v", "size": 7}]},
         ]);
         assert_eq!(
-            r.setup(&scene_of(clash)).unwrap(),
+            said(r.setup(&scene_of(clash))),
             "array 'v' declared at conflicting sizes ((3, 5) and 7)"
         );
         // The bad channel outranks the texture-unit budget of the same pass.
@@ -8624,7 +8695,7 @@ mod tests {
              "fragment": "void main(){ gl_FragColor = vec4(v_at(0)); }"},
         ]);
         assert_eq!(
-            r.setup(&scene_of(both)).unwrap(),
+            said(r.setup(&scene_of(both))),
             "pass 'main': channel 0 binds to buffer 'typo', which is not a pass in this scene"
         );
     }
@@ -8650,7 +8721,7 @@ mod tests {
             sc.name_clash().as_deref(),
             Some("array 'v' in pass 'main' is declared twice")
         );
-        let err = r.setup(&sc).unwrap();
+        let err = said(r.setup(&sc));
         assert!(!err.contains("texture units"), "{err}");
         if !err.is_empty() {
             assert_eq!(r.error_pass, Some(ErrorPass::Index(1)));
@@ -8670,7 +8741,7 @@ mod tests {
                        "off": {"type": "vec2", "value": [0.0, 0.0]},
                        "label": {"type": "string", "value": "hi"}},
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         // A colour written as hex sets the same vec3 as one written as a list.
         let color = ParamValue::Color(Rgb::from_json(&json!("#801a33")).unwrap());
@@ -8743,7 +8814,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let f = r.render(None).unwrap().to_vec();
         let want = [
@@ -8782,7 +8853,7 @@ mod tests {
                     gl_FragColor = vec4(lift(tint), 1.0); }";
         let sc = scene_of(json!([{"name": "main", "fragment": code,
             "params": {"tint": {"type": "color", "value": [1.0, 1.0, 1.0]}}}]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let f = r.render(None).unwrap().to_vec();
         assert!(
@@ -8828,10 +8899,10 @@ mod tests {
             (0..4).map(|i| f[i * COMPONENTS]).collect::<Vec<_>>()
         };
         // The pixels' centres sit a quarter texel either side of the texels'.
-        assert_eq!(r.setup(&edge_scene("nearest")).unwrap(), "");
+        r.setup(&edge_scene("nearest")).unwrap();
         assert_eq!(reds(&mut r), [0, 0, 255, 255]);
         // A rebuild hands the pass its buffers, and they sample linearly again.
-        assert_eq!(r.rebuild(&edge_scene("linear")).unwrap(), "");
+        r.rebuild(&edge_scene("linear")).unwrap();
         let got = reds(&mut r);
         assert!(
             got.iter()
@@ -8854,7 +8925,7 @@ mod tests {
                  ? vec4(vec3(step(2.0, gl_FragCoord.x)), 1.0) : texture2D(iChannel0, uv); }"},
         ]));
         let (_g, mut r) = gpu_at(4, 1);
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let mut twice = vec![0u8; 8 * 2 * COMPONENTS];
         r.render_into(None, &mut twice, Some((8, 2))).unwrap();
@@ -8887,13 +8958,13 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         // Read at a texel centre with no mip chain, the checker gives black.
-        assert_eq!(r.setup(&checker_scene("linear", read)).unwrap(), "");
+        r.setup(&checker_scene("linear", read)).unwrap();
         r.set_time(Some(0.0));
         let f = r.render(None).unwrap().to_vec();
         assert!(reds(&f).iter().all(|v| *v == 0.0), "{:?}", &reds(&f)[..8]);
         // Four texels a pixel read from level 2, where each texel averages
         // 16 of the checker's.
-        assert_eq!(r.setup(&checker_scene("trilinear", read)).unwrap(), "");
+        r.setup(&checker_scene("trilinear", read)).unwrap();
         r.set_time(Some(0.0));
         let f = r.render(None).unwrap().to_vec();
         assert!(
@@ -8913,11 +8984,8 @@ mod tests {
         let fs = "uniform sampler2D iChannel0; uniform vec3 iResolution;\n\
                   void main(){ gl_FragColor = texture2D(iChannel0, v_px / iResolution.xy + 0.5 / 256.0); }";
         let batches = [batch("main", fs, Blend::Normal)];
-        assert_eq!(
-            r.setup_batches(&checker_scene("trilinear", red), &batches)
-                .unwrap(),
-            ""
-        );
+        r.setup_batches(&checker_scene("trilinear", red), &batches)
+            .unwrap();
         r.set_batch_quads(0, &quad(0.0, 0.0, 64.0, 64.0, [0.0; 4]), 2)
             .unwrap();
         r.set_time(Some(0.0));
@@ -8950,7 +9018,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         assert!(r
             .set_scene_param("P", "float", &ParamValue::Float(0.5))
@@ -8977,7 +9045,7 @@ mod tests {
             "fragment": "void main(){ gl_FragColor = vec4(mask_sample2(vec2(0.25, 0.75)), \
                      mask_sample2(vec2(0.75, 0.25)), vals_at(2), 1.0); }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         let mut run = |mask: Vec<f32>, vals: Vec<f32>| -> [u8; 4] {
             let mut provider = |name: &str, _: ArraySize| {
@@ -9031,7 +9099,7 @@ mod tests {
             "name": "main",
             "fragment": "void main(){ gl_FragColor = vec4(uv.x, uv.y, 0.25, 1.0); }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         r.set_time(Some(0.0));
         for (w, h) in [(W * 2, H * 2), (W, H), (1, 1), (3, 7)] {
             let out = r.render_scaled(None, (w as i32, h as i32)).unwrap();
@@ -9117,7 +9185,8 @@ mod tests {
         ] {
             let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
             let l = batch("main", PLAIN_FS, blend);
-            assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "", "{blend:?}");
+            r.setup_batches(&sc, &[l])
+                .unwrap_or_else(|e| panic!("{blend:?}: {e}"));
             r.set_batch_quads(0, &quad(0.0, 0.0, (W / 2) as f32, H as f32, src), 2)
                 .unwrap();
             let f = r.render(None).unwrap().to_vec();
@@ -9143,11 +9212,8 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "fragment":
             "void main(){ gl_FragColor = vec4(uv.y > 0.75 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"}]));
-        assert_eq!(
-            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Add)])
-                .unwrap(),
-            ""
-        );
+        r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Add)])
+            .unwrap();
         let rows = (H / 4) as f32;
         r.set_batch_quads(0, &quad(0.0, 0.0, W as f32, rows, [0.0, 1.0, 0.0, 1.0]), 2)
             .unwrap();
@@ -9168,11 +9234,8 @@ mod tests {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "fragment":
             "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"}]));
-        assert_eq!(
-            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Add)])
-                .unwrap(),
-            ""
-        );
+        r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Add)])
+            .unwrap();
         let mut data = Vec::new();
         let pixels = |color: [f32; 4], data: &mut Vec<f32>| {
             for y in 0..H {
@@ -9207,7 +9270,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let words = |px: i32| json!({"name": "t", "text": "Hi", "font_size": px});
         let doc = json!([{"name": "main", "fragment": FLAT, "layers": [words(12)]}]);
-        assert_eq!(r.setup(&scene_of(doc)).unwrap(), "");
+        r.setup(&scene_of(doc)).unwrap();
         let held = |r: &Renderer| {
             let d = r.drawn("t").unwrap();
             let mut b = vec![d.batch, d.colour, d.boxes];
@@ -9254,7 +9317,7 @@ mod tests {
         let batches: Vec<Batch> = (0..100)
             .map(|_| batch("main", PLAIN_FS, Blend::Add))
             .collect();
-        assert_eq!(r.setup_batches(&sc, &batches).unwrap(), "");
+        r.setup_batches(&sc, &batches).unwrap();
         let red = quad(0.0, 0.0, W as f32, H as f32, [1.0 / 255.0, 0.0, 0.0, 0.0]);
         for k in 0..batches.len() {
             r.set_batch_quads(k, &red, 2).unwrap();
@@ -9277,7 +9340,7 @@ mod tests {
             batch("main", PLAIN_FS, Blend::Normal),
             batch("main", PLAIN_FS, Blend::Normal),
         ];
-        assert_eq!(r.setup_batches(&sc, &batches).unwrap(), "");
+        r.setup_batches(&sc, &batches).unwrap();
         let all = |c| quad(0.0, 0.0, W as f32, H as f32, c);
         r.set_batch_quads(0, &all([1.0, 0.0, 0.0, 1.0]), 2).unwrap();
         r.set_batch_quads(1, &all([0.0, 0.0, 1.0, 1.0]), 2).unwrap();
@@ -9302,11 +9365,8 @@ mod tests {
         // checks every quarter, the ones replaced frames before too.
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
-        assert_eq!(
-            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Normal)])
-                .unwrap(),
-            ""
-        );
+        r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Normal)])
+            .unwrap();
         let q = W / 4;
         let quarter =
             |k: usize, c: [f32; 4]| quad((k * q) as f32, 0.0, ((k + 1) * q) as f32, H as f32, c);
@@ -9369,11 +9429,8 @@ mod tests {
         // twice as wide, and then a quad changes in part.
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
-        assert_eq!(
-            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Normal)])
-                .unwrap(),
-            ""
-        );
+        r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Normal)])
+            .unwrap();
         let q = W / 2;
         let half =
             |k: usize, c: [f32; 4]| quad((k * q) as f32, 0.0, ((k + 1) * q) as f32, H as f32, c);
@@ -9444,7 +9501,7 @@ mod tests {
             ),
             blend: Blend::Normal,
         };
-        assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "");
+        r.setup_batches(&sc, &[l]).unwrap();
         r.set_time(Some(0.0));
         assert!(r
             .set_scene_param("level", "float", &ParamValue::Float(0.5))
@@ -9484,7 +9541,7 @@ mod tests {
                texture2D(late_tex, vec2(0.5)).r, 0.0, 1.0); }",
             Blend::Normal,
         );
-        assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "");
+        r.setup_batches(&sc, &[l]).unwrap();
         r.set_asset("late", 1, 1, 1, false, AssetData::U8(&[191u8]))
             .unwrap();
         r.set_batch_quads(0, &quad(0.0, 0.0, W as f32, H as f32, [0.0; 4]), 2)
@@ -9506,11 +9563,8 @@ mod tests {
             {"name": "main", "channels": [{"buffer": "a"}],
              "fragment": "void main(){ gl_FragColor = texture2D(iChannel0, uv); }"},
         ]));
-        assert_eq!(
-            r.setup_batches(&sc, &[batch("a", PLAIN_FS, Blend::Normal)])
-                .unwrap(),
-            ""
-        );
+        r.setup_batches(&sc, &[batch("a", PLAIN_FS, Blend::Normal)])
+            .unwrap();
         r.set_batch_quads(0, &quad(0.0, 0.0, (W / 2) as f32, H as f32, [1.0; 4]), 2)
             .unwrap();
         let f = r.render(None).unwrap().to_vec();
@@ -9523,11 +9577,8 @@ mod tests {
     fn a_broken_batch_leaves_the_running_scene_and_names_its_stage() {
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "fragment": GRAY}]));
-        assert_eq!(
-            r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Normal)])
-                .unwrap(),
-            ""
-        );
+        r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Normal)])
+            .unwrap();
         r.set_batch_quads(
             0,
             &quad(0.0, 0.0, W as f32, H as f32, [1.0, 0.0, 0.0, 1.0]),
@@ -9539,7 +9590,7 @@ mod tests {
         bad.vertex = bad
             .vertex
             .replace("v_color = ghee_a1;", "v_color = no_such_symbol;");
-        let err = r.setup_batches(&flat_scene(), &[bad]).unwrap();
+        let err = said(r.setup_batches(&flat_scene(), &[bad]));
         assert!(err.starts_with("batch 0: vertex shader:"), "{err}");
         assert_eq!(r.error_pass, Some(ErrorPass::Index(0)));
         let bad = batch(
@@ -9547,7 +9598,7 @@ mod tests {
             "void main(){ gl_FragColor = no_such_symbol; }",
             Blend::Normal,
         );
-        let err = r.setup_batches(&flat_scene(), &[bad]).unwrap();
+        let err = said(r.setup_batches(&flat_scene(), &[bad]));
         assert!(
             err.starts_with("batch 0: ") && !err.contains("vertex shader"),
             "{err}"
@@ -9562,18 +9613,13 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_batch_and_its_quads_are_checked_before_the_engine_sees_them() {
         let (_g, mut r) = gpu();
-        let err = r
-            .setup_batches(&flat_scene(), &[batch("typo", PLAIN_FS, Blend::Normal)])
-            .unwrap();
+        let err = said(r.setup_batches(&flat_scene(), &[batch("typo", PLAIN_FS, Blend::Normal)]));
         assert_eq!(
             err,
             "batch 0 draws into pass 'typo', which is not a pass in this scene"
         );
-        assert_eq!(
-            r.setup_batches(&flat_scene(), &[batch("main", PLAIN_FS, Blend::Normal)])
-                .unwrap(),
-            ""
-        );
+        r.setup_batches(&flat_scene(), &[batch("main", PLAIN_FS, Blend::Normal)])
+            .unwrap();
         let one = quad(0.0, 0.0, 1.0, 1.0, [1.0; 4]);
         assert_eq!(
             r.set_batch_quads(1, &one, 2).unwrap_err().to_string(),
@@ -9588,7 +9634,7 @@ mod tests {
             "batch 0: a quad takes 32 floats, and 31 is not a multiple of 32"
         );
         // setup() drops the batches with the scene.
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         assert!(r.set_batch_quads(0, &one, 2).is_err());
     }
 
@@ -9617,7 +9663,7 @@ mod tests {
             fragment: format!("{PRECISION}varying vec4 v_color;\n{PLAIN_FS}"),
             blend: Blend::Normal,
         };
-        assert_eq!(r.setup_batches(&sc, &[l]).unwrap(), "");
+        r.setup_batches(&sc, &[l]).unwrap();
         let data: Vec<f32> = [
             (0.0, 0.0),
             (W as f32, 0.0),
@@ -9679,7 +9725,7 @@ mod tests {
             r.set_time(Some(0.0));
             r.render(None).unwrap().to_vec()
         };
-        assert_eq!(r.setup(&with).unwrap(), "");
+        r.setup(&with).unwrap();
         let layer = with.passes[0].layers[0].as_text().unwrap();
         let built = layer.build("AV").unwrap().built.unwrap();
         assert_eq!((built.quads.count, built.boxes.count), (2, 0));
@@ -9699,7 +9745,7 @@ mod tests {
             fragment: layer.shaders(detail).glyphs.1,
             blend: Blend::Normal,
         };
-        assert_eq!(r.setup_batches(&alone, &[l]).unwrap(), "");
+        r.setup_batches(&alone, &[l]).unwrap();
         // The layer's own uniforms and the words' texture, as a setup sets
         // them for a layer of the scene.
         let b = r.batches[0];
@@ -9762,7 +9808,7 @@ mod tests {
     fn the_words_a_text_holds_lay_out_once() {
         let (_g, mut r) = gpu();
         let words = "the words a text holds\n".repeat(90);
-        assert_eq!(r.setup(&cover_scene(&words, "left")).unwrap(), "");
+        r.setup(&cover_scene(&words, "left")).unwrap();
         r.set_time(Some(0.0));
         let left = still(&mut r);
         set_words(&r, "label", "other words");
@@ -9775,9 +9821,9 @@ mod tests {
         assert_eq!(r.layouts.get(), laid);
         assert!(still(&mut r) == left);
         // A new setup lays the same words out for its own text.
-        assert_eq!(r.setup(&cover_scene("I\nIIIIII", "left")).unwrap(), "");
+        r.setup(&cover_scene("I\nIIIIII", "left")).unwrap();
         let left = still(&mut r);
-        assert_eq!(r.setup(&cover_scene("I\nIIIIII", "right")).unwrap(), "");
+        r.setup(&cover_scene("I\nIIIIII", "right")).unwrap();
         assert!(still(&mut r) != left);
     }
 
@@ -9788,7 +9834,7 @@ mod tests {
                            "render": "slug", "font_size": 8});
         let sc = scene_of(json!([{"name": "main", "fragment": FLAT, "layers": [layer]}]));
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let held = || (r.glyph_bytes.get(), r.glyphs.borrow().reads);
         let (sent, read) = held();
         assert!(sent > 0 && read == 10, "{sent} bytes, {read} outlines");
@@ -9873,7 +9919,7 @@ mod tests {
             (vec![call("b", 11.0, false)], 2 * quad),
         ];
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         for (calls, floats) in rows {
             let before = r.run_floats.get();
             let taken = r.update_calls(&calls).unwrap();
@@ -10638,7 +10684,7 @@ mod tests {
         // A layer in the colour font, and one in DejaVu Sans.
         for font in [Some("emoji"), None] {
             // Words with no colour glyph build no colour drawing.
-            assert_eq!(r.setup(&load(font, " ")).unwrap(), "");
+            r.setup(&load(font, " ")).unwrap();
             assert_eq!(drawing(&mut r), (false, false, false), "{font:?}");
             // Live words build it with no new setup.
             set_words(&r, "label", "\u{1f600}");
@@ -10648,9 +10694,9 @@ mod tests {
             set_words(&r, "label", " ");
             assert_eq!(drawing(&mut r), (true, true, false), "{font:?}");
             // A new setup builds it again only for words that need it.
-            assert_eq!(r.setup(&load(font, " ")).unwrap(), "");
+            r.setup(&load(font, " ")).unwrap();
             assert_eq!(drawing(&mut r), (false, false, false), "{font:?}");
-            assert_eq!(r.setup(&load(font, "\u{1f600}")).unwrap(), "");
+            r.setup(&load(font, "\u{1f600}")).unwrap();
             assert_eq!(drawing(&mut r), (true, true, true), "{font:?}");
         }
     }
@@ -10683,7 +10729,7 @@ mod tests {
         layer.emoji = Some(crate::emoji::at(pipe.to_str().unwrap()));
         let (_g, mut r) = gpu();
         r.atlas_cache = Some(dir.join("atlas"));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let av = still(&mut r);
         // The font goes into the pipe after the set and the frame, so a set or
         // a frame that waited for it would never return.
@@ -10747,7 +10793,7 @@ mod tests {
         // A blank cell grows the atlas to 512 texels wide, room for both
         // emoji on one shelf, so the second emoji leaves the size as it was.
         let start = |r: &mut Renderer, words: &str| {
-            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.setup(&sc).unwrap();
             for name in &names {
                 let blank = atlas::Field {
                     width: 512,
@@ -10858,7 +10904,7 @@ mod tests {
         // The frame of one emoji after another, in a fresh atlas or in one
         // filled with the white cells of glyphs that no words draw.
         let frame = |r: &mut Renderer, full: bool| {
-            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.setup(&sc).unwrap();
             for name in ["l0", "l1"] {
                 if full {
                     let mut colours = r.colours.borrow_mut();
@@ -11014,7 +11060,7 @@ mod tests {
         let (_g, mut r) = gpu();
         let dir = std::env::temp_dir().join(format!("ghee-engine-{}-ref", std::process::id()));
         r.atlas_cache = Some(dir.clone());
-        assert_eq!(r.setup(&mtsdf_scene(words)).unwrap(), "");
+        r.setup(&mtsdf_scene(words)).unwrap();
         r.set_time(Some(0.0));
         let f = still(&mut r);
         drop(r);
@@ -11028,7 +11074,7 @@ mod tests {
         let (want_av, want_avz) = (reference("AV"), reference("AVZ"));
         let font = Switched::new();
         let (_g, mut r, dir) = switched(&font, "hold");
-        assert_eq!(r.setup(&mtsdf_scene("AV")).unwrap(), "");
+        r.setup(&mtsdf_scene("AV")).unwrap();
         let size = |r: &Renderer| {
             r.atlases.borrow()[0]
                 .gen
@@ -11093,11 +11139,11 @@ mod tests {
             let dir = crate::testing::TempDir::new("engine-atlas-history");
             r.atlas_cache = Some(dir.join("atlas"));
             if !first.is_empty() {
-                assert_eq!(r.setup(&scene(first)).unwrap(), "");
+                r.setup(&scene(first)).unwrap();
                 r.set_time(Some(0.0));
                 still(&mut r);
             }
-            assert_eq!(r.setup(&scene("AV To\nghee")).unwrap(), "");
+            r.setup(&scene("AV To\nghee")).unwrap();
             r.set_time(Some(0.0));
             frames.push((first, still(&mut r)));
         }
@@ -11115,7 +11161,7 @@ mod tests {
         let want = reference("AVQ");
         let font = Switched::new();
         let (_g, mut r, dir) = switched(&font, "pinned");
-        assert_eq!(r.setup(&mtsdf_scene("AV")).unwrap(), "");
+        r.setup(&mtsdf_scene("AV")).unwrap();
         r.set_time(Some(0.0));
         let av = still(&mut r);
         font.set(&font.visible, true);
@@ -11143,7 +11189,7 @@ mod tests {
         let want = reference("AVQ");
         let font = Switched::new();
         let (_g, mut r, dir) = switched(&font, "grow");
-        assert_eq!(r.setup(&mtsdf_scene("AV")).unwrap(), "");
+        r.setup(&mtsdf_scene("AV")).unwrap();
         r.set_time(Some(0.0));
         let av = still(&mut r);
         let size = |r: &Renderer| {
@@ -11215,7 +11261,7 @@ mod tests {
         // more glyphs in all than the atlas holds, a tenth of them at a time.
         let all: Vec<char> = ('!'..='~').collect();
         let words: Vec<String> = all.chunks(10).map(|c| c.iter().collect()).collect();
-        assert_eq!(r.setup(&mtsdf_scene(&words[0])).unwrap(), "");
+        r.setup(&mtsdf_scene(&words[0])).unwrap();
         r.set_time(Some(0.0));
         for (i, w) in words.iter().enumerate() {
             set_words(&r, "label", w);
@@ -11271,7 +11317,7 @@ mod tests {
                 "label" => scene(first.1, ""),
                 _ => scene("", first.1),
             };
-            assert_eq!(r.setup(&start).unwrap(), "");
+            r.setup(&start).unwrap();
             r.set_time(Some(0.0));
             still(&mut r);
             set_words(&r, second.0, second.1);
@@ -11304,12 +11350,12 @@ mod tests {
         let (_g, mut r) = gpu();
         let mut sc = mtsdf_scene("AV");
         sc.passes[0].layers[0].as_text_mut().unwrap().render = Render::Slug;
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         assert!(r.atlases.borrow().is_empty());
         // A hidden layer takes no atlas either.
         let mut sc = mtsdf_scene("AV");
         sc.passes[0].layers[0].as_text_mut().unwrap().visible = false;
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         assert!(r.atlases.borrow().is_empty());
     }
 
@@ -11343,7 +11389,7 @@ mod tests {
         let cache = crate::testing::TempDir::new("engine-steps");
         let (_g, mut r) = gpu();
         r.atlas_cache = Some(cache.join("atlas"));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let mut slots: Vec<(u32, Vec<String>)> = r
             .atlases
             .borrow()
@@ -11388,9 +11434,9 @@ mod tests {
             r.set_time(Some(0.0));
             r.render(None).unwrap().to_vec()
         };
-        assert_eq!(r.setup(&scene("a long line of small words")).unwrap(), "");
+        r.setup(&scene("a long line of small words")).unwrap();
         let grown = frame(&mut r, Some("AV"));
-        assert_eq!(r.setup(&scene("AV")).unwrap(), "");
+        r.setup(&scene("AV")).unwrap();
         assert!(grown == frame(&mut r, None), "the grown words draw apart");
     }
 
@@ -11412,7 +11458,7 @@ mod tests {
             r.set_rotate(degrees).unwrap();
             assert_eq!(r.scene_size(), scene_size, "{degrees}");
             let sc = scene_of(json!([{"name": "main", "fragment": POSITION}]));
-            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.setup(&sc).unwrap();
             let frame = r.render(None).unwrap().to_vec();
             let scaled = r.render_scaled(None, (2 * w as i32, 2 * h as i32)).unwrap();
             for (x, y) in (0..h).flat_map(|y| (0..w).map(move |x| (x, y))) {
@@ -11462,11 +11508,8 @@ mod tests {
                 "void main(){{ vec2 p = {p}; vec2 i = floor(p); vec2 off = abs(p - i - 0.5); \
                  gl_FragColor = vec4(mod(i, 256.0) / 255.0, max(off.x, off.y) * 1000.0 / 255.0, 1.0); }}"
             );
-            assert_eq!(
-                r.setup(&scene_of(json!([{"name": "main", "fragment": code}])))
-                    .unwrap(),
-                ""
-            );
+            r.setup(&scene_of(json!([{"name": "main", "fragment": code}])))
+                .unwrap();
             let f = r.render(None).unwrap().to_vec();
             assert_pixels(&f, w, h, p, |x, y| {
                 [(x % 256) as f64, ((h - 1 - y) % 256) as f64, 0.0]
@@ -11512,7 +11555,7 @@ mod tests {
             );
             let (_g, mut r) = gpu_at(w, 1);
             let sc = scene_of(json!([{"name": "main", "fragment": code}]));
-            assert_eq!(r.setup(&sc).unwrap(), "", "{set}");
+            r.setup(&sc).unwrap_or_else(|e| panic!("{set}: {e}"));
             let f = r.render(None).unwrap().to_vec();
             for (i, pt) in points.iter().enumerate() {
                 let got = (0..3).fold(0u32, |v, c| v << 8 | px(&f, w, i, 0, c) as u32);
@@ -11541,7 +11584,7 @@ mod tests {
                 vec4 c = vec4(mod(i, 256.0) / 255.0, mod(i.x + i.y, 2.0), 1.0); \
                 if (iFrame > 0) c = texture2D(iChannel0, uv); gl_FragColor = c; }",
         }]));
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let mut f = Vec::new();
         for _ in 0..4 {
             f = r.render(None).unwrap().to_vec();
@@ -11560,11 +11603,9 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_pass_with_no_main_fails_with_the_gl_error_alone() {
         let (_g, mut r) = gpu();
-        let err = r
-            .setup(&scene_of(
-                json!([{"name": "main", "fragment": "float f(){ return 1.0; }"}]),
-            ))
-            .unwrap();
+        let err = said(r.setup(&scene_of(json!([
+            {"name": "main", "fragment": "float f(){ return 1.0; }"}
+        ]))));
         assert!(
             err.starts_with("pass 'main'") && !err.contains("ghee"),
             "{err}"
@@ -11586,7 +11627,7 @@ mod tests {
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_turn_comes_before_the_first_scene() {
         let (_g, mut r) = gpu();
-        assert_eq!(r.setup(&flat_scene()).unwrap(), "");
+        r.setup(&flat_scene()).unwrap();
         assert_eq!(
             r.set_rotate(90).unwrap_err().to_string(),
             "rotate needs a renderer with no scene yet"

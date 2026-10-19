@@ -39,8 +39,7 @@ fn main() -> anyhow::Result<()> {
     // width: i32, height: i32, components: i32,
     // dri_device: Option<&str> (None probes), display: bool, rgb565: bool
     let mut r = Renderer::new(320, 240, 4, None, false, false)?;
-    let err = r.setup(&scene)?;
-    anyhow::ensure!(err.is_empty(), "{err}");
+    r.setup(&scene)?;
     let frame = r.render(Some(&mut |_name, size| match size {
         ArraySize::Linear(n) => Feed::Data(vec![0.5; n as usize]),
         ArraySize::Grid(w, h) => Feed::Data(vec![0.5; (w * h) as usize]),
@@ -50,8 +49,11 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-`setup` returns the compile error, and an empty string when the scene
-compiled. Create and use a `Renderer` on one thread: GL is thread-affine.
+To find where a scene fails, match the `SetupError` that `setup` returns.
+`SetupError::Compile` carries the pass and the line of your GLSL that the GPU
+refused, and `SetupError::Scene` says what the scene asks for that the
+renderer can't hold. After a failed `setup`, the scene before it keeps
+drawing. Create and use a `Renderer` on one thread: GL is thread-affine.
 
 Give an array's data as `Feed::Data` for floats, or as `Feed::DataU8` for
 bytes, each one read as byte / 255. Give `Feed::Unchanged` when the array

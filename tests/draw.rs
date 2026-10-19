@@ -416,13 +416,13 @@ fn a_call_gives_its_layer_the_look_that_update_layer_gives_its_look_written_out(
     let (_g, mut r) = gpu(128, 48);
     let sc = dir.load(&scene());
     for (calls, typed) in rows {
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         let written: Vec<_> = calls
             .iter()
             .map(|c| r.update_layer(&look_of(c)).map_err(|e| e.to_string()))
             .collect();
         let want = state(&mut r);
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         for (k, c) in calls.iter().enumerate() {
             let taken = r.update_calls(std::slice::from_ref(c)).unwrap();
             if k + 1 == calls.len() {
@@ -557,7 +557,7 @@ fn a_call_that_leaves_a_keyword_out_gives_the_default_of_a_live_set() {
     let (_g, mut r) = gpu(128, 48);
     let sc = dir.load(&scene());
     for (given, (layer, effect, field, value), without) in rows {
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         assert!(r
             .update_calls(std::slice::from_ref(&given))
             .unwrap()
@@ -570,7 +570,7 @@ fn a_call_that_leaves_a_keyword_out_gives_the_default_of_a_live_set() {
         };
         r.set_layer(&at, Given::Json(&value)).unwrap();
         let set = state(&mut r);
-        assert_eq!(r.setup(&sc).unwrap(), "");
+        r.setup(&sc).unwrap();
         assert!(r
             .update_calls(std::slice::from_ref(&given))
             .unwrap()

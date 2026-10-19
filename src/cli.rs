@@ -30,7 +30,7 @@ use crate::console::state;
 use crate::console::store::{self, SceneStore};
 use crate::console::{examples_dir, is_examples_dir};
 use crate::control::{self, Control};
-use crate::engine::{probe_display, Card, Feed, Renderer, DEFAULT_SIZE};
+use crate::engine::{probe_display, Card, Feed, Renderer, SetupError, DEFAULT_SIZE};
 use crate::feeds::demo_feed;
 use crate::filters::{self, apply_filters, Filter};
 use crate::golden;
@@ -611,14 +611,11 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
             Err(e) => report::error(format!("{}: {e:#}", a.cmd)),
         }
     }
-    let err = r.setup(&scene)?;
-    if !err.is_empty() {
-        let kind = if r.compile_error {
-            "compile error: "
-        } else {
-            ""
-        };
-        return Err(exit(format!("{kind}{err}")));
+    match r.setup(&scene) {
+        Ok(()) => {}
+        Err(e @ SetupError::Engine(_)) => return Err(e.into()),
+        Err(e @ SetupError::Compile { .. }) => return Err(exit(format!("compile error: {e}"))),
+        Err(e) => return Err(exit(e.to_string())),
     }
     let mut h264 = None;
     if given(&a.h264) {
@@ -1663,9 +1660,8 @@ fn smoke(args: &[&str]) -> Result<()> {
         "main",
         "void main(){ gl_FragColor = vec4(0.25,0.5,0.75,1.0); }",
     )?])?;
-    let err = r.setup(&scene)?;
-    if !err.is_empty() {
-        bail!("scene build failed: {err}");
+    if let Err(e) = r.setup(&scene) {
+        bail!("scene build failed: {e}");
     }
     let frame = r.render(None)?;
     println!("RUST_SMOKE_OK pixel={},{},{}", frame[0], frame[1], frame[2]);

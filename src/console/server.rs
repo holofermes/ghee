@@ -916,9 +916,9 @@ fn set_scene(
         true => renderer.borrow_mut().rebuild(&scene),
         false => renderer.borrow_mut().setup(&scene),
     };
-    let err = match built {
-        Ok(err) => err,
-        Err(e) => e.to_string(),
+    let (err, line, pass) = match built {
+        Ok(()) => (String::new(), None, None),
+        Err(e) => (e.to_string(), e.line(), e.pass()),
     };
     let name = st.borrow().loaded.clone();
     // Store the snapshot before the publish. A /stats between the two must not
@@ -927,10 +927,7 @@ fn set_scene(
         *lock(&console.sources) = Some(snap);
     }
     if !err.is_empty() {
-        {
-            let r = renderer.borrow();
-            console.hub.set_error(&err, r.error_line, r.error_pass);
-        }
+        console.hub.set_error(&err, line, pass);
         if let Some(last) = last {
             let _ = renderer.borrow_mut().rebuild(&last);
         }
@@ -1024,10 +1021,10 @@ fn clear(
     *st.borrow_mut() = Running::default();
     let black = serde_json::json!({"version": 1, "passes": [{"name": "main",
         "fragment": "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"}]});
-    match Scene::from_dict(&black, None, None).and_then(|s| renderer.borrow_mut().setup(&s)) {
-        Ok(err) if err.is_empty() => {}
-        Ok(err) => eprintln!("ghee console: no scene: {err}"),
-        Err(e) => eprintln!("ghee console: no scene: {e}"),
+    let built =
+        Scene::from_dict(&black, None, None).and_then(|s| Ok(renderer.borrow_mut().setup(&s)?));
+    if let Err(e) = built {
+        eprintln!("ghee console: no scene: {e}");
     }
     console.hub.reset();
 }
@@ -3422,7 +3419,7 @@ mod tests {
         };
         let built = |x: f64| {
             let sc = Scene::from_dict(&doc(x), None, None).unwrap();
-            assert_eq!(renderer.borrow_mut().setup(&sc).unwrap(), "");
+            renderer.borrow_mut().setup(&sc).unwrap();
             frame()
         };
         let (at8, at20) = (built(8.0), built(20.0));

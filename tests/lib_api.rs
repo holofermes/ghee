@@ -178,7 +178,7 @@ fn a_sugar_built_scene_renders_its_arrays_and_params() {
     .unwrap()])
     .unwrap();
     let (_g, mut r) = gpu();
-    assert_eq!(r.setup(&scene).unwrap(), "");
+    r.setup(&scene).unwrap();
     let frame = r
         .render(Some(&mut |_name, _size| Feed::Data(vec![1.0; 4])))
         .unwrap();
@@ -203,7 +203,7 @@ fn a_sugar_built_channel_reads_its_named_pass() {
     ])
     .unwrap();
     let (_g, mut r) = gpu();
-    assert_eq!(r.setup(&scene).unwrap(), "");
+    r.setup(&scene).unwrap();
     let frame = r.render(None).unwrap();
     assert_eq!(&frame[..4], [255, 0, 255, 255]);
 }

@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use ghee::console::hub::{frame_format, gpu_caps, HwLane, RawFrame};
 use ghee::draw::Call;
-use ghee::engine::{quarter_turns, Card, Feed, Given, NodeError, Refused, Renderer, DEFAULT_SIZE};
+use ghee::engine::{
+    quarter_turns, Card, Feed, Given, NodeError, Refused, Renderer, SetupError, DEFAULT_SIZE,
+};
 use ghee::filters::apply_filters;
 use ghee::layer::{is_image_file, Address, Layer};
 use ghee::live::Live;
@@ -424,15 +426,17 @@ impl Session {
         }
         renderer.set_alpha(alpha.is_some());
         renderer.set_rotate(rotate).map_err(system_fault)?;
-        let err = renderer.setup(&scene).map_err(system_fault)?;
-        if !err.is_empty() {
+        match renderer.setup(&scene) {
+            Ok(()) => {}
+            Err(SetupError::Engine(e)) => return Err(Fault::system(e)),
             // the command's own line, without the engine's trailing newline
-            let kind = if renderer.compile_error {
-                "compile error: "
-            } else {
-                ""
-            };
-            return Err(Fault::scene(format!("{kind}{}", err.trim_end())));
+            Err(e @ SetupError::Compile { .. }) => {
+                return Err(Fault::scene(format!(
+                    "compile error: {}",
+                    e.to_string().trim_end()
+                )))
+            }
+            Err(e) => return Err(Fault::scene(e.to_string().trim_end())),
         }
         let live = Live::new(&scene);
         let out = match &sink {

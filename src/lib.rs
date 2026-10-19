@@ -27,7 +27,7 @@
 //!
 //! // width, height, components, DRI device (None probes), scanout, rgb565
 //! let mut r = Renderer::new(64, 64, 4, None, false, false)?;
-//! assert_eq!(r.setup(&scene)?, "");
+//! r.setup(&scene)?;
 //!
 //! let frame = r.render(Some(&mut |_name, _size| Feed::Data(vec![1.0; 8])))?;
 //! assert_eq!(frame.len(), 64 * 64 * 4);

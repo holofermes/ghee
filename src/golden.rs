@@ -65,9 +65,8 @@ fn check_scene(
 ) -> Result<(Option<usize>, Vec<String>, String)> {
     let scene = Scene::load(&entry.path)?;
     let mut r = Renderer::new(man.width, man.height, man.components, None, false, false)?;
-    let err = r.setup(&scene)?;
-    if !err.is_empty() {
-        bail!("setup failed: {err}");
+    if let Err(e) = r.setup(&scene) {
+        bail!("setup failed: {e}");
     }
     r.set_dt(1.0 / man.fps);
     let gl = r.renderer();

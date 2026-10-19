@@ -235,6 +235,45 @@ between uses, and `False` to light it again. While the display is off,
 To close the screen, call `screen.close()`, or open it in a
 `with ghee.open(...) as screen:` block.
 
+## Running as a service
+
+To keep a program running for months, such as a status screen, start it
+from a systemd user unit. Save this as
+`~/.config/systemd/user/status.service`:
+
+```ini
+[Unit]
+Description=status screen
+
+[Service]
+ExecStart=/home/pi/status/.venv/bin/python /home/pi/status/status.py
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+Start it now and at every boot, also before you log in:
+
+```shell
+systemctl --user enable --now status
+sudo loginctl enable-linger $USER
+```
+
+`systemctl --user stop status` sends SIGTERM. Python's default for SIGTERM
+ends the program without running its `finally` blocks or leaving its `with`
+blocks, so the screen never closes. To close it, turn SIGTERM into
+SystemExit at the top of your program:
+
+```python
+import signal
+import sys
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+```
+
+When the screen closes, ghee turns the display off.
+
 ## Python scenes
 
 A Python scene is a [procedural scene](procedural.md) written in Python, a

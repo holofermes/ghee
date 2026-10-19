@@ -1900,6 +1900,15 @@ impl Pass {
         with_main(version, l, &body)
     }
 
+    /// The pass as GLSL ES 3.00, when its fragment opens with no `#version`
+    /// line.
+    pub(crate) fn as_es300(&self) -> Option<Pass> {
+        version_line(&self.fragment).is_none().then(|| Pass {
+            fragment: format!("#version 300 es\n{}", self.fragment),
+            ..self.clone()
+        })
+    }
+
     /// The GLSL that the pass is written in: GLSL ES 3.00 when its fragment
     /// opens with `#version 300 es`, GLSL ES 1.00 with `#version 100` or no
     /// version line. Err holds a version line that ghee takes neither way.

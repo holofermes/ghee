@@ -3831,6 +3831,18 @@ bool ghee_mipmaps_npot(GheeScene *g) { return g && g->has_npot; }
 
 bool ghee_gles3(GheeScene *g) { return g && g->gles3; }
 
+bool ghee_compiles(GheeScene *g, const char *fragment) {
+    if (!g || !fragment) return false;
+    make_current(g);
+    const GLuint shader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(shader, 1, &fragment, NULL);
+    glCompileShader(shader);
+    GLint ok = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+    glDeleteShader(shader);
+    return ok != 0;
+}
+
 int ghee_compiled(GheeScene *g) { return g ? g->compiled : 0; }
 
 uint64_t ghee_draws(GheeScene *g) { return g ? g->draws : 0; }

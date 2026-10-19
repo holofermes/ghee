@@ -222,6 +222,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   too, instead of nothing.
 - `/set` refuses `NaN` and infinity, and names the value as sent, instead
   of `None`. `set_param` raises ValueError for them.
+- A pass that holds GLSL ES 3.00 and lacks `#version 300 es` fails with the
+  line to add, instead of the GPU's errors.
 
 ## 0.4.0 - 2026-08-06
 

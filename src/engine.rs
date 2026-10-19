@@ -2091,6 +2091,22 @@ impl Renderer {
                     (None, _) => format!("{pass}: {err}"),
                 };
                 self.error_line = line;
+                let es300 = |p: &Pass| {
+                    p.glsl(
+                        Some(&scene.params),
+                        scene.common.as_deref(),
+                        &scene.assets,
+                        &texts,
+                        hw_linear,
+                    )
+                };
+                if let Some(es3) = p.as_es300().filter(|_| self.compile_error && self.gles3()) {
+                    if !self.compiles(&glsl) && self.compiles(&es300(&es3)) {
+                        self.error =
+                            format!("{pass} is GLSL ES 3.00: start it with '#version 300 es'");
+                        self.error_line = None;
+                    }
+                }
                 self.error_pass = Some(if in_common {
                     ErrorPass::Common
                 } else {
@@ -5701,6 +5717,11 @@ impl Renderer {
         unsafe { ffi::ghee_mipmaps_npot(self.handle) }
     }
 
+    /// True when `fragment` compiles as a fragment shader.
+    fn compiles(&self, fragment: &str) -> bool {
+        CString::new(fragment).is_ok_and(|f| unsafe { ffi::ghee_compiles(self.handle, f.as_ptr()) })
+    }
+
     /// True when the GPU runs OpenGL ES 3 and compiles GLSL ES 3.00.
     fn gles3(&self) -> bool {
         #[cfg(test)]
@@ -6832,6 +6853,30 @@ mod tests {
             said(r.setup(&sc)),
             "pass 'main' opens with '#version 310 es', and a pass takes '#version 100' or \
              '#version 300 es'"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_pass_of_glsl_es_3_with_no_version_line_names_the_line_to_add() {
+        let (_g, mut r) = gpu();
+        let shadertoy = "void mainImage(out vec4 c, in vec2 at) {\n\
+                         uint n = uint(at.x);\n\
+                         c = vec4(float(n & 1u));\n}";
+        let sc = scene_of(json!([{"name": "bufa", "fragment": shadertoy}]));
+        assert_eq!(
+            said(r.setup(&sc)),
+            "pass 'bufa' is GLSL ES 3.00: start it with '#version 300 es'"
+        );
+        let sc = scene_of(
+            json!([{"name": "bufa", "fragment": format!("#version 300 es\n{shadertoy}")}]),
+        );
+        r.setup(&sc).unwrap();
+        let broken = scene_of(json!([{"fragment": "void main(){ nope(); }"}]));
+        let err = said(r.setup(&broken));
+        assert!(
+            err.starts_with("pass 'main', line 1 of its fragment: "),
+            "{err}"
         );
     }
 

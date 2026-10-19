@@ -120,14 +120,8 @@ fn main() -> anyhow::Result<()> {
         control: stop.clone(),
         ..Options::default()
     })?;
-    if let Some(sig) = stop.signal() {
-        unsafe { raise(sig) };
-    }
+    stop.reraise();
     Ok(())
-}
-
-extern "C" {
-    fn raise(sig: i32) -> i32;
 }
 ```
 
@@ -244,8 +238,10 @@ you pass in `Options`, and call `stop` on it from any thread.
 `stop_on_signals` stops it on SIGINT and SIGTERM, and `signal` then names
 the signal, such as 15 for SIGTERM. When `run` returns, SIGINT and SIGTERM
 go back to the handlers that they had before `stop_on_signals`, so a second
-Ctrl-C ends your program as usual. A stopped `Control` stays stopped, so
-make a new one for each run.
+Ctrl-C ends your program as usual. To end your program by the signal that
+stopped the console, as `ghee` does, call `reraise` on the `Control` once
+`run` returns. A stopped `Control` stays stopped, so make a new one for each
+run.
 
 Careful: `stop` takes a lock. Never call it from a signal handler of your
 own: use `stop_on_signals`.

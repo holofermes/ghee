@@ -1716,7 +1716,7 @@ pub fn main(argv: Vec<String>) -> i32 {
 /// caller's takes it instead.
 fn status(control: &Control, ran: Result<()>) -> i32 {
     if let Some(sig) = control.signal() {
-        control::reraise(sig);
+        control.reraise();
         return 128 + sig;
     }
     if ran.as_ref().is_err_and(|e| e.is::<Piped>()) {
@@ -1887,8 +1887,8 @@ pub fn direct(prog: &str, flags: &[String], here: Here, card: Option<Card>) -> R
     control::catch(&a.control)?;
     let ran = render(&a, card);
     control::release(&a.control);
-    if let Some(sig) = a.control.signal() {
-        control::reraise(sig);
+    if a.control.signal().is_some() {
+        a.control.reraise();
         return Ok(0);
     }
     if ran.as_ref().is_err_and(|e| e.is::<Piped>()) {

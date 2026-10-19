@@ -126,8 +126,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Try the new bundled demos: assets, bars, feedback, lens, neon, passes,
   tiltshift, hero, karaoke, nowplaying, spectrum and stats.
 - Stop or pause a console from any thread of a Rust host with a
-  `ghee::control::Control`, and stop it on SIGINT and SIGTERM with
-  `stop_on_signals` ([Rust](docs/rust.md)).
+  `ghee::control::Control`, stop it on SIGINT and SIGTERM with
+  `stop_on_signals`, and end the program by that signal with `reraise`
+  ([Rust](docs/rust.md)).
 - Name a Rust host's asset folders with `ghee::scene::set_asset_dirs`, and
   cap its frame rate with `ghee::output::pacer`.
 - The PyPI wheel carries the `ghee` command. It starts in 111 ms on a Pi

@@ -77,6 +77,20 @@ impl Control {
         (sig != 0).then_some(sig)
     }
 
+    /// Send the signal that stopped the render through [`stop_on_signals`]
+    /// to this process again, with stdout and stderr flushed. Call it once
+    /// the render has returned: SIGINT and SIGTERM have their handlers from
+    /// before `stop_on_signals` back, and under the default handler the
+    /// process ends by the signal, as POSIX asks of a program that cleans up
+    /// after one. Returns when a handler takes the signal, or at once when
+    /// no signal stopped the render.
+    pub fn reraise(&self) {
+        release(self);
+        if let Some(sig) = self.signal() {
+            reraise(sig);
+        }
+    }
+
     /// Have `wake` called on every stop and pause, until detach().
     pub(crate) fn attach(&self, wake: Wake) {
         *lock(&self.0.wake) = Some(wake);
@@ -129,6 +143,10 @@ static SIGNALLED: AtomicI32 = AtomicI32::new(0);
 /// The renders that a signal stops, and the handlers of SIGINT and SIGTERM
 /// from before the first of them, which go back once none is left.
 static CAUGHT: Mutex<(Vec<Control>, [usize; 2])> = Mutex::new((Vec::new(), [0; 2]));
+
+/// The tests that install signal handlers take this, one at a time.
+#[cfg(test)]
+pub(crate) static HANDLER_TESTS: Mutex<()> = Mutex::new(());
 
 /// A signal handler may only make async-signal-safe calls, and taking a lock
 /// is not one: the thread that the signal lands on may hold that lock.
@@ -198,9 +216,7 @@ impl Drop for Released {
     }
 }
 
-/// Send `sig` to this process again, to the handler that release() put back,
-/// with stdout and stderr flushed. Under the default handler the process
-/// ends by the signal, as POSIX asks of a program that cleans up after one.
+/// Send `sig` to this process, with stdout and stderr flushed.
 pub(crate) fn reraise(sig: c_int) {
     use std::io::Write;
     let _ = io::stdout().flush();
@@ -256,6 +272,7 @@ mod tests {
 
     #[test]
     fn the_handlers_from_before_go_back_once_no_render_is_caught() {
+        let _one = lock(&HANDLER_TESTS);
         const SIG_IGN: usize = 1;
         let ours = on_signal as extern "C" fn(c_int) as usize;
         let before = unsafe { signal(SIGINT, SIG_IGN) };
@@ -273,6 +290,7 @@ mod tests {
         extern "C" {
             fn raise(sig: c_int) -> c_int;
         }
+        let _one = lock(&HANDLER_TESTS);
         let c = Control::new();
         catch(&c).unwrap();
         unsafe { raise(SIGTERM) };
@@ -280,5 +298,29 @@ mod tests {
         release(&c);
         assert!(c.stopped());
         assert_eq!(c.signal(), Some(SIGTERM));
+    }
+
+    static TAKEN: AtomicI32 = AtomicI32::new(0);
+
+    extern "C" fn take(sig: c_int) {
+        TAKEN.store(sig, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn reraise_sends_the_caught_signal_to_the_handler_from_before() {
+        let _one = lock(&HANDLER_TESTS);
+        let theirs = take as extern "C" fn(c_int) as usize;
+        let before = unsafe { signal(SIGTERM, theirs) };
+        let quiet = Control::new();
+        quiet.reraise();
+        assert_eq!(TAKEN.load(Ordering::SeqCst), 0);
+        let c = Control::new();
+        stop_on_signals(&c).unwrap();
+        unsafe { raise(SIGTERM) };
+        crate::testing::until(|| c.stopped());
+        assert_eq!(TAKEN.load(Ordering::SeqCst), 0);
+        c.reraise();
+        assert_eq!(TAKEN.load(Ordering::SeqCst), SIGTERM);
+        unsafe { signal(SIGTERM, before) };
     }
 }

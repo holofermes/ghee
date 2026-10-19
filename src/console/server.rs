@@ -4586,6 +4586,9 @@ mod tests {
             fn signal(sig: c_int, handler: usize) -> usize;
         }
         const SIG_DFL: usize = 0;
+        let _one = crate::control::HANDLER_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         drop(gpu(8, 8)); // run() opens a renderer of its own on that device
         let (_d, console) = tmp_console("signals");
         let control = Control::new();

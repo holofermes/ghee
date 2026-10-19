@@ -641,9 +641,6 @@ pub fn unpremultiply(px: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use std::thread::sleep;
-    use std::time::Duration;
-
     use super::*;
 
     fn tmpdir(tag: &str) -> crate::testing::TempDir {
@@ -839,15 +836,12 @@ mod tests {
     fn worker_error_surfaces_on_write() {
         let dir = tmpdir("err-write").join("no-such-dir");
         let mut seq = ImageSequence::new(&at(&dir, "e.####.png"));
-        let mut caught = None;
-        for _ in 0..100 {
+        let caught = loop {
             if let Err(e) = seq.write(OwnedFrame::of((8, 6, 4)).view()) {
-                caught = Some(e.to_string());
-                break;
+                break e.to_string();
             }
-            sleep(Duration::from_millis(2));
-        }
-        assert!(caught.is_some_and(|e| e.contains("No such file or directory")));
+        };
+        assert!(caught.contains("No such file or directory"), "{caught}");
     }
 
     #[test]

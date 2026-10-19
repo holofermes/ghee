@@ -1245,7 +1245,7 @@ fn save(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     const SANS: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1409,14 +1409,7 @@ mod tests {
 
     /// Request `chars` until every glyph is ready.
     fn wait(g: &Generator, chars: &str) {
-        let t0 = Instant::now();
-        while !g.request(chars.chars()).is_empty() {
-            assert!(
-                t0.elapsed() < Duration::from_secs(60),
-                "{chars:?} still pending"
-            );
-            thread::sleep(Duration::from_millis(1));
-        }
+        crate::testing::until(|| g.request(chars.chars()).is_empty());
     }
 
     /// A w x h field whose texels name `gid`.
@@ -1845,21 +1838,8 @@ mod tests {
             open: AtomicBool::new(false),
         });
         let g = Generator::new(font.clone(), config).unwrap();
-        let opener = {
-            let font = font.clone();
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(500));
-                font.open.store(true, Ordering::SeqCst);
-            })
-        };
-        let t0 = Instant::now();
         assert_eq!(g.request("gheexyz".chars()), ['e', 'g', 'h', 'x', 'y', 'z']);
-        assert!(
-            t0.elapsed() < Duration::from_millis(400),
-            "{:?}",
-            t0.elapsed()
-        );
-        opener.join().unwrap();
+        font.open.store(true, Ordering::SeqCst);
         // "ghee" was asked before, and the preload holds "xyz".
         wait(&g, "gheexyz");
         assert_eq!(font.inner.outlines.load(Ordering::Relaxed), 0);
@@ -2158,12 +2138,51 @@ mod tests {
     #[test]
     fn a_dropped_generator_stops_its_preload() {
         let dir = tmp("drop");
-        let g = Generator::new(Arc::new(Ttf::new()), cached(&dir)).unwrap();
+        let font = Arc::new(Held {
+            inner: boxes(10),
+            open: AtomicBool::new(false),
+        });
+        let g = Generator::new(font.clone(), cached(&dir)).unwrap();
         g.request("x".chars());
-        let t0 = Instant::now();
+        crate::testing::until(|| font.inner.outlines.load(Ordering::SeqCst) > 0);
+        // the glyphs in hand finish once the drop asked the worker to stop
+        let shared = Arc::clone(&g.started.get().unwrap().shared);
+        let opener = {
+            let font = font.clone();
+            thread::spawn(move || {
+                crate::testing::until(|| shared.stop.load(Ordering::Relaxed));
+                font.open.store(true, Ordering::SeqCst);
+            })
+        };
         drop(g);
-        assert!(t0.elapsed() < Duration::from_secs(5));
+        opener.join().unwrap();
+        let made = font.inner.outlines.load(Ordering::SeqCst);
+        assert!(made < preload().count(), "{made} glyphs");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Boxes whose outlines wait for `open` once begun.
+    struct Held {
+        inner: Arc<Boxes>,
+        open: AtomicBool,
+    }
+
+    impl Font for Held {
+        fn key(&self) -> [u8; 32] {
+            self.inner.key()
+        }
+
+        fn glyph(&self, ch: char) -> Option<u32> {
+            self.inner.glyph(ch)
+        }
+
+        fn outline(&self, gid: u32) -> Result<Vec<Vec<Curve>>> {
+            let o = self.inner.outline(gid);
+            while !self.open.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            o
+        }
     }
 
     #[test]

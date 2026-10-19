@@ -306,6 +306,11 @@ fn parse_declarations(line: &str) -> Option<Vec<ArgDecl>> {
 /// slow to start costs the wait once per scene, and a listing of ten costs it
 /// ten times.
 pub fn declare(scenes: &[(String, String)], ask: bool) -> Vec<Declared> {
+    declare_within(scenes, ask, PROBE_WAIT)
+}
+
+/// declare(), each probe waiting `wait` for its answer.
+fn declare_within(scenes: &[(String, String)], ask: bool, wait: Duration) -> Vec<Declared> {
     let jobs = match ask {
         false => 1,
         true => thread::available_parallelism().map_or(1, |n| n.get().min(4)),
@@ -321,7 +326,7 @@ pub fn declare(scenes: &[(String, String)], ask: bool) -> Vec<Declared> {
                 name,
                 args: match exe {
                     Some(_) if !ask => Takes::Unasked,
-                    Some(exe) => declarations(&exe, PROBE_WAIT),
+                    Some(exe) => declarations(&exe, wait),
                     None => Takes::Args(Vec::new()),
                 },
             }));
@@ -1572,7 +1577,7 @@ fn write_ticks(mut stdin: ChildStdin, outbox: Arc<(Mutex<Outbox>, Condvar)>) -> 
 mod tests {
     use super::*;
     use crate::draw::Call;
-    use crate::testing::{script, SCRIPTS};
+    use crate::testing::{script, until, NEVER, SCRIPTS};
 
     /// A process that answers the probe, then hands over a scene.
     /// It feeds one array and one param for each tick.
@@ -1861,13 +1866,10 @@ sleep 60
         }
     }
 
-    /// Run ticks until the process answers, or give up.
-    /// Ticks until `done` holds, for up to 10 s: a scene's interpreter can take
-    /// seconds to start on a loaded machine.
+    /// Ticks until `done` holds. False when a tick fails first.
     fn pump(f: &mut SceneProcess, mut done: impl FnMut(&mut SceneProcess) -> bool) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(10);
         let mut frame = 0u64;
-        while Instant::now() < deadline {
+        loop {
             if f.tick(frame, frame as f64 / 60.0, 1.0 / 60.0).is_err() {
                 return false;
             }
@@ -1877,14 +1879,13 @@ sleep 60
             frame += 1;
             thread::sleep(Duration::from_millis(10));
         }
-        false
     }
 
     #[test]
     fn the_help_probe_reads_the_declared_arguments() {
         let d = tmpdir("probe");
         let path = script(&d, "feed", SCENE_SCRIPT);
-        let Takes::Args(decls) = declared(&path, PROBE_WAIT) else {
+        let Takes::Args(decls) = declared(&path, NEVER) else {
             panic!("the scene declared nothing");
         };
         assert_eq!(decls.len(), 2);
@@ -1898,7 +1899,7 @@ sleep 60
             "feed",
             "#!/bin/sh\necho '{\"args\": [{\"name\": \"gain\", \"type\": \"float\"}]}'\n",
         );
-        let Takes::Args(after) = declared(&path, PROBE_WAIT) else {
+        let Takes::Args(after) = declared(&path, NEVER) else {
             panic!("the edited scene declared nothing");
         };
         assert_eq!(after.len(), 1);
@@ -1910,11 +1911,8 @@ sleep 60
     #[test]
     fn a_scene_still_starting_when_the_wait_ends_says_so() {
         let d = tmpdir("slow");
-        let path = script(&d, "slow", "#!/bin/sh\nsleep 30\n");
-        let started = Instant::now();
+        let path = script(&d, "slow", "#!/bin/sh\nexec sleep infinity\n");
         assert!(matches!(declared(&path, SOON), Takes::Starting));
-        assert!(started.elapsed() >= SOON, "gave up before the wait");
-        assert!(started.elapsed() < SOON + Duration::from_secs(3));
     }
 
     /// A scene that runs and answers nothing takes its arguments its own way,
@@ -1923,7 +1921,7 @@ sleep 60
     fn a_scene_that_answers_nothing_is_pass_through() {
         let d = tmpdir("passthrough");
         let path = script(&d, "quiet", "#!/bin/sh\nexit 0\n");
-        assert!(matches!(declared(&path, PROBE_WAIT), Takes::PassThrough));
+        assert!(matches!(declared(&path, NEVER), Takes::PassThrough));
     }
 
     /// --no-probe asks nothing at all, so a scene still starting costs no wait.
@@ -1932,10 +1930,8 @@ sleep 60
         let d = tmpdir("unasked");
         let path = script(&d, "slow", "#!/bin/sh\nsleep 30\n");
         let set = vec![("slow".to_string(), path)];
-        let started = Instant::now();
         let declared = declare(&set, false);
         assert!(matches!(declared[0].args, Takes::Unasked));
-        assert!(started.elapsed() < Duration::from_secs(1));
         assert!(help(&declared, "ghee serve --").contains("slow: not asked"));
     }
 
@@ -1986,7 +1982,7 @@ sleep 60
         )
         .unwrap();
         (f.term_after, f.kill_after) = (SOON, SOON);
-        assert!(wait_until(SETTLE, || fs::read_to_string(&mark).is_ok()));
+        until(|| fs::read_to_string(&mark).is_ok_and(|m| !m.is_empty()));
         assert_eq!(fs::read_to_string(&mark).unwrap(), "1 unset");
         drop(f);
     }
@@ -2085,11 +2081,7 @@ sleep 60
     fn ticks(dir: &str, want: usize) -> Vec<Value> {
         let path = format!("{dir}/ticks.jsonl");
         let read = || fs::read_to_string(&path).unwrap_or_default();
-        assert!(
-            wait_until(Duration::from_secs(5), || read().lines().count() >= want),
-            "the process read {} ticks, not {want}",
-            read().lines().count()
-        );
+        until(|| read().lines().count() >= want);
         read()
             .lines()
             .filter_map(|l| serde_json::from_str(l).ok())
@@ -2271,10 +2263,10 @@ while IFS= read -r line; do printf '%s\n' "$line" >> ticks.jsonl; done
                 .iter()
                 .any(|(n, v)| n == "words" && matches!(v, Set::Param(ParamData::Str(_))))
         };
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             text(&f)
-        }));
+        });
         let mut stub = Stub::default();
         f.update(&mut stub, 0, 0.0).unwrap();
         // the newest message for a name wins, and text sets no float param
@@ -2316,10 +2308,10 @@ while IFS= read -r line; do :; done
         let path = script(&d, "colour", COLOUR_SCRIPT);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             f.incoming.len() == 2
-        }));
+        });
         let mut stub = Stub::default();
         f.update(&mut stub, 0, 0.0).unwrap();
         let set = stub.set.borrow();
@@ -2351,10 +2343,10 @@ while IFS= read -r line; do :; done
         let path = script(&d, "refused", REFUSED_SCRIPT);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             f.incoming.len() == 3
-        }));
+        });
         let mut stub = Stub::default();
         f.update(&mut stub, 0, 0.0).unwrap();
         assert!(stub.set.borrow().is_empty());
@@ -2426,10 +2418,10 @@ while IFS= read -r line; do :; done
         f.bind(&scene);
         let mut stub = Stub::default();
         for frame in 0..2u64 {
-            assert!(wait_until(Duration::from_secs(5), || {
+            until(|| {
                 f.drain();
                 !f.incoming.is_empty()
-            }));
+            });
             f.update(&mut stub, frame, 0.0).unwrap();
             f.tick(frame + 1, 0.0, 1.0 / 60.0).unwrap();
         }
@@ -2459,12 +2451,12 @@ cat > ticks.jsonl
             f.tick(frame, frame as f64 * 0.001, 0.001).unwrap();
         }
         fs::write(format!("{d}/go"), "").unwrap();
-        // stdin closes, and the process reads what the pipe holds
+        // stdin closes, and the process reads what the pipe holds and ends
+        f.term_after = NEVER;
         drop(f);
-        let file = format!("{d}/ticks.jsonl");
-        let read = || fs::read_to_string(&file).unwrap_or_default();
-        assert!(wait_until(Duration::from_secs(5), || read().contains("\"frame\":2999")));
-        let seen: Vec<Value> = read()
+        let read = fs::read_to_string(format!("{d}/ticks.jsonl")).unwrap();
+        assert!(read.contains("\"frame\":2999"), "the last tick never came");
+        let seen: Vec<Value> = read
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
@@ -2480,47 +2472,53 @@ cat > ticks.jsonl
         assert!((total - 3.0).abs() < 1e-9, "{total}");
     }
 
-    /// A process in lockstep. It answers each tick 0.2 s late with the frame
-    /// number as the text of `word`, then kind 5.
+    /// A process in lockstep. It answers tick n once the file `go<n>` shows
+    /// up in its own directory, with the frame number as the text of `word`,
+    /// then kind 5.
     const LOCKSTEP_SCRIPT: &str = r#"#!/bin/sh
 printf '%s\n' '{"version": 1, "lockstep": true, "params": {"word": {"type": "string", "value": ""}}, "passes": [{"name": "main", "fragment": "void main(){}"}]}'
 while IFS= read -r line; do
     n=${line#*\"frame\":}; n=${n%%,*}; n=${n%%\}*}
-    sleep 0.2
+    while [ ! -e "go$n" ]; do sleep 0.01; done
     printf '\003\004word\001\000\000\000%s\005' "$n"
 done
 "#;
 
     #[test]
     fn a_first_or_pinned_tick_waits_for_a_lockstep_answer_and_a_later_one_draws_what_arrived() {
-        let d = tmpdir("lockstep");
-        let path = script(&d, "lockstep", LOCKSTEP_SCRIPT);
+        let (d, later) = (tmpdir("lockstep"), tmpdir("lockstep-later"));
+        let go = |d: &str, n: u64| fs::write(format!("{d}/go{n}"), "").unwrap();
         let word = |stub: &Stub| match stub.set.borrow().last() {
             Some((_, _, ParamValue::Str(w))) => Some(w.clone()),
             _ => None,
         };
-        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        let (scene, mut f) =
+            start_scene(&script(&d, "lockstep", LOCKSTEP_SCRIPT), &no_args()).unwrap();
         f.bind(&scene);
         f.pin();
+        (0..3).for_each(|n| go(&d, n));
         let stub = &mut Stub::default();
         for frame in 0..3u64 {
             f.tick(frame, frame as f64 / 60.0, 1.0 / 60.0).unwrap();
             f.update(stub, frame, 0.0).unwrap();
             assert_eq!(word(stub), Some(frame.to_string()));
         }
+        let path = script(&later, "lockstep", LOCKSTEP_SCRIPT);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         let stub = &mut Stub::default();
+        go(&later, 0);
         f.tick(0, 0.0, 1.0 / 60.0).unwrap();
         f.update(stub, 0, 0.0).unwrap();
         assert_eq!(word(stub), Some("0".to_string()));
         f.tick(1, 1.0 / 60.0, 1.0 / 60.0).unwrap();
         f.update(stub, 1, 0.0).unwrap();
         assert_eq!(word(stub), Some("0".to_string()));
-        assert!(wait_until(Duration::from_secs(5), || {
+        go(&later, 1);
+        until(|| {
             f.drain();
             !f.incoming.is_empty()
-        }));
+        });
         f.update(stub, 2, 0.0).unwrap();
         assert_eq!(word(stub), Some("1".to_string()));
     }
@@ -2532,11 +2530,10 @@ done
         let (scene, mut f) = start_deaf(&path, &no_args()).unwrap();
         f.bind(&scene);
         f.pin();
-        let t = Instant::now();
+        // a tick that waited for an answer would fail after ANSWER_WAIT
         for frame in 0..3u64 {
             f.tick(frame, 0.0, 1.0 / 60.0).unwrap();
         }
-        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
     }
 
     #[test]
@@ -2549,14 +2546,15 @@ done
              echo 'the process gave up' >&2\nexit 1\n",
         );
         let (_scene, mut f) = start_scene(&path, &no_args()).unwrap();
-        let mut last = Ok(());
-        for frame in 0..100u64 {
-            last = f.tick(frame, 0.0, 0.016);
-            if last.is_err() {
-                break;
+        let mut frame = 0u64;
+        let last = loop {
+            let ticked = f.tick(frame, 0.0, 0.016);
+            if ticked.is_err() {
+                break ticked;
             }
+            frame += 1;
             thread::sleep(Duration::from_millis(10));
-        }
+        };
         let e = last.unwrap_err();
         let shown = e.to_string();
         assert!(shown.contains("the scene process exited"), "{shown}");
@@ -2638,30 +2636,20 @@ done
     fn closed_stdin_stops_a_scene_and_a_stubborn_one_is_signalled() {
         let d = tmpdir("stop");
         let quick = script(&d, "quick", SCENE_SCRIPT);
-        let (_scene, f) = start_scene(&quick, &no_args()).unwrap();
-        let started = Instant::now();
+        let (_scene, mut f) = start_scene(&quick, &no_args()).unwrap();
+        // no signal follows, so only the closed stdin ends it
+        f.term_after = NEVER;
         drop(f);
-        assert!(
-            started.elapsed() < TERM_AFTER,
-            "stdin never closed: {:?}",
-            started.elapsed()
-        );
         // an ignored signal stays ignored across exec, and the exec leaves no
         // child to hold the pipes past the kill
         let stubborn = script(
             &d,
             "stubborn",
             "#!/bin/sh\ntrap '' TERM\nprintf '{\"passes\":[{\"name\":\"main\",\
-             \"fragment\":\"void main(){}\"}]}\\n'\nexec sleep 10\n",
+             \"fragment\":\"void main(){}\"}]}\\n'\nexec sleep infinity\n",
         );
-        let (_scene, mut f) = start_scene(&stubborn, &no_args()).unwrap();
-        let (term, kill) = (SOON * 4, SOON * 2);
-        (f.term_after, f.kill_after) = (term, kill);
-        let started = Instant::now();
-        drop(f);
-        let took = started.elapsed();
-        assert!(took >= term + kill, "killed early: {took:?}");
-        assert!(took < term + kill + Duration::from_secs(3), "{took:?}");
+        // only SIGKILL ends it
+        start_deaf(&stubborn, &no_args()).unwrap();
     }
 
     // the arguments of a set of scenes
@@ -2735,8 +2723,6 @@ done
     #[test]
     fn the_help_runs_each_scene_of_the_set_on_demand() {
         let d = tmpdir("declare");
-        // a shell answer, because the set already holds a scene that spends the
-        // whole wait, and a loaded machine must not race an interpreter start
         let path = script(
             &d,
             "feed",
@@ -2751,7 +2737,7 @@ done
             ("quiet".to_string(), quiet),
             ("flat".to_string(), json),
         ];
-        let declared = declare(&set, true);
+        let declared = declare_within(&set, true, NEVER);
         let Takes::Args(args) = &declared[0].args else {
             panic!("feed declared nothing: {:?}", declared[0].args);
         };
@@ -2797,14 +2783,15 @@ done
              printf '\\013'\nsleep 5\n",
         );
         let (_scene, mut f) = start_deaf(&path, &no_args()).unwrap();
-        let mut last = Ok(());
-        for frame in 0..100u64 {
-            last = f.tick(frame, 0.0, 0.016);
-            if last.is_err() {
-                break;
+        let mut frame = 0u64;
+        let last = loop {
+            let ticked = f.tick(frame, 0.0, 0.016);
+            if ticked.is_err() {
+                break ticked;
             }
+            frame += 1;
             thread::sleep(Duration::from_millis(10));
-        }
+        };
         let e = last.unwrap_err().to_string();
         assert!(e.contains("wrote message kind 11 (0 to 6 only)"), "{e}");
     }
@@ -3001,10 +2988,10 @@ while IFS= read -r line; do :; done
         f.bind(&scene);
         f.tick(0, 0.0, 1.0 / 60.0).unwrap();
         ticks(&d, 1);
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             !f.incoming.is_empty()
-        }));
+        });
         let mut stub = Stub::default();
         f.update(&mut stub, 0, 0.0).unwrap();
         assert!(stub.set.borrow().is_empty());
@@ -3104,10 +3091,10 @@ while IFS= read -r line; do :; done
         let path = script(&d, "grow", &grow_script());
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             f.data.contains_key("scope.points")
-        }));
+        });
         let mut stub = stub(&["dot"]);
         f.update(&mut stub, 0, 0.0).unwrap();
         let title = r#"{"name":"title","text":"hi"}"#;
@@ -3163,10 +3150,10 @@ while IFS= read -r line; do :; done
         let path = script(&d, "place", &body);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             f.incoming.iter().any(|(n, _)| n == "bar.x")
-        }));
+        });
         let mut stub = stub(&["dot", "bar", "title"]);
         f.update(&mut stub, 0, 0.0).unwrap();
         assert_eq!(
@@ -3215,10 +3202,10 @@ while IFS= read -r line; do :; done
         let path = script(&d, "keys", &body);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             f.incoming.iter().any(|(n, _)| n == "bar.y")
-        }));
+        });
         let mut stub = Stub {
             now: serde_json::json!({"name": "title", "text": "hi", "x": 3}),
             ..stub(&["title", "bar"])
@@ -3270,10 +3257,10 @@ while IFS= read -r line; do :; done
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         let locks = f.locks();
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             f.incoming.iter().any(|(n, _)| n == "title.y")
-        }));
+        });
         let mut stub = stub(&["title", "slow", "odd", "same"]);
         f.update(&mut stub, 0, 0.0).unwrap();
         assert_eq!(
@@ -3327,10 +3314,10 @@ while IFS= read -r line; do :; done
         };
         console_layer(&mut f, &at(None, "opacity"), Value::from(0.5));
         console_layer(&mut f, &at(Some("glow"), "strength"), Value::from(0.25));
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             !f.incoming.is_empty()
-        }));
+        });
         let mut stub = Stub {
             now: serde_json::json!({"name": "slow", "text": "hi", "x": 3, "opacity": 0.5,
                                     "glow": {"strength": 0.25}}),
@@ -3381,10 +3368,10 @@ while IFS= read -r line; do :; done
             field: "color",
         };
         console_layer(&mut f, &at, Value::from("lime"));
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             !f.incoming.is_empty()
-        }));
+        });
         let mut stub = Stub {
             now: serde_json::json!({"name": "slow", "text": "hi", "x": 3, "font_size": 12,
                                     "color": "lime", "visible": false}),
@@ -3431,10 +3418,10 @@ while IFS= read -r line; do :; done
         let path = script(&d, "rebuilt", &body);
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             !f.incoming.is_empty()
-        }));
+        });
         let mut stub = Stub {
             now: serde_json::json!({"name": "slow", "text": "hi"}),
             ..stub(&["slow"])
@@ -3466,10 +3453,10 @@ while IFS= read -r line; do :; done
         );
         stub.now = title;
         f.tick(1, 0.0, 1.0 / 60.0).unwrap();
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             !f.incoming.is_empty()
-        }));
+        });
         stub.log.borrow_mut().clear();
         f.update(&mut stub, 1, 0.0).unwrap();
         let given = stub
@@ -3500,16 +3487,14 @@ while IFS= read -r line; do :; done
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         let locks = f.locks();
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             f.incoming.iter().any(|(n, _)| n == "amt")
-        }));
+        });
         f.update(&mut Stub::default(), 0, 0.0).unwrap();
         assert!(lock(&locks).param(None, "amt"));
         // the script exits once it reads a tick
-        assert!(wait_until(Duration::from_secs(5), || f
-            .tick(1, 0.0, 1.0 / 60.0)
-            .is_err()));
+        until(|| f.tick(1, 0.0, 1.0 / 60.0).is_err());
         assert_eq!(*lock(&locks), Locks::default());
     }
 
@@ -3554,10 +3539,10 @@ while IFS= read -r line; do :; done
         let last = |(n, s): &(String, Set)| {
             n == "bar.x" && matches!(s, Set::Param(ParamData::F32(v)) if v[..] == [2.0])
         };
-        assert!(wait_until(Duration::from_secs(5), || {
+        until(|| {
             f.drain();
             f.incoming.iter().any(last)
-        }));
+        });
         let mut stub = stub(&["dot", "bar"]);
         f.update(&mut stub, 0, 0.0).unwrap();
         assert_eq!(

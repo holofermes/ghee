@@ -228,10 +228,7 @@ mod tests {
         let c = Control::new();
         let held = catch(&c).unwrap();
         unsafe { raise(SIGTERM) };
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !c.stopped() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        crate::testing::until(|| c.stopped());
         release(&c, held);
         assert!(c.stopped());
         assert_eq!(c.signal(), Some(SIGTERM));

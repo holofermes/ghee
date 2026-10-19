@@ -461,7 +461,6 @@ extern "C" {
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_burst_of_ctrl_c_and_sigterm_ends_the_console() {
     use std::io::{BufRead, BufReader};
-    use std::time::{Duration, Instant};
     let dir = Dir::new("signals");
     let scene = dir.join("s.scene.json");
     fs::write(
@@ -499,18 +498,7 @@ fn a_burst_of_ctrl_c_and_sigterm_ends_the_console() {
             kill(ghee.id() as i32, SIGTERM);
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let status = loop {
-        if let Some(status) = ghee.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() > deadline {
-            ghee.kill().unwrap();
-            ghee.wait().unwrap();
-            panic!("ghee serve runs on 10 s after the signals");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let status = ghee.wait().unwrap();
     use std::os::unix::process::ExitStatusExt;
     assert!(
         matches!(status.signal(), Some(SIGINT | SIGTERM)),

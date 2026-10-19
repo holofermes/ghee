@@ -727,6 +727,7 @@ mod tests {
 
     use super::*;
     use crate::engine::probe_dri_devices;
+    use crate::testing::NEVER;
 
     const SC: &[u8] = &[0x00, 0x00, 0x00, 0x01];
 
@@ -925,14 +926,10 @@ mod tests {
         need_ffmpeg();
         let (w, h, n) = (160, 120, 30);
         let mut enc = SoftwareH264::new(w, h, 30, 1_000_000, 4).unwrap();
-        let mut aus: Vec<Vec<u8>> = Vec::new();
         for f in gradient_frames(w, h, n) {
             enc.feed(&f).unwrap();
-            if let (Some(au), _) = enc.get_au(Duration::from_secs(2)) {
-                aus.push(au);
-            }
         }
-        aus.extend(enc.drain(DRAIN_TIMEOUT));
+        let aus: Vec<Vec<u8>> = enc.drain(NEVER).collect();
         enc.close(DRAIN_TIMEOUT).unwrap();
         let stream = aus.concat();
         // zerolatency gives one AU per frame once flushed
@@ -962,7 +959,7 @@ mod tests {
         for _ in 0..5 {
             enc.feed(&f).unwrap();
         }
-        let stream = enc.drain(DRAIN_TIMEOUT).collect::<Vec<_>>().concat();
+        let stream = enc.drain(NEVER).collect::<Vec<_>>().concat();
         enc.close(DRAIN_TIMEOUT).unwrap();
         assert_eq!(
             ffprobe("stream=color_space,color_range", &stream),
@@ -985,7 +982,7 @@ mod tests {
         for _ in 0..10 {
             enc.feed(&f).unwrap();
         }
-        let stream = enc.drain(DRAIN_TIMEOUT).collect::<Vec<_>>().concat();
+        let stream = enc.drain(NEVER).collect::<Vec<_>>().concat();
         enc.close(DRAIN_TIMEOUT).unwrap();
         let raw = run(
             "ffmpeg",
@@ -1030,7 +1027,7 @@ mod tests {
         for f in gradient_frames(w as i32, h as i32, n as i32) {
             enc.feed(&f).unwrap();
         }
-        let stream = enc.drain(DRAIN_TIMEOUT).collect::<Vec<_>>().concat();
+        let stream = enc.drain(NEVER).collect::<Vec<_>>().concat();
         enc.close(DRAIN_TIMEOUT).unwrap();
         let raw = run(
             "ffmpeg",

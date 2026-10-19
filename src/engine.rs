@@ -7699,8 +7699,7 @@ mod tests {
         assert_eq!(r.render(None).unwrap(), pinned);
         r.set_time(None);
         let a = r.render(None).unwrap().to_vec();
-        sleep(Duration::from_millis(20));
-        assert_ne!(r.render(None).unwrap(), a);
+        while r.render(None).unwrap() == a {}
     }
 
     #[test]
@@ -8091,15 +8090,15 @@ mod tests {
             let f = r.render(None).unwrap().to_vec();
             [0, 1, 2].map(|c| px(&f, W, 0, 0, c))
         };
-        // the monotonic clock
-        for _ in 0..3 {
-            drawn(&mut r);
+        // the monotonic clock, until iTime shows
+        let mut frames = 1.0;
+        while drawn(&mut r)[1] == 0.0 {
+            frames += 1.0;
         }
-        sleep(Duration::from_millis(50));
         r.set_dt(0.05);
         let before = drawn(&mut r);
         assert!(
-            before[0] == 3.0 && before[1] > 0.0 && before[2] == 153.0,
+            before[0] == f64::min(frames, 255.0) && before[1] > 0.0 && before[2] == 153.0,
             "{before:?}"
         );
         r.restart_clock();
@@ -10686,37 +10685,24 @@ mod tests {
         r.atlas_cache = Some(dir.join("atlas"));
         assert_eq!(r.setup(&sc).unwrap(), "");
         let av = still(&mut r);
-        let writer = thread::spawn(move || {
-            sleep(Duration::from_millis(500));
-            let fixture = concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tools/fixtures/fonts/NotoColorEmoji-Smiles.ttf"
-            );
-            fs::write(&pipe, fs::read(fixture).unwrap()).unwrap();
-        });
-        let t0 = std::time::Instant::now();
+        // The font goes into the pipe after the set and the frame, so a set or
+        // a frame that waited for it would never return.
         set_words(&r, "label", "AV\u{1f600}");
-        assert!(
-            t0.elapsed() < Duration::from_millis(400),
-            "{:?}",
-            t0.elapsed()
-        );
         assert!(
             still(&mut r) == av,
             "the words switched before the font was in"
         );
-        writer.join().unwrap();
-        let t0 = std::time::Instant::now();
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tools/fixtures/fonts/NotoColorEmoji-Smiles.ttf"
+        );
+        fs::write(&pipe, fs::read(fixture).unwrap()).unwrap();
         while !still(&mut r)
             .as_chunks::<4>()
             .0
             .iter()
             .any(|p| p[0] != p[2])
         {
-            assert!(
-                t0.elapsed() < Duration::from_secs(20),
-                "the emoji never came in"
-            );
             sleep(Duration::from_millis(1));
         }
         assert!(r.text_errors().is_empty(), "{:?}", r.text_errors());
@@ -10917,6 +10903,8 @@ mod tests {
         inner: text::AtlasFont,
         visible: std::sync::atomic::AtomicBool,
         open: std::sync::atomic::AtomicBool,
+        /// An outline waited for `open`.
+        asked: std::sync::atomic::AtomicBool,
     }
 
     const LATE: &str = "QZ";
@@ -10930,6 +10918,7 @@ mod tests {
                 inner: text::AtlasFont(vec![Ok(Arc::new(bytes))]),
                 visible: false.into(),
                 open: true.into(),
+                asked: false.into(),
             })
         }
 
@@ -10967,6 +10956,7 @@ mod tests {
             }
             let late = LATE.chars().any(|c| self.inner.glyph(c) == Some(gid));
             while late && !self.open.load(std::sync::atomic::Ordering::SeqCst) {
+                self.set(&self.asked, true);
                 sleep(Duration::from_millis(1));
             }
             self.inner.outline(gid)
@@ -11052,17 +11042,14 @@ mod tests {
         font.set(&font.open, false);
         set_words(&r, "label", "AVZ");
         for _ in 0..5 {
-            sleep(Duration::from_millis(20));
             assert!(still(&mut r) == av, "the words switched before Z was in");
         }
         font.set(&font.open, true);
-        let t0 = std::time::Instant::now();
         let shown = loop {
             let f = still(&mut r);
             if f != av {
                 break f;
             }
-            assert!(t0.elapsed() < Duration::from_secs(20), "Z never came in");
             sleep(Duration::from_millis(1));
         };
         assert!(
@@ -11134,20 +11121,16 @@ mod tests {
         font.set(&font.visible, true);
         font.set(&font.open, false);
         set_words(&r, "label", "AVQ");
+        // Q comes in once its outline is asked for, so only a render that
+        // waits for it draws it.
         let opener = {
             let font = font.clone();
             thread::spawn(move || {
-                sleep(Duration::from_millis(300));
+                crate::testing::until(|| font.asked.load(std::sync::atomic::Ordering::SeqCst));
                 font.set(&font.open, true);
             })
         };
-        let t0 = std::time::Instant::now();
         let f = still(&mut r);
-        assert!(
-            t0.elapsed() >= Duration::from_millis(250),
-            "{:?}",
-            t0.elapsed()
-        );
         opener.join().unwrap();
         assert!(f != av && worst(&f, &want) <= 1, "{}", worst(&f, &want));
         drop(r);
@@ -11173,12 +11156,7 @@ mod tests {
         let big: String = (0..40)
             .map(|i| char::from_u32(0xe000 + i).unwrap())
             .collect();
-        let t0 = std::time::Instant::now();
         while !r.atlases.borrow()[0].gen.request(big.chars()).is_empty() {
-            assert!(
-                t0.elapsed() < Duration::from_secs(60),
-                "the big glyphs never came in"
-            );
             sleep(Duration::from_millis(1));
         }
         let after = size(&r);

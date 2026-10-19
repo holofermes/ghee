@@ -4,7 +4,7 @@ The build needs Rust, from [rustup.rs](https://rustup.rs), and the GLES/DRM
 development headers. On Raspberry Pi OS or Debian:
 
 ```
-sudo apt install libdrm-dev libgbm-dev libegl1-mesa-dev libgles2-mesa-dev
+sudo apt install libdrm-dev libgbm-dev libegl-dev libgles-dev
 cargo build --release
 ```
 

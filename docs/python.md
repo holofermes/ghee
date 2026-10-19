@@ -255,6 +255,10 @@ Restart=on-failure
 WantedBy=default.target
 ```
 
+This unit runs the program with the Python of its venv. With ghee from the
+deb, run it with the system Python instead:
+`ExecStart=/usr/bin/python3 /home/pi/status/status.py`.
+
 Start it now and at every boot, also before you log in:
 
 ```shell
@@ -407,7 +411,7 @@ file, an image asset, a Pillow image or a numpy array.
 
 In this scene, a `color` param `ink` holds orange, and the shader paints it from
 the top down to black. `uv`, which ghee gives every shader, runs from 0 at the
-top to 1 at the bottom ([Built-in names](scenes.md#built-in-names)). A text
+bottom to 1 at the top ([Built-in names](scenes.md#built-in-names)). A text
 layer writes `hello` over it with a shadow:
 
 ```python

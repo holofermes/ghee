@@ -100,14 +100,25 @@ A pass is a fragment shader and the picture that it draws, which ghee calls
 its buffer. The passes draw in order, and the last one makes the frame.
 
 A pass is GLSL ES 1.00, or GLSL ES 3.00 when its first line is `#version 300
-es`. One scene can hold both, and `common` takes the GLSL of the pass that it
-lands in. A Pi Zero to Pi 3 runs GLSL ES 1.00 alone ([Raspberry
-Pi](pi.md)). In each pass, define `void main()`. A pass that defines
-`mainImage` instead of `main` runs as a Shadertoy pass ([From
-Shadertoy](#from-shadertoy)). ghee writes the `precision` lines for you, and
-turns on `fwidth`, `dFdx` and `dFdy` in GLSL ES 1.00 on every GPU that has
-them. A shader that fails to compile stops `ghee render`, which prints the
-pass, the line and the GPU's message.
+es`. One scene can hold both. `common` lands in every pass and compiles as
+the GLSL of that pass, so GLSL ES 3.00 code in `common` breaks a GLSL ES 1.00
+pass. A Pi Zero to Pi 3 runs GLSL ES 1.00 alone ([Raspberry Pi](pi.md)).
+
+In each pass, define `void main()`. In GLSL ES 1.00, write the colour to
+`gl_FragColor`. In GLSL ES 3.00, declare an `out vec4` of your own and write
+the colour to it. This GLSL ES 3.00 pass paints red across and green up:
+
+```glsl
+#version 300 es
+out vec4 colour;
+void main() { colour = vec4(uv, 0.0, 1.0); }
+```
+
+A pass that defines `mainImage` instead of `main` runs as a Shadertoy pass
+([From Shadertoy](#from-shadertoy)). ghee writes the `precision` lines for
+you, and turns on `fwidth`, `dFdx` and `dFdy` in GLSL ES 1.00 on every GPU
+that has them. A shader that fails to compile stops `ghee render`, which
+prints the pass, the line and the GPU's message.
 
 | Key | Values | Default | What it changes |
 | --- | --- | --- | --- |
@@ -256,9 +267,13 @@ bottom and smaller at the top:
 To run a Shadertoy shader, put each of its passes in a pass of its own,
 its Common tab in the scene's `common`, and the inputs of each pass in its
 `channels`, in the order of `iChannel0` and up. Start each pass with
-`#version 300 es`, and keep its `mainImage`. ghee calls `mainImage` with
-`gl_FragCoord.xy` as `fragCoord`. In a GLSL ES 1.00 pass with `mainImage`,
-`texture` reads as `texture2D`.
+`#version 300 es`, and the pass compiles as written. ghee calls `mainImage`
+with `gl_FragCoord.xy` as `fragCoord`. In a GLSL ES 1.00 pass with
+`mainImage`, `texture` reads as `texture2D`.
+
+Careful: a buffer holds 8 bits a channel, from 0 to 1. A pass that keeps
+state from frame to frame in its buffer, such as a position, a count or a
+signed value, packs it as [Feedback](#feedback) shows.
 
 ## Params
 

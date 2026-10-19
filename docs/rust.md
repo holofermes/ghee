@@ -53,10 +53,11 @@ refused, and `SetupError::Scene` says what the scene asks for that the
 renderer can't hold. After a failed `setup`, the scene before it keeps
 drawing. Create and use a `Renderer` on one thread: GL is thread-affine.
 
-To read the frames back as RGB, call `.components(3)` on the builder before
-`build`. To render on one GPU of several, pass its node to `.device`, such
-as `.device("/dev/dri/renderD129")`. To scan the frames out to a display,
-pass its `Card` to `.display` ([Run the console on a
+`render` returns the frame's pixels row by row, the top row first. To read
+the frames back as RGB, call `.components(3)` on the builder before `build`.
+To render on one GPU of several, pass its node to `.device`, such as
+`.device("/dev/dri/renderD129")`. To scan the frames out to a display, pass
+its `Card` to `.display` ([Run the console on a
 display](#run-the-console-on-a-display) opens one).
 
 Give an array's data as `Feed::Data` for floats, or as `Feed::DataU8` for
@@ -92,8 +93,9 @@ fn main() -> anyhow::Result<()> {
 
 This program runs the [console](console.md) on the display that the kernel
 drives, over the scenes in `scenes/`, and feeds each scene's array `level`
-from its own source. It draws at most 30 frames a second, and Ctrl-C or
-SIGTERM stops it and turns the display off:
+from its own source. It draws at most 30 frames a second. Ctrl-C or SIGTERM
+stops it and turns the display off, and the program then ends by that
+signal, as `ghee` does:
 
 ```rust,no_run
 use ghee::console::server::{self, ArraySource, Options};
@@ -115,9 +117,17 @@ fn main() -> anyhow::Result<()> {
         display: Some(Card::open(None)?),
         arrays: vec![("level".into(), level)],
         fps: Some(30.0),
-        control: stop,
+        control: stop.clone(),
         ..Options::default()
-    })
+    })?;
+    if let Some(sig) = stop.signal() {
+        unsafe { raise(sig) };
+    }
+    Ok(())
+}
+
+extern "C" {
+    fn raise(sig: i32) -> i32;
 }
 ```
 
@@ -186,14 +196,14 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-`frame.data` holds the pixels row by row, `frame.width` by `frame.height`,
-`frame.components` bytes each. ghee calls `write` on the thread that runs
-the console. Implement `persists` to return true when your sink keeps
-showing its last frame, and ghee then skips a frame that would come out the
-same. Implement `turn_on` and `turn_off` for a sink with a power state, such
-as a backlight: ghee turns it on before the first frame and before the
-first frame after each pause, and off while the render pauses and when it
-ends.
+`frame.data` holds the pixels row by row, the top row first, `frame.width`
+by `frame.height`, `frame.components` bytes each. ghee calls `write` on the
+thread that runs the console. Implement `persists` to return true when your
+sink keeps showing its last frame, and ghee then skips a frame that would
+come out the same. Implement `turn_on` and `turn_off` for a sink with a
+power state, such as a backlight: ghee turns it on before the first frame
+and before the first frame after each pause, and off while the render
+pauses and when it ends.
 
 ## Stop and pause
 

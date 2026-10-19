@@ -3100,12 +3100,35 @@ function buildParamRow(box, pm, name, pass){
   }
   // vec2: a direction pad (drag = direction + magnitude, works with touch),
   // a magnitude slider that keeps direction, and numeric entry. All three
-  // views of one vector; every change sends the full value.
+  // views of one vector; every change sends the full value. A vec2 whose
+  // range is not centred on 0, or doesn't hold its value, is a position: two
+  // numbers, x and y.
   if (pm.type === "vec2"){
     const mn = pm.min!=null?pm.min:-1, mx = pm.max!=null?pm.max:1;
     const R = Math.max(Math.abs(mn), Math.abs(mx)) || 1;
     const st = pm.step!=null?pm.step:R/100;
     const val = paramLabel(row, name, "", mark);
+    if (mn !== -mx || pm.value.some(v => Math.abs(v) > R)){
+      const nums = el("div", "vnums");
+      const fit = v => Math.min(pm.max ?? Infinity, Math.max(pm.min ?? -Infinity, v));
+      const show = () => { val.textContent = pm.value.map(x => +(+x).toFixed(3)).join(", "); };
+      ["x", "y"].forEach((axis, c) => {
+        const i = el("input");
+        i.type = "number"; i.step = pm.step ?? "any"; i.value = +(+pm.value[c]).toFixed(3);
+        if (pm.min != null) i.min = pm.min;
+        if (pm.max != null) i.max = pm.max;
+        i.setAttribute("aria-label", `${name}.${axis}`);
+        i.addEventListener("change", () => {
+          pm.value[c] = fit(parseFloat(i.value) || 0); i.value = +(+pm.value[c]).toFixed(3);
+          show(); send(pm.value.map(x => (+x).toFixed(3)).join(","));
+        });
+        nums.appendChild(i);
+      });
+      row.appendChild(nums);
+      box.appendChild(row);
+      show();
+      return;
+    }
     const wrap = el("div", "vecwrap");
     const pad = el("div", "vecpad");
     pad.innerHTML =

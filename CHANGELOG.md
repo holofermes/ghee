@@ -213,6 +213,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   changes, under the `ETag` that names them, instead of an older scene.
 - The console locks a text layer's `font_family` and `text_align` that a
   program passes, instead of taking a change that snaps back.
+- The console shows a `vec2` param that holds a position as two numbers,
+  instead of a direction pad that clamps it between -1 and 1.
 - A page that opens on a scene whose files changed takes the new files.
 - `ghee.open(display="kms")` refuses a card whose GL runs in software, as
   `ghee render` does, instead of drawing through llvmpipe.

@@ -324,6 +324,10 @@ for the next frame with `screen.set_param("rings", 8)`, or with `POST /set`
 | `vec2`, `vec3`, `vec4` | the same | 2, 3 or 4 numbers |
 | `string` | none | text, for a [procedural scene](#procedural-scenes) to read |
 
+The console shows a `vec2` whose value lies between opposite `min` and
+`max`, -1 and 1 unless you set them, as a direction pad. It shows any other
+`vec2`, such as a position in pixels, as two numbers, x and y.
+
 A param in a pass's `params` reaches that pass alone. Declare it in the
 scene's own `params` to make it reach every pass.
 

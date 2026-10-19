@@ -63,6 +63,28 @@ pub const POST_ONLY: [&str; 12] = [
     "/delete", "/upload",
 ];
 
+/// The paths that only read. Each takes GET and HEAD.
+pub const GET_ONLY: [&str; 9] = [
+    "/stats",
+    "/scenes",
+    "/hwinfo",
+    "/filters",
+    "/edits",
+    "/format",
+    "/stream",
+    "/h264",
+    "/frame.png",
+];
+
+/// The methods of RFC 9110 and RFC 5789. A path that takes none of them
+/// answers 405, and any other method answers 501.
+const METHODS: [&str; 9] = [
+    "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH",
+];
+
+/// The seconds that a 503 asks a client to wait before it asks again.
+const RETRY_AFTER: &str = "1";
+
 const VEC_ARITY: [(&str, usize); 3] = [("vec2", 2), ("vec3", 3), ("vec4", 4)];
 const BOOLS: [(&str, bool); 4] = [("true", true), ("1", true), ("false", false), ("0", false)];
 
@@ -673,11 +695,8 @@ impl Edit<'_> {
     /// `"rev"`: with no `If-Match`, with `*`, or with that ETag in its list.
     /// A weak tag never matches (RFC 9110, section 13.1.1).
     pub fn matches(&self, rev: u64) -> bool {
-        let Some(tags) = self.if_match.map(str::trim) else {
-            return true;
-        };
-        let want = format!("\"{rev}\"");
-        tags == "*" || tags.split(',').any(|t| t.trim() == want)
+        self.if_match
+            .is_none_or(|tags| names_tag(tags, &format!("\"{rev}\""), false))
     }
 }
 
@@ -838,6 +857,17 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                 ),
             ));
         }
+        if !METHODS.contains(&method) {
+            return Some(Response::text(
+                501,
+                &format!("{method} is not a method that ghee implements"),
+            ));
+        }
+        if let Some(allow) = self.allowed(path) {
+            if !allow.split(", ").any(|m| m == method) {
+                return Some(not_allowed(&format!("{path} takes {allow}"), allow));
+            }
+        }
         if method == "POST" {
             if !origin_allowed(headers.get("Origin").unwrap_or(""), host) {
                 return Some(Response::text(403, "cross-origin request"));
@@ -857,8 +887,20 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                 return Some(too_large(self.cap(path)));
             }
         }
-        if matches!(method, "GET" | "HEAD") && self.post_only.iter().any(|p| p == path) {
-            return Some(not_allowed(&format!("{path} is POST only"), "POST"));
+        None
+    }
+
+    /// The methods that `path` takes, as its `Allow` header names them. None
+    /// for a path that the console doesn't serve.
+    pub fn allowed(&self, path: &str) -> Option<&'static str> {
+        if path == "/scene" {
+            return Some("GET, HEAD, POST");
+        }
+        if path == "/ping" || self.post_only.iter().any(|p| p == path) {
+            return Some("POST");
+        }
+        if GET_ONLY.contains(&path) || (self.web && static_path(path).is_some()) {
+            return Some("GET, HEAD");
         }
         None
     }
@@ -893,8 +935,7 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     /// before its extension. A transport streams the body in, past the body
     /// cap.
     pub fn upload(&self, query: &Query, body: &mut dyn Read) -> Response {
-        self.take_upload(query, body)
-            .unwrap_or_else(|e| Response::text(e.status, &e.message))
+        self.take_upload(query, body).unwrap_or_else(refusal)
     }
 
     fn take_upload(&self, query: &Query, body: &mut dyn Read) -> ConsoleResult<Response> {
@@ -952,13 +993,11 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             return refused;
         }
         let out = match method {
-            "GET" | "HEAD" => self.get(path, query),
+            "GET" | "HEAD" => self.get(path, query).map(|r| conditional(r, headers)),
             "POST" => self.post(path, query, headers, body),
-            _ => {
-                return not_allowed(&format!("{method} is not allowed"), "GET, HEAD, POST");
-            }
+            _ => Ok(Response::text(404, "not found")),
         };
-        out.unwrap_or_else(|e| Response::text(e.status, &e.message))
+        out.unwrap_or_else(refusal)
     }
 
     fn get(&self, path: &str, query: &Query) -> ConsoleResult<Response> {
@@ -1124,6 +1163,62 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             headers: Vec::new(),
         }
     }
+}
+
+/// The answer for a refused request. A 503 asks the client to try again
+/// after RETRY_AFTER seconds.
+pub fn refusal(e: ConsoleError) -> Response {
+    let mut r = Response::text(e.status, &e.message);
+    if e.status == 503 {
+        r.headers
+            .push(("Retry-After".to_string(), RETRY_AFTER.to_string()));
+    }
+    r
+}
+
+fn etag_of(r: &Response) -> Option<&str> {
+    r.headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("ETag"))
+        .map(|(_, v)| v.as_str())
+}
+
+/// Whether `list`, an `If-Match` or `If-None-Match` value, names `etag`:
+/// `*`, or a tag in the list. A weak tag counts only with `weak`, the weak
+/// comparison of RFC 9110, section 8.8.3.2.
+fn names_tag(list: &str, etag: &str, weak: bool) -> bool {
+    let list = list.trim();
+    if list == "*" {
+        return true;
+    }
+    let bare = |t: &str| t.strip_prefix("W/").unwrap_or(t).to_string();
+    list.split(',').map(str::trim).any(|t| match weak {
+        true => bare(t) == bare(etag),
+        false => !t.starts_with("W/") && t == etag,
+    })
+}
+
+/// `r`, the answer to a GET, under the request's `If-Match` and
+/// `If-None-Match` (RFC 9110, section 13.2.2): 412 when `If-Match` names no
+/// current tag, 304 with no body when `If-None-Match` names it.
+fn conditional(r: Response, headers: &Headers) -> Response {
+    if !(200..300).contains(&r.status) {
+        return r;
+    }
+    let etag = etag_of(&r).unwrap_or("");
+    if let Some(list) = headers.get("If-Match") {
+        if !names_tag(list, etag, false) {
+            return Response::text(412, "If-Match names no ETag of the current state");
+        }
+    }
+    if let Some(list) = headers.get("If-None-Match") {
+        if names_tag(list, etag, true) {
+            let mut unchanged = Response::text(304, "");
+            unchanged.headers = r.headers;
+            return unchanged;
+        }
+    }
+    r
 }
 
 /// `r` with the ETag of revision `rev`, the revision that an edit made.
@@ -2593,10 +2688,69 @@ mod tests {
             .map(|(_, v)| v.as_str())
     }
 
+    /// RFC 9110, section 15.5.6 and 15.6.2: a method that a path doesn't
+    /// take answers 405 with the path's own methods, and a method that ghee
+    /// implements nowhere answers 501.
     #[test]
-    fn an_unknown_method_is_405_and_names_the_methods_that_ghee_takes() {
-        let r = api().dispatch("DELETE", "/stats", &Query::new(), &local(), b"");
-        assert_eq!((r.status, allow(&r)), (405, Some("GET, HEAD, POST")));
+    fn a_method_answers_405_with_the_methods_of_its_path_or_501() {
+        let api = api();
+        let answers = [
+            ("DELETE", "/stats", 405, Some("GET, HEAD")),
+            ("POST", "/stats", 405, Some("GET, HEAD")),
+            ("GET", "/set", 405, Some("POST")),
+            ("PUT", "/set", 405, Some("POST")),
+            ("OPTIONS", "/set", 405, Some("POST")),
+            ("PUT", "/scene", 405, Some("GET, HEAD, POST")),
+            ("BREW", "/set", 501, None),
+            ("BREW", "/nope", 501, None),
+            ("DELETE", "/nope", 404, None),
+        ];
+        for (method, path, status, allows) in answers {
+            let r = api.dispatch(method, path, &Query::new(), &local(), b"");
+            assert_eq!((r.status, allow(&r)), (status, allows), "{method} {path}");
+        }
+        assert!(api.host.calls.borrow().is_empty());
+    }
+
+    /// RFC 9110, section 13.1: a GET under If-Match answers 412 unless it
+    /// names the current ETag, and under If-None-Match 304 when it does.
+    #[test]
+    fn a_get_answers_its_if_match_and_its_if_none_match() {
+        let r = Response::json(&serde_json::json!({}));
+        let tagged = tagged(r, Some(7));
+        let ask = |name: &str, value: &str| {
+            let mut headers = local();
+            headers.insert(name, value);
+            conditional(tagged.clone(), &headers).status
+        };
+        let answers = [
+            ("If-Match", "\"7\"", 200),
+            ("If-Match", "*", 200),
+            ("If-Match", "\"6\", \"7\"", 200),
+            ("If-Match", "\"6\"", 412),
+            ("If-Match", "W/\"7\"", 412),
+            ("If-None-Match", "\"7\"", 304),
+            ("If-None-Match", "W/\"7\"", 304),
+            ("If-None-Match", "*", 304),
+            ("If-None-Match", "\"6\"", 200),
+        ];
+        for (name, value, status) in answers {
+            assert_eq!(ask(name, value), status, "{name}: {value}");
+        }
+        let mut headers = local();
+        headers.insert("If-None-Match", "\"7\"");
+        let unchanged = conditional(tagged.clone(), &headers);
+        assert_eq!(
+            (unchanged.body.len(), etag_of(&unchanged)),
+            (0, Some("\"7\""))
+        );
+    }
+
+    #[test]
+    fn a_scene_still_loading_asks_for_a_retry() {
+        let r = refusal(ConsoleError::unavailable("scene 'a' is loading"));
+        let retry = r.headers.iter().find(|(k, _)| k == "Retry-After");
+        assert_eq!((r.status, retry.map(|(_, v)| v.as_str())), (503, Some("1")));
     }
 
     #[test]
@@ -2759,8 +2913,8 @@ mod tests {
             if let Some(h) = host {
                 headers.insert("Host", h);
             }
-            for method in ["GET", "POST"] {
-                let refused = api.precheck(method, "/stats", &headers);
+            for (method, path) in [("GET", "/stats"), ("POST", "/set")] {
+                let refused = api.precheck(method, path, &headers);
                 assert_eq!(refused.is_none(), ok, "{method} {host:?}");
             }
         }

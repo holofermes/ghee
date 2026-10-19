@@ -47,14 +47,16 @@ bad /set: param 'nope' is not a param this scene declares (main.tile, tile, main
 
 | Status | When |
 | --- | --- |
+| 304 | a GET whose `If-None-Match` names the current `ETag` ([Revisions](#revisions)) |
 | 400 | a bad query or value |
 | 403 | a change to a param or a layer key that the scene's program sets ([Locked](#locked)), a change that a [Python console](#from-python) refuses, a `Host` header other than `localhost`, a `127.x.x.x` address, `[::1]` or a name passed to `--allow-hosts`, with or without a port ([From another computer](console.md#from-another-computer)), or a POST from another site's web page |
 | 404 | an unknown path, scene or item |
-| 405 | a GET to a path that changes something, which takes POST alone, or a method other than GET, HEAD and POST. `Allow` names the methods that the path takes |
+| 405 | a method that the path doesn't take, such as a GET to a path that changes something. `Allow` names the methods that the path takes |
 | 409 | an edit for a scene other than the open one, or a scene name that's taken |
 | 412 | the scene changed since the `ETag` in your `If-Match` ([Revisions](#revisions)) |
 | 413 | a body over 1 MiB, or an upload over 32 MiB |
-| 503 | the scene is still loading ([Scenes](#scenes)) |
+| 501 | a method that HTTP doesn't define, such as `BREW` |
+| 503 | the scene is still loading ([Scenes](#scenes)). `Retry-After` gives the seconds to wait before you ask again |
 
 ## Changing a param
 
@@ -133,7 +135,9 @@ scene a new `ETag` too.
 curl -X POST -H 'If-Match: "5"' 'http://127.0.0.1:8090/set?name=tile&value=3'
 ```
 
-`GET /scene` answers the scene with every edit that answered before it.
+`GET /scene` answers the scene with every edit that answered before it. To
+read the scene only when it changed, send `If-None-Match` with the `ETag`
+that you hold: ghee answers 304, with no body, while it is current.
 
 `/set`, `POST /scene`, `/save`, `/reset`, `/aside` and `/draft` edit the
 open scene. To name it, pass `scene=` to `/set`, or `name=` to the others: a

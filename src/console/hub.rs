@@ -24,7 +24,9 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 use tiny_http::{Header, Request, Server, StatusCode};
 
-use crate::console::core::{parse_query, ConsoleAPI, ConsoleHost, Headers, Query, Response};
+use crate::console::core::{
+    parse_query, refusal, ConsoleAPI, ConsoleHost, Headers, Query, Response,
+};
 use crate::engine::{ErrorPass, Renderer};
 use crate::h264::{
     avcc, build_config, no_encoder, split_annexb, wire_frame, ColorSpace, HardwareH264,
@@ -1655,7 +1657,7 @@ pub fn handle<D: Drawer + ?Sized, H: ConsoleHost>(
     }
     let query = match parse_query(qs) {
         Ok(q) => q,
-        Err(e) => return send(request, &Response::text(e.status, &e.message)),
+        Err(e) => return send(request, &refusal(e)),
     };
     if method == "HEAD" {
         let streamed = match path {

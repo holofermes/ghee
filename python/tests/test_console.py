@@ -735,8 +735,37 @@ def test_head_answers_as_get_and_a_405_names_the_methods(host, tmp_path):
         status, headers, body = answer(port, "HEAD", "/stream")
         assert (status, body) == (200, b"")
         assert headers["Content-Type"].startswith("multipart/x-mixed-replace")
-        status, headers, _ = answer(port, "DELETE", "/stats")
-        assert (status, headers.get("Allow")) == (405, "GET, HEAD, POST")
+        for method, path, want in [
+            ("DELETE", "/stats", (405, "GET, HEAD")),
+            ("GET", "/set", (405, "POST")),
+            ("PUT", "/scene", (405, "GET, HEAD, POST")),
+            ("BREW", "/stats", (501, None)),
+        ]:
+            status, headers, _ = answer(port, method, path)
+            assert (status, headers.get("Allow")) == want, (method, path)
+
+
+@pytest.mark.parametrize("host", ["open", "serve"])
+def test_a_get_answers_its_if_match_and_its_if_none_match(host, tmp_path):
+    def read(**headers):
+        conn = http.client.HTTPConnection("127.0.0.1", port)
+        try:
+            conn.request("GET", "/scene", headers=headers)
+            r = conn.getresponse()
+            return r.status, r.getheader("ETag"), r.read()
+        finally:
+            conn.close()
+
+    with drawn(host, tmp_path) as (port, step):
+        assert read(**{"If-Match": '"0"'})[0] == 412
+        assert read(**{"If-None-Match": "*"})[0] == 304
+        if host == "serve":
+            # the program's changes give the scene a new ETag each frame
+            def unchanged():
+                tag = read()[1]
+                return read(**{"If-None-Match": tag}) == (304, tag, b"")
+
+            until(unchanged, step)
 
 
 def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():

@@ -60,8 +60,10 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   pass the proxy's host names to `--allow-hosts`.
 - Sample image and `.raw` data assets in a shader.
 - Read `iFrame`, `iChannelResolution` and `iOutputResolution` in a pass.
-- Run a Shadertoy pass as it is: a pass that defines `mainImage` instead of
-  `main` gets y-up coordinates, `texture`, `texelFetch` and `tanh` ([From
+- Write a pass in GLSL ES 3.00 by starting it with `#version 300 es`, on
+  every GPU with OpenGL ES 3 ([Passes](docs/scenes.md#passes)).
+- Run a Shadertoy pass as it is: start it with `#version 300 es`, and ghee
+  calls its `mainImage` with y-up coordinates ([From
   Shadertoy](docs/scenes.md#from-shadertoy)).
 - Use `ghee_hash` and `ghee_noise` to get the same random values on every
   GPU.
@@ -151,19 +153,19 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   the card's own error, no connected display, or GL in software.
 - `Renderer::blank` does nothing on a renderer with no display, instead of
   failing.
-- ghee puts a pass's `#extension` lines above its own declarations, so
-  `fwidth`, `dFdx` and `dFdy` compile on every GPU that has them, instead of
-  on none ([Passes](docs/scenes.md#passes)).
+- `fwidth`, `dFdx` and `dFdy` compile in a pass on every GPU that has them,
+  with or without an `#extension` line, instead of on none
+  ([Passes](docs/scenes.md#passes)).
+- A compile error prints the GL's whole log, instead of its first 511
+  bytes, and each error in it names the line of the pass or of the common
+  block that the author wrote, instead of a line of the shader that ghee
+  assembled.
 - ghee refuses a frame or a pass past the GPU's texture size, 2048 pixels a
   side on a Pi Zero to Pi 3, and names the cap, instead of failing with a
   GL error.
 - `--rgb565`, and `opts={"rgb565": True}` in `ghee.open`, refuse a display
   that takes no RGB565 frames, such as an SSD1306, instead of drawing
   nothing and ending with status 0.
-- A compile error prints the GL's whole log, instead of its first 511
-  bytes, and each error in it names the line of the pass or of the common
-  block that the author wrote, instead of a line of the shader that ghee
-  assembled.
 
 ## 0.4.0 - 2026-08-06
 

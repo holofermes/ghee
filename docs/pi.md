@@ -9,8 +9,6 @@ runs on every Pi.
 
 These hold on every Pi, set by what VC4 can do:
 
-- A pass's GLSL is GLSL ES 1.00, because VC4 runs OpenGL ES 2.0
-  ([Passes](scenes.md#passes)).
 - A pass's buffer holds 8 bits for each of red, green, blue and alpha, the
   most that VC4 draws.
 - A pass reads at most 16 textures, VC4's count.
@@ -21,11 +19,12 @@ For a scene that must run on every Pi, keep to the VC4 column.
 
 | | VC4: Pi Zero to Pi 3 | V3D: Pi 4, Pi 5 |
 | --- | --- | --- |
+| a pass's GLSL ([Passes](scenes.md#passes)) | GLSL ES 1.00 | GLSL ES 1.00 and 3.00 |
 | a frame, a pass, an image or an [array](scenes.md#arrays) | 2048 pixels a side at most | 4096 pixels a side at most |
 | the values of an [array](scenes.md#arrays) that a program feeds | 8 bits each, so a value outside 0 to 1 clamps | 32-bit floats |
 | a [data file](scenes.md#data-files), `.raw`, in `f32` | fails to load, so use `u8` | loads, and is read `nearest` |
 | GPU memory | set aside at boot ([GPU memory](#gpu-memory)) | the system's RAM |
-| `fwidth`, `dFdx` and `dFdy` | fail to compile | compile with the pass's `#extension` line ([Passes](scenes.md#passes)) |
+| `fwidth`, `dFdx` and `dFdy` | fail to compile | compile |
 
 To fill an HDMI screen larger than 2048 pixels on VC4, draw at 1920x1080 or
 less with `--size`, and the screen stretches the frame

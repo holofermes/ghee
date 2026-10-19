@@ -99,18 +99,15 @@ relative to the file's folder.
 A pass is a fragment shader and the picture that it draws, which ghee calls
 its buffer. The passes draw in order, and the last one makes the frame.
 
-A pass's GLSL is GLSL ES 1.00, the GLSL of OpenGL ES 2.0, because every Pi
-runs it ([Raspberry Pi](pi.md)). In each pass, define `void main()`, and write
-the pixel's colour to `gl_FragColor`. Use `texture2D` to read a texture. A
-pass that defines `mainImage` instead of `main` runs as a Shadertoy pass
-([From Shadertoy](#from-shadertoy)). ghee writes the `#version` and
-`precision` lines for you. A shader that fails to compile stops `ghee
-render`, which prints the pass, the line and the GPU's message.
-
-To use `fwidth`, `dFdx` or `dFdy`, put
-`#extension GL_OES_standard_derivatives : enable` in the pass or in
-`common`. A Pi Zero to Pi 3 has none of them, so such a pass fails to
-compile there ([Raspberry Pi](pi.md)).
+A pass is GLSL ES 1.00, or GLSL ES 3.00 when its first line is `#version 300
+es`. One scene can hold both, and `common` takes the GLSL of the pass that it
+lands in. A Pi Zero to Pi 3 runs GLSL ES 1.00 alone ([Raspberry
+Pi](pi.md)). In each pass, define `void main()`. A pass that defines
+`mainImage` instead of `main` runs as a Shadertoy pass ([From
+Shadertoy](#from-shadertoy)). ghee writes the `precision` lines for you, and
+turns on `fwidth`, `dFdx` and `dFdy` in GLSL ES 1.00 on every GPU that has
+them. A shader that fails to compile stops `ghee render`, which prints the
+pass, the line and the GPU's message.
 
 | Key | Values | Default | What it changes |
 | --- | --- | --- | --- |
@@ -205,6 +202,26 @@ Careful: a buffer holds 8 bits for each of red, green, blue and alpha, on
 every GPU ([Raspberry Pi](pi.md) says why). A dimming that only multiplies
 stops short of black, so take a level, `1.0 / 255.0`, off too.
 
+A value that a pass keeps from frame to frame, such as a position or a
+speed, clamps to 0 to 1 in steps of 1/255. To keep it finer, store it in two
+channels with these two functions, which hold a value from 0 to 1 in steps of
+1/65535. Store a value from `lo` to `hi` as `(v - lo) / (hi - lo)`. The
+[feedback example](../ghee/examples/feedback-common.glsl) packs its
+particles' positions into bytes too.
+
+```glsl
+vec2 pack16(float v) {
+  v = floor(clamp(v, 0.0, 1.0) * 65535.0 + 0.5);
+  float hi = floor(v / 256.0);
+  return vec2(hi, v - hi * 256.0) / 255.0;
+}
+
+float unpack16(vec2 e) {
+  e = floor(e * 255.0 + 0.5);
+  return (e.x * 256.0 + e.y) / 65535.0;
+}
+```
+
 A feedback pass changes its picture once a frame, so its trail is shorter
 at a higher frame rate. On a display, ghee draws at the display's pace, and
 in the console it draws as fast as it can. To keep the same trail
@@ -238,35 +255,15 @@ bottom and smaller at the top:
 
 To run a Shadertoy shader, put each of its passes in a pass of its own,
 its Common tab in the scene's `common`, and the inputs of each pass in its
-`channels`, in the order of `iChannel0` and up. Keep each pass's
-`mainImage`. To a pass that defines `mainImage` and no `main`, ghee adds:
-
-- A `main` that calls `mainImage` with `fragCoord` y up, (0.5, 0.5) at the
-  bottom left pixel.
-- `texture(s, p)` and `texture(s, p, bias)`, which read with y up.
-- `texelFetch(iChannelN, p, lod)`, which reads pixel `p` of channel N with y
-  up and ignores `lod`. Name the channel in the call, as in
-  `texelFetch(iChannel0, p, 0)`: a sampler passed into a function of your
-  own fails to compile there.
-- `tanh` for `float`, `vec2`, `vec3` and `vec4`.
+`channels`, in the order of `iChannel0` and up. Start each pass with
+`#version 300 es`, and keep its `mainImage`. ghee calls `mainImage` with
+`fragCoord` y up, (0.5, 0.5) at the bottom left pixel, and `texture`,
+`textureLod`, `textureGrad` and `texelFetch` read with y up. A GLSL ES 1.00
+pass with `mainImage` gets the same `fragCoord` and `texture`.
 
 `uv` and `gl_FragCoord` still run y down in that pass. A buffer reads the
 same from either kind of pass, so a Shadertoy pass and a pass with `main`
 read each other's buffers in one scene.
-
-What a Shadertoy pass loses:
-
-- `iMouse`, `iDate`, `iFrameRate`, `iChannelTime` and `iSampleRate`. ghee
-  sets none of them.
-- Channels other than buffers: keyboard, sound, music, video, webcam,
-  cubemaps and volumes. To read an image, use an [asset](layers.md#assets).
-- The rest of GLSL ES 3.00, such as `round`, `textureLod`, `textureSize` and
-  bit operations. Rewrite them in GLSL ES 1.00.
-- Float buffers. A buffer holds 8 bits a channel, so a dimming that only
-  multiplies stops short of black ([Feedback](#feedback)).
-- A filter and a wrap for each channel. The pass that a channel reads sets
-  its filter with `sampling` ([Size and sampling](#size-and-sampling)), and
-  every channel clamps at its edges.
 
 ## Params
 

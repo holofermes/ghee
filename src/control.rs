@@ -97,6 +97,16 @@ impl Control {
     }
 }
 
+impl std::fmt::Debug for Control {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Control")
+            .field("stopped", &self.stopped())
+            .field("paused", &self.paused())
+            .field("signal", &self.signal())
+            .finish()
+    }
+}
+
 // Linux signal numbers. The handler is a plain function pointer, so the
 // install needs neither SIG_DFL nor SIG_IGN.
 pub(crate) const SIGINT: c_int = 2;

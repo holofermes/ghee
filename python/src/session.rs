@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use ghee::console::hub::{frame_format, gpu_caps, HwLane, RawFrame};
 use ghee::draw::Call;
 use ghee::engine::{
-    quarter_turns, Card, CardError, Feed, Given, Refused, Renderer, SetupError, DEFAULT_SIZE,
+    Card, CardError, Feed, Given, Refused, Renderer, Rotation, SetupError, DEFAULT_SIZE,
 };
 use ghee::filters::apply_filters;
 use ghee::layer::{is_image_file, Address, Layer};
@@ -408,7 +408,7 @@ impl Session {
             alpha,
             drop,
         } = opening;
-        quarter_turns(rotate).map_err(scene_fault)?;
+        let rotation = Rotation::try_from(rotate)?;
         let (scene, name) = load(source)?;
         let sink = open_sink(display.as_deref(), &opts)?;
         if drop && matches!(sink, Sink::None) {
@@ -442,7 +442,7 @@ impl Session {
             renderer.set_drop(true).map_err(system_fault)?;
         }
         renderer.set_alpha(alpha.is_some());
-        renderer.set_rotate(rotate).map_err(system_fault)?;
+        renderer.set_rotate(rotation).map_err(system_fault)?;
         match renderer.setup(&scene) {
             Ok(()) => {}
             Err(SetupError::Engine(e)) => return Err(Fault::system(e)),

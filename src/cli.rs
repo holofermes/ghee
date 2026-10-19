@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{stdout, Stdout, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -30,7 +30,7 @@ use crate::console::state;
 use crate::console::store::{self, SceneStore};
 use crate::console::{examples_dir, is_examples_dir};
 use crate::control::{self, Control};
-use crate::engine::{probe_display, Card, Feed, Renderer, SetupError, DEFAULT_SIZE};
+use crate::engine::{probe_display, Card, Feed, Renderer, Rotation, SetupError, DEFAULT_SIZE};
 use crate::feeds::demo_feed;
 use crate::filters::{self, apply_filters, Filter};
 use crate::golden;
@@ -76,7 +76,7 @@ fn text(v: &Option<String>) -> &str {
 /// --rotate's degrees, one of the turns that a renderer takes.
 fn rotation(s: &str) -> Result<i64, String> {
     match s.trim().parse::<i64>() {
-        Ok(d) if crate::engine::ROTATIONS.contains(&d) => Ok(d),
+        Ok(d) if Rotation::try_from(d).is_ok() => Ok(d),
         _ => Err("wants 0, 90, 180 or 270".to_string()),
     }
 }
@@ -615,7 +615,7 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
         r.set_drop(true)?;
     }
     r.set_alpha(a.alpha.is_some());
-    r.set_rotate(a.rotate)?;
+    r.set_rotate(Rotation::try_from(a.rotate)?)?;
     if let Some(level) = a.brightness {
         match r.set_brightness(level) {
             Ok(took) => report::detail("backlight", format!("{took:.3}")),
@@ -751,20 +751,20 @@ fn serve(
         scenes_dir = my_scenes.clone();
     }
     let ran = server::run(server::Options {
-        scenes_dir,
-        my_scenes,
+        scenes_dir: scenes_dir.map(PathBuf::from),
+        my_scenes: my_scenes.map(PathBuf::from),
         uploads: a.allow_uploads,
         state_dir: a.state_dir.clone(),
         edits_dir: a.edits_dir.clone(),
         store,
-        size: Some(size),
-        components,
+        size: Some((size.0 as u32, size.1 as u32)),
+        components: components as u32,
         alpha: a.alpha.is_some(),
         sinks,
         display: card,
         rgb565: a.rgb565,
         drop: a.drop,
-        rotate: a.rotate,
+        rotate: Rotation::try_from(a.rotate)?,
         brightness: a.brightness,
         port: a.port,
         host: a.host.clone(),
@@ -777,9 +777,9 @@ fn serve(
         scene_args: a.scene_args.clone(),
         frames: frames_of(a).max(0) as u64,
         timestep: a.timestep,
-        dri_device: dri,
+        dri_device: dri.map(PathBuf::from),
         on_stats: a.stats.then(serve_stats),
-        pacer: console_pacer(a),
+        fps: a.fps,
         control: a.control.clone(),
         ..Default::default()
     });
@@ -809,11 +809,6 @@ fn my_scenes(a: &Ns) -> Result<String> {
         exit("serve: no directory for your scenes: set HOME or XDG_DATA_HOME, or pass --my-scenes")
     })?;
     Ok(dir.to_string_lossy().into_owned())
-}
-
-/// The console's frame rate cap: --fps, whatever takes the frames.
-fn console_pacer(a: &Ns) -> Option<Box<dyn Pacer>> {
-    output::pacer(a.fps, Sinks::Display)
 }
 
 /// A store for the single scene `render --serve` names. A bundled example
@@ -2451,7 +2446,8 @@ mod tests {
             (vec!["serve", "scenes/", "--fps", "0"], false),
             (vec!["serve", "scenes/"], false),
         ] {
-            assert_eq!(console_pacer(&ns(&tokens)).is_some(), capped, "{tokens:?}");
+            let pacer = output::pacer(ns(&tokens).fps, Sinks::Display);
+            assert_eq!(pacer.is_some(), capped, "{tokens:?}");
         }
     }
 

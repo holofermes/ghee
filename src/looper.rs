@@ -257,6 +257,17 @@ pub struct Frame<'a> {
     pub components: i32,
 }
 
+impl std::fmt::Debug for Frame<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Frame")
+            .field("data", &format_args!("[{} bytes]", self.data.len()))
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("components", &self.components)
+            .finish()
+    }
+}
+
 /// A frame buffer the loop renders into, and a pooled sink lends out.
 pub struct OwnedFrame {
     pub data: Vec<u8>,

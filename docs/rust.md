@@ -99,7 +99,6 @@ SIGTERM stops it and turns the display off:
 use ghee::console::server::{self, ArraySource, Options};
 use ghee::control::{self, Control};
 use ghee::engine::{Card, Feed};
-use ghee::output::{pacer, Sinks};
 use ghee::scene::ArraySize;
 
 fn main() -> anyhow::Result<()> {
@@ -115,7 +114,7 @@ fn main() -> anyhow::Result<()> {
         scenes_dir: Some("scenes".into()),
         display: Some(Card::open(None)?),
         arrays: vec![("level".into(), level)],
-        pacer: pacer(Some(30.0), Sinks::Display),
+        fps: Some(30.0),
         control: stop,
         ..Options::default()
     })
@@ -138,10 +137,8 @@ An `ArraySource` gives the data of one array from the array's size and the
 frame number, in a `Feed` as `render`'s closure does. An array with no
 source gets ghee's placeholder data.
 
-Use `pacer` to cap the frame rate. `pacer(Some(fps), Sinks::Display)` caps
-the console and its display at `fps`. With None, the display's refresh
-paces the render. Pass `Sinks::Display` for any console, with a display or
-without one.
+Set `fps` to cap the frame rate of the console and its display. With None,
+the display's refresh paces the render.
 
 Set `filters` to end every scene with the same [filters](filters.md), such
 as `vec![Filter::named("frc")]` with `ghee::filters::Filter`. To start one

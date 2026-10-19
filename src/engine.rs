@@ -985,14 +985,52 @@ pub fn display_renders(dri_device: &str) -> bool {
 /// given.
 pub const DEFAULT_SIZE: (i32, i32) = (320, 240);
 
-/// The turns that a renderer takes, in degrees clockwise.
-pub const ROTATIONS: [i64; 4] = [0, 90, 180, 270];
+/// A turn of the frame clockwise, on its way to every output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Rotation {
+    #[default]
+    Deg0,
+    Deg90,
+    Deg180,
+    Deg270,
+}
 
-/// The quarter turns clockwise of a rotation of `degrees`.
-pub fn quarter_turns(degrees: i64) -> Result<c_int> {
-    match ROTATIONS.iter().position(|d| *d == degrees) {
-        Some(q) => Ok(q as c_int),
-        None => bail!("rotate takes 0, 90, 180 or 270, got {degrees}"),
+impl Rotation {
+    /// The turn in degrees clockwise.
+    pub fn degrees(self) -> u32 {
+        90 * self.quarter_turns() as u32
+    }
+
+    /// True for a quarter turn either way, which swaps the width and the
+    /// height.
+    pub fn sideways(self) -> bool {
+        matches!(self, Rotation::Deg90 | Rotation::Deg270)
+    }
+
+    fn quarter_turns(self) -> c_int {
+        match self {
+            Rotation::Deg0 => 0,
+            Rotation::Deg90 => 1,
+            Rotation::Deg180 => 2,
+            Rotation::Deg270 => 3,
+        }
+    }
+}
+
+impl TryFrom<i64> for Rotation {
+    type Error = Refused;
+
+    /// The turn of `degrees`: 0, 90, 180 or 270.
+    fn try_from(degrees: i64) -> Result<Rotation, Refused> {
+        match degrees {
+            0 => Ok(Rotation::Deg0),
+            90 => Ok(Rotation::Deg90),
+            180 => Ok(Rotation::Deg180),
+            270 => Ok(Rotation::Deg270),
+            _ => Err(Refused(format!(
+                "rotate takes 0, 90, 180 or 270, got {degrees}"
+            ))),
+        }
     }
 }
 
@@ -5584,13 +5622,12 @@ impl Renderer {
         Some(format!("{what} needs {want} texture units, {has} {units}"))
     }
 
-    /// Turn the frame `degrees` clockwise, 0, 90, 180 or 270, on its way to
-    /// every output: the readback, the display and the H264 encoder. width
-    /// and height stay the frame's, and at 90 and 270 the scene renders at
-    /// that size turned, as scene_size() gives it. Call it before the first
-    /// setup().
-    pub fn set_rotate(&mut self, degrees: i64) -> Result<()> {
-        let turns = quarter_turns(degrees)?;
+    /// Turn the frame clockwise on its way to every output: the readback,
+    /// the display and the H264 encoder. width and height stay the frame's,
+    /// and at 90 and 270 the scene renders at that size turned, as
+    /// scene_size() gives it. Call it before the first setup().
+    pub fn set_rotate(&mut self, rotation: Rotation) -> Result<()> {
+        let turns = rotation.quarter_turns();
         if !unsafe { ffi::ghee_set_rotate(self.handle, turns) } {
             bail!("{}", or_else(self.last_error(), "rotate refused"));
         }
@@ -7949,7 +7986,7 @@ mod tests {
         // `a` at 24x32. `a` writes its iOutputResolution, red and green the
         // size and blue the third value, and main shows it over the frame.
         let (_g, mut r) = gpu();
-        r.set_rotate(90).unwrap();
+        r.set_rotate(Rotation::Deg90).unwrap();
         let sc = scene_of(json!([
             {"name": "a", "scale": 0.5,
              "fragment": "void main(){ vec3 s = iOutputResolution; \
@@ -8005,7 +8042,7 @@ mod tests {
         // The frame turns a quarter, so the scene renders at 48x64. Pass `a`
         // writes its iResolution, and main shows it over the whole frame.
         let (_g, mut r) = gpu();
-        r.set_rotate(90).unwrap();
+        r.set_rotate(Rotation::Deg90).unwrap();
         let (fw, fh) = (H as f64, W as f64);
         let own = "vec4(iResolution.x / 255.0, iResolution.y / 255.0, 0.0, 1.0)";
         for (scale, (x, y)) in [
@@ -11550,7 +11587,7 @@ mod tests {
         let (w, h) = (8usize, 4usize);
         for (degrees, scene_size) in [(0, (8, 4)), (90, (4, 8)), (180, (8, 4)), (270, (4, 8))] {
             let (_g, mut r) = gpu_at(w, h);
-            r.set_rotate(degrees).unwrap();
+            r.set_rotate(Rotation::try_from(degrees).unwrap()).unwrap();
             assert_eq!(r.scene_size(), scene_size, "{degrees}");
             let sc = scene_of(json!([{"name": "main", "fragment": POSITION}]));
             r.setup(&sc).unwrap();
@@ -11710,10 +11747,12 @@ mod tests {
     #[test]
     fn a_turn_is_a_quarter_turn_clockwise() {
         for (degrees, turns) in [(0, 0), (90, 1), (180, 2), (270, 3)] {
-            assert_eq!(quarter_turns(degrees).unwrap(), turns);
+            let rotation = Rotation::try_from(degrees).unwrap();
+            assert_eq!(rotation.quarter_turns(), turns);
+            assert_eq!(i64::from(rotation.degrees()), degrees);
         }
         assert_eq!(
-            quarter_turns(45).unwrap_err().to_string(),
+            Rotation::try_from(45).unwrap_err().to_string(),
             "rotate takes 0, 90, 180 or 270, got 45"
         );
     }
@@ -11724,7 +11763,7 @@ mod tests {
         let (_g, mut r) = gpu();
         r.setup(&flat_scene()).unwrap();
         assert_eq!(
-            r.set_rotate(90).unwrap_err().to_string(),
+            r.set_rotate(Rotation::Deg90).unwrap_err().to_string(),
             "rotate needs a renderer with no scene yet"
         );
         assert_eq!(r.scene_size(), (W as i32, H as i32));

@@ -13,6 +13,7 @@
 use std::cell::{Cell, RefCell, RefMut};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
@@ -35,7 +36,7 @@ use crate::console::store::{self, Carried, Opened, SceneStore};
 use crate::console::{examples_dir, is_examples_dir};
 use crate::control::Control;
 use crate::draw::Call;
-use crate::engine::{Card, Feed, Given, Provider, Renderer, Taken, DEFAULT_SIZE};
+use crate::engine::{Card, Feed, Given, Provider, Renderer, Rotation, Taken, DEFAULT_SIZE};
 use crate::feeds::demo_feed;
 use crate::layer::Address;
 use crate::live::Live;
@@ -349,8 +350,8 @@ pub struct Console {
     pub rgb565: bool,
     /// The display skips to the newest frame, and the render keeps its own pace.
     pub drop: bool,
-    /// The degrees clockwise that every output turns the frame.
-    pub rotate: i64,
+    /// The turn clockwise of the frame on its way to every output.
+    pub rotate: Rotation,
     /// The backlight level that the display takes at the start, 0 to 1.
     pub brightness: Option<f64>,
     /// The frame components the renderer reads back: 3 for RGB, 4 for RGBA.
@@ -363,7 +364,7 @@ pub struct Console {
     /// Pin engine time to frame * this, for a reproducible render.
     pub timestep: Option<f64>,
     /// The DRI device override. None probes for one.
-    pub dri: Option<String>,
+    pub dri: Option<PathBuf>,
     /// The interval a stale check reads disk at. None takes the default window.
     pub stale_interval: Option<f64>,
     /// What stops and pauses the render.
@@ -409,7 +410,7 @@ impl Console {
             display: false,
             rgb565: false,
             drop: false,
-            rotate: 0,
+            rotate: Rotation::Deg0,
             brightness: None,
             components: 4,
             alpha: false,
@@ -568,9 +569,9 @@ impl Console {
         }
         // before the render loop starts, the scene_size() of the renderer that
         // make_renderer() builds
-        let size = lock(&self.scene_size).unwrap_or(match self.rotate {
-            90 | 270 => (self.hub.h, self.hub.w),
-            _ => (self.hub.w, self.hub.h),
+        let size = lock(&self.scene_size).unwrap_or(match self.rotate.sideways() {
+            true => (self.hub.h, self.hub.w),
+            false => (self.hub.w, self.hub.h),
         });
         let (opened, _) = self
             .store
@@ -1866,21 +1867,21 @@ pub type StatsHook = Box<dyn FnOnce(&[f64], f64, &[String])>;
 pub struct Options {
     /// The array sources the scenes read per frame.
     pub arrays: Vec<(String, ArraySource)>,
-    pub scenes_dir: Option<String>,
+    pub scenes_dir: Option<PathBuf>,
     /// The directory of the scenes that the console makes, listed after
     /// those of `scenes_dir`. None makes none.
-    pub my_scenes: Option<String>,
+    pub my_scenes: Option<PathBuf>,
     /// Take uploads while the console listens on a network.
     pub uploads: bool,
     /// Where the scenes' drafts live. None takes the store's own, else
     /// state::default_dir().
-    pub state_dir: Option<std::path::PathBuf>,
+    pub state_dir: Option<PathBuf>,
     /// Where the scenes' saved edits live. None takes the store's own, else
     /// state::default_edits_dir().
-    pub edits_dir: Option<std::path::PathBuf>,
+    pub edits_dir: Option<PathBuf>,
     /// The render size. None takes the mode of `display`, else
     /// engine::DEFAULT_SIZE.
-    pub size: Option<(i32, i32)>,
+    pub size: Option<(u32, u32)>,
     pub port: u16,
     /// Loopback by default. The console has no auth, and it compiles POSTed
     /// GLSL. Pass "0.0.0.0" only on a network you trust.
@@ -1894,9 +1895,9 @@ pub struct Options {
     /// The display skips to the newest frame, and the render keeps its own
     /// pace: Renderer::set_drop.
     pub drop: bool,
-    /// The degrees clockwise that every output turns the frame: 0, 90, 180
-    /// or 270. `size` stays the output's.
-    pub rotate: i64,
+    /// The turn clockwise of the frame on its way to every output. `size`
+    /// stays the output's.
+    pub rotate: Rotation,
     /// The backlight level that the KMS display takes at the start, 0 to 1.
     pub brightness: Option<f64>,
     pub preview_max: i32,
@@ -1917,10 +1918,13 @@ pub struct Options {
     /// the renderer is created in. run() writes these from its own thread, so
     /// a sink bound to the thread that built it belongs here.
     pub sinks: Vec<Box<dyn Output>>,
-    /// Paces the render loop, as a display's fixed rate does. None draws as
-    /// fast as the sinks and the viewers take frames.
-    pub pacer: Option<Box<dyn Pacer>>,
-    pub components: i32,
+    /// The most frames a second that the console draws. None and 0 draw at
+    /// the display's refresh, or as fast as the sinks and the viewers take
+    /// frames with no display.
+    pub fps: Option<f64>,
+    /// The bytes of a pixel in a frame: 3 for RGB, 4 for RGBA. A display
+    /// reads RGBA back.
+    pub components: u32,
     /// Keep the output pass's alpha in 4-component frames.
     pub alpha: bool,
     /// 0 serves until `control` stops it. A count ends the console with the
@@ -1929,7 +1933,7 @@ pub struct Options {
     pub timestep: Option<f64>,
     /// The GL device of a render with no display. None takes the first one
     /// that opens.
-    pub dri_device: Option<String>,
+    pub dri_device: Option<PathBuf>,
     /// The summary hook. This hook makes the loop keep a cost per frame, and a
     /// run without it keeps none.
     pub on_stats: Option<StatsHook>,
@@ -1954,7 +1958,7 @@ impl Default for Options {
             display: None,
             rgb565: false,
             drop: false,
-            rotate: 0,
+            rotate: Rotation::Deg0,
             brightness: None,
             preview_max: 480,
             preview_fps: 15.0,
@@ -1965,7 +1969,7 @@ impl Default for Options {
             store: None,
             filters: Vec::new(),
             sinks: Vec::new(),
-            pacer: None,
+            fps: None,
             components: 4,
             alpha: false,
             frames: 0,
@@ -1981,13 +1985,14 @@ impl Default for Options {
 /// and over `mine`, the console's own scenes. The bundled examples keep their
 /// state files as demos, whichever way a caller names their directory.
 fn dir_store(
-    scenes_dir: Option<String>,
-    mine: Option<String>,
+    scenes_dir: Option<PathBuf>,
+    mine: Option<PathBuf>,
     args: Vec<String>,
 ) -> Result<SceneStore> {
     let demo = scenes_dir.is_none();
+    let mine = mine.map(utf8).transpose()?;
     let dir = match scenes_dir {
-        Some(dir) => dir,
+        Some(dir) => utf8(dir)?,
         None => examples_dir().ok_or_else(|| {
             anyhow!("no scenes directory (set GHEE_EXAMPLES for the bundled scenes)")
         })?,
@@ -1995,6 +2000,13 @@ fn dir_store(
     let mut store = SceneStore::with_mine(&dir, mine.as_deref(), args);
     store.demo = demo || is_examples_dir(std::path::Path::new(&dir));
     Ok(store)
+}
+
+/// `path` as a String. The store names its folders in UTF-8.
+fn utf8(path: PathBuf) -> Result<String> {
+    path.into_os_string()
+        .into_string()
+        .map_err(|p| anyhow!("{}: not a UTF-8 path", p.to_string_lossy()))
 }
 
 /// Start the console and serve until `control` stops it, or until the
@@ -2024,7 +2036,7 @@ pub fn run(opts: Options) -> Result<()> {
         scene_args,
         store,
         sinks,
-        pacer,
+        fps,
         components,
         alpha,
         frames,
@@ -2049,18 +2061,16 @@ pub fn run(opts: Options) -> Result<()> {
         .or_else(state::default_edits_dir);
     store.keep_in(state_dir, edits_dir);
     let size = size
-        .or_else(|| {
-            let (w, h) = display.as_ref()?.size();
-            Some((w as i32, h as i32))
-        })
-        .unwrap_or(DEFAULT_SIZE);
+        .or_else(|| display.as_ref().map(Card::size))
+        .map_or(DEFAULT_SIZE, |(w, h)| (w as i32, h as i32));
+    let pacer = crate::output::pacer(fps, crate::output::Sinks::Display);
     let mut console = Console::new(store);
     console.display = display.is_some();
     console.rgb565 = rgb565;
     console.drop = drop;
     console.rotate = rotate;
     console.brightness = brightness;
-    console.components = components;
+    console.components = components as i32;
     console.alpha = alpha;
     console.frames = frames;
     console.timestep = timestep;
@@ -2082,8 +2092,8 @@ pub fn run(opts: Options) -> Result<()> {
             .map(|s| s.dest().to_string())
             .filter(|d| !d.is_empty()),
     );
-    let format = frame_format(display.is_some() && rgb565, components);
-    hub.set_display(format, rotate);
+    let format = frame_format(display.is_some() && rgb565, components as i32);
+    hub.set_display(format, i64::from(rotate.degrees()));
     if let Some(first) = names.first() {
         console.ask(first);
     }
@@ -2987,7 +2997,7 @@ mod tests {
         let _e = crate::console::repo_examples();
         let states = std::path::Path::new("/states");
         let state_file = |dir: Option<String>, name: &str| {
-            let mut store = dir_store(dir, None, Vec::new()).unwrap();
+            let mut store = dir_store(dir.map(PathBuf::from), None, Vec::new()).unwrap();
             store.state_dir = Some(states.to_path_buf());
             store.edits_dir = store.state_dir.clone();
             store.state_file(name).unwrap().unwrap()
@@ -4362,7 +4372,7 @@ mod tests {
             store: Some(SceneStore::new(&console.store.dir, Vec::new())),
             port,
             size: Some((32, 24)),
-            rotate: 90,
+            rotate: Rotation::Deg90,
             frames: 1,
             sinks: vec![Box::new(StatsAt(port, Rc::clone(&stats)))],
             ..Options::default()
@@ -4422,7 +4432,7 @@ mod tests {
         let console = Arc::new(console);
         console.ask("sized");
         let mut renderer = gpu(32, 24);
-        renderer.set_rotate(90).unwrap();
+        renderer.set_rotate(Rotation::Deg90).unwrap();
         let sinks: Vec<Box<dyn Output>> = vec![Box::new(Bound(Rc::new(Cell::new(0))))];
         render_loop(
             &console,
@@ -4521,7 +4531,7 @@ mod tests {
             size: Some((32, 24)),
             frames: 5,
             sinks: vec![Box::new(Bound(Rc::new(Cell::new(0))))],
-            pacer: Some(Box::new(crate::output::FixedPacer::new(20.0))),
+            fps: Some(20.0),
             on_stats: Some(Box::new(move |times, wall, out| {
                 *got.borrow_mut() = Some((times.len(), wall, out.to_vec()));
             })),

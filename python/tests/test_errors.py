@@ -94,8 +94,13 @@ def test_a_layer_the_scene_does_not_declare():
         "version": 1,
         "passes": [{"name": "main", "layers": [{"name": "t", "text": "I"}]}],
     }
-    with ghee.open(scene, width=8, height=8) as h, pytest.raises(ValueError) as raised:
-        h.layers.nope.x = 1
+    with ghee.open(scene, width=8, height=8) as h:
+        with pytest.raises(ValueError) as raised:
+            h.set_layer("nope", "x", 1)
+        with pytest.raises(AttributeError):
+            h.layers.nope.x = 1
+        with pytest.raises(KeyError):
+            h.layers["nope"]
     assert str(raised.value) == "layer 'nope' is not a layer this scene declares (t)"
 
 

@@ -67,9 +67,8 @@ END = (5, "", [])
 def messages(buf):
     """The wire back to (kind, name, values).
 
-    Kind 4 carries one byte for each value, kinds 3 and 9 carry text, and
-    kinds 6, 7, 8 and 10 carry JSON, read back. Kinds 2 and 5 are the single
-    byte.
+    Kind 4 carries one byte for each value, kind 3 carries text, and kind 6
+    carries a JSON Patch, read back. Kinds 2 and 5 are the single byte.
     """
     out, i = [], 0
     while i < len(buf):
@@ -985,7 +984,6 @@ def test_a_shape_set_goes_out_in_the_form_of_its_field(monkeypatch):
 
 # ghee.layers' refusals: (layer, field, value, effect), and the error's key
 LAYER_REFUSED = [
-    (("nope", "x", 1, None), "layer 'nope' is not a layer this scene declares"),
     (("title", "sung", 1, "glow"), "layer 'title' has no effect 'glow'"),
     (("title", "colour", "#ff0000", None), "layer 'title' has no field 'colour'"),
     (("title", "name", "t", None), "layer 'title' keeps its name"),
@@ -1252,6 +1250,29 @@ def test_ghee_layers_list_their_names(monkeypatch):
     drive(shim, layered(shim), ticks, monkeypatch)
     assert seen == [(["title", "icon"], 2, True), "<layers title, icon>"]
     assert list(shim.layers) == []
+
+
+def test_ghee_layers_read_what_the_scene_and_the_sets_hold(monkeypatch):
+    shim = load()
+    seen = []
+
+    @shim.tick
+    def hook(tick):
+        title = shim.layers.title
+        seen.append((title.text, title.x, title.karaoke.sung))
+        title.x = 10
+        title.karaoke.sung = 2
+        seen.append((title.x, shim.layers["title"]["karaoke"]["sung"]))
+        title.x = None
+        seen.append(title.x)
+        with pytest.raises(AttributeError):
+            _ = shim.layers.nope
+        with pytest.raises(KeyError):
+            shim.layers["nope"]
+
+    ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
+    drive(shim, layered(shim), ticks, monkeypatch)
+    assert seen == [("hi", None, None), (10, 2), None]
 
 
 def sampled(tmp_path):

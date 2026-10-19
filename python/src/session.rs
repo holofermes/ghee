@@ -805,6 +805,12 @@ impl Session {
             .map_err(refusal)
     }
 
+    /// Layer `name` as the scene writes it, with what was set since. None
+    /// when the scene has no such layer.
+    pub fn layer(&self, name: &str) -> Option<Value> {
+        self.renderer.with_layer(name, |_, l| l.to_dict())
+    }
+
     /// The names of the scene's layers, those that a drawing added included.
     pub fn layer_names(&self) -> Vec<String> {
         self.live

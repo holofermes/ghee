@@ -387,15 +387,22 @@ impl Handle {
     /// `h.layers["title"]["karaoke"]["sung"] = 12`.
     #[getter]
     fn layers<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
-        slf.py()
-            .import("ghee._shim")?
-            .getattr("Layers")?
-            .call1((slf.getattr("set_layer")?, slf.getattr("_layer_names")?))
+        slf.py().import("ghee._shim")?.getattr("Layers")?.call1((
+            slf.getattr("set_layer")?,
+            slf.getattr("_layer_names")?,
+            slf.getattr("_layer")?,
+        ))
     }
 
     /// The names of the scene's layers, those that a drawing added included.
     fn _layer_names(&mut self) -> PyResult<Vec<String>> {
         Ok(self.held.get()?.layer_names())
+    }
+
+    /// The JSON text of layer `name` as the scene writes it, None when the
+    /// scene has no such layer.
+    fn _layer(&mut self, name: &str) -> PyResult<Option<String>> {
+        Ok(self.held.get()?.layer(name).map(|v| v.to_string()))
     }
 
     /// A drawing of one frame, for a `with` block: its calls write layers,
@@ -898,6 +905,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.setattr("_LayerWire", m.py().get_type::<wire::LayerWire>())?;
     m.setattr("_colour_name", wrap_pyfunction!(wire::_colour_name, m)?)?;
     m.setattr("_hex_colour", wrap_pyfunction!(wire::_hex_colour, m)?)?;
+    m.setattr("_effects", wrap_pyfunction!(wire::_effects, m)?)?;
     m.setattr("_display_size", wrap_pyfunction!(_display_size, m)?)?;
     m.setattr("_command", wrap_pyfunction!(_command, m)?)?;
     m.setattr("_render_flags", wrap_pyfunction!(_render_flags, m)?)?;

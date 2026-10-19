@@ -347,7 +347,8 @@ Change an effect's settings the same way:
 `screen.layers.title.glow.strength = 0.4`. You can also change these values from the [console](console.md), a
 [procedural scene](procedural.md) or `POST /set` ([HTTP API](http.md)). Set `x`,
 `y`, `color`, a rect's size or a circle's radius to `None` to put it back to
-its default.
+its default. To read a key, read it the same way: `screen.layers.title.x`
+gives its value, or None at its default.
 
 Most changes show on the next frame, such as position, colour or opacity.
 Changing a key such as `font_size`, or adding an effect, makes ghee build the

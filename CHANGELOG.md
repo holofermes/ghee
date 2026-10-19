@@ -64,7 +64,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   ([Python](docs/python.md)).
 - Give `ghee.Layer` a Pillow image or a numpy array as its `image`, as
   `d.image` takes.
-- Change a layer at runtime with `screen.layers`, `ghee.layers` or `/set`.
+- Change a layer at runtime with `screen.layers`, `ghee.layers` or `/set`,
+  and read its keys back through `screen.layers` and `ghee.layers`.
 - Write a colour as CSS's `#rgb`, `#rgba` or `#rrggbbaa` too. A layer
   draws the alpha.
 - Name a pass's param in `/set` as `name=main.tile`, as `set_param` takes

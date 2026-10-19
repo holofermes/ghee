@@ -55,6 +55,17 @@ pub fn _colour_name(text: &str) -> bool {
     ghee::css::named(text).is_some()
 }
 
+/// The keys of a layer that hold an object of fields: its effects and a
+/// shape's border.
+#[pyfunction]
+pub fn _effects() -> Vec<&'static str> {
+    ghee::layer::Kind::ALL
+        .iter()
+        .map(|k| k.key())
+        .chain(["border"])
+        .collect()
+}
+
 /// The [r, g, b] of a CSS hex colour, each channel 0..1, or None.
 #[pyfunction]
 pub fn _hex_colour(text: &str) -> Option<[f64; 3]> {
@@ -219,6 +230,12 @@ impl LayerWire {
             index,
             loaded: None,
         })
+    }
+
+    /// The JSON text of layer `name` as the scene writes it, with what the
+    /// program set since, None when the scene has no such layer.
+    fn layer(&self, name: &str) -> Option<String> {
+        self.scene.layer(name).map(|l| l.to_dict().to_string())
     }
 
     /// The names of the scene's layers, those that the drawing added

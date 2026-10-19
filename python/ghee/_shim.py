@@ -375,7 +375,8 @@ class Scene:
 
 
 class Layers:
-    """The live fields of a scene's layers, set by attribute or by key.
+    """The live fields of a scene's layers, read and set by attribute or by
+    key.
 
     A set takes the fields and the values that Handle.set_layer takes, and
     raises ValueError where set_layer raises. A handle's `layers` sets its
@@ -392,25 +393,37 @@ class Layers:
         layers["title"]["karaoke"]["sung"] = 12
         layers.icon.image = "wifi_off"
 
+    A read gives the value as the scene writes it, with what was set since,
+    and None for a key at its default: `layers.title.x` is 10. An effect, or
+    a shape's border, reads and sets its fields the same way. A layer that
+    the scene doesn't have raises AttributeError, or KeyError by key.
+
     Iterating gives the names of the scene's layers, those that a drawing
     added included, and `in` tests a name.
     """
 
-    __slots__ = ("_names", "_set")
+    __slots__ = ("_get", "_known", "_names", "_set")
 
-    def __init__(self, set_layer, names) -> None:
+    def __init__(self, set_layer, names, get_layer, known=None) -> None:
         object.__setattr__(self, "_set", set_layer)
         object.__setattr__(self, "_names", names)
+        object.__setattr__(self, "_get", get_layer)
+        object.__setattr__(self, "_known", known or (lambda name: name in names()))
+
+    def _layer(self, name: str, missing: type[LookupError]) -> _LiveLayer:
+        if not self._known(name):
+            raise missing(name)
+        return _LiveLayer(self._set, self._get, name)
 
     def __getattr__(self, name: str) -> _LiveLayer:
         if name.startswith("_"):
             raise AttributeError(name)
-        return _LiveLayer(self._set, name)
+        return self._layer(name, AttributeError)
 
     def __getitem__(self, name: str) -> _LiveLayer:
         if not isinstance(name, str):
             raise TypeError(f"a layer's name is a str, got {type(name).__name__}")
-        return _LiveLayer(self._set, name)
+        return self._layer(name, KeyError)
 
     def __iter__(self) -> Iterator[str]:
         return iter(self._names())
@@ -425,23 +438,47 @@ class Layers:
         return f"<layers {', '.join(self._names()) or 'none'}>"
 
 
+def _effects() -> frozenset:
+    """The keys of a layer that hold fields of their own: its effects and a
+    shape's border. The native half holds them."""
+    global _EFFECTS
+    if _EFFECTS is None:
+        from ghee import _ext
+
+        _EFFECTS = frozenset(_ext()._effects())
+    return _EFFECTS
+
+
+_EFFECTS: frozenset | None = None
+
+
 class _LiveLayer:
-    """One layer of Layers: a set of a field sets it, and an effect's name
-    gives the fields of that effect."""
+    """One layer of Layers: a read of a key gives its value, a set of a key
+    sets it, and an effect's name gives the fields of that effect."""
 
-    __slots__ = ("_name", "_set")
+    __slots__ = ("_get", "_name", "_set")
 
-    def __init__(self, set_layer, name: str) -> None:
+    def __init__(self, set_layer, get_layer, name: str) -> None:
         object.__setattr__(self, "_set", set_layer)
+        object.__setattr__(self, "_get", get_layer)
         object.__setattr__(self, "_name", name)
 
-    def __getattr__(self, effect: str) -> _LiveEffect:
-        if effect.startswith("_"):
-            raise AttributeError(effect)
-        return _LiveEffect(self._set, self._name, effect)
+    def _doc(self) -> dict:
+        text = self._get(self._name)
+        return {} if text is None else json.loads(text)
 
-    def __getitem__(self, effect: str) -> _LiveEffect:
-        return _LiveEffect(self._set, self._name, effect)
+    def _read(self, key: str):
+        if key in _effects():
+            return _LiveEffect(self, key)
+        return self._doc().get(key)
+
+    def __getattr__(self, key: str):
+        if key.startswith("_"):
+            raise AttributeError(key)
+        return self._read(key)
+
+    def __getitem__(self, key: str):
+        return self._read(key)
 
     def __setattr__(self, field: str, value: Any) -> None:
         self._set(self._name, field, value)
@@ -450,27 +487,40 @@ class _LiveLayer:
         self._set(self._name, field, value)
 
     def __repr__(self) -> str:
-        return f"<layer '{self._name}'>"
+        return f"<layer '{self._name}' {self._doc()}>"
 
 
 class _LiveEffect:
-    """One effect of a layer of Layers: a set of a field sets it."""
+    """One effect of a layer of Layers: a read of a field gives its value,
+    None at its default, and a set of a field sets it."""
 
-    __slots__ = ("_layer", "_name", "_set")
+    __slots__ = ("_layer", "_name")
 
-    def __init__(self, set_layer, layer: str, name: str) -> None:
-        object.__setattr__(self, "_set", set_layer)
+    def __init__(self, layer: _LiveLayer, name: str) -> None:
         object.__setattr__(self, "_layer", layer)
         object.__setattr__(self, "_name", name)
 
+    def _read(self, field: str):
+        effect = self._layer._doc().get(self._name)
+        return effect.get(field) if isinstance(effect, dict) else None
+
+    def __getattr__(self, field: str):
+        if field.startswith("_"):
+            raise AttributeError(field)
+        return self._read(field)
+
+    def __getitem__(self, field: str):
+        return self._read(field)
+
     def __setattr__(self, field: str, value: Any) -> None:
-        self._set(self._layer, field, value, self._name)
+        layer = self._layer
+        layer._set(layer._name, field, value, self._name)
 
     def __setitem__(self, field: str, value: Any) -> None:
-        self._set(self._layer, field, value, self._name)
+        self.__setattr__(field, value)
 
     def __repr__(self) -> str:
-        return f"<layer '{self._layer}' {self._name}>"
+        return f"<layer '{self._layer._name}' {self._name}>"
 
 
 # ------------------------------------------------------------------- drawing
@@ -959,7 +1009,13 @@ def _send(kind: int, wire: str, body, what: str = "") -> None:
 
 # The live fields of the layers of the scene that run() runs, set from a tick
 # or a feed: ghee.layers.title.x = 10.
-layers = Layers(_set_layer, lambda: [] if _SCENE is None else _live().names())
+layers = Layers(
+    _set_layer,
+    lambda: [] if _SCENE is None else _live().names(),
+    lambda name: None if _SCENE is None else _live().layer(name),
+    # outside run() a set says where it belongs
+    lambda name: _SCENE is None or name in _live().names(),
+)
 
 
 def _types() -> dict:

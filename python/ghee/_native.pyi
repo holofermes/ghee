@@ -224,6 +224,10 @@ def _scene_doc(scene: Scene | dict[str, Any] | str | os.PathLike[str]) -> str:
 def _colour_name(text: str) -> bool:
     """True for a CSS colour name, in any case, transparent too."""
 
+def _effects() -> list[str]:
+    """The keys of a layer that hold fields of their own: its effects and a
+    shape's border."""
+
 def _hex_colour(text: str) -> list[float] | None:
     """The [r, g, b] of a CSS hex colour, each channel 0..1, or None."""
 
@@ -235,6 +239,7 @@ class _LayerWire:
     def drawing(self) -> dict[str, Any]: ...
     def params(self) -> list[tuple[str, str]]: ...
     def names(self) -> list[str]: ...
+    def layer(self, name: str) -> str | None: ...
     def add(
         self, pass_: str, index: int, layer: dict[str, Any], /
     ) -> tuple[int, str, str]: ...

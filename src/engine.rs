@@ -2386,7 +2386,7 @@ impl Renderer {
     }
 
     /// Render all passes. The final pass is the returned RGB(A) frame.
-    /// The frame is row-major (height, width, components).
+    /// The frame is row-major (height, width, components), the top row first.
     /// `provider` fills each declared array for this frame.
     /// None leaves the arrays as they are.
     pub fn render(&mut self, provider: Option<Provider<'_>>) -> Result<&[u8]> {

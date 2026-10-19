@@ -258,7 +258,7 @@ impl RenderTarget for Renderer {
 }
 
 /// One frame as a sink sees it: the readback bytes, and their shape, row-major
-/// (height, width, components).
+/// (height, width, components), the top row first.
 #[derive(Clone, Copy)]
 pub struct Frame<'a> {
     pub data: &'a [u8],

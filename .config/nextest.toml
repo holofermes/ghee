@@ -1,0 +1,4 @@
+# The tests wait for their events with no deadline of their own, so a test
+# that hangs ends here.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 60 }

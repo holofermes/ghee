@@ -1,5 +1,6 @@
 """What every test here shares: the repo paths and the scenes."""
 
+import faulthandler
 import json
 import os
 import pathlib
@@ -76,6 +77,15 @@ def cache_home(tmp_path_factory):
         del os.environ["XDG_CACHE_HOME"]
     else:
         os.environ["XDG_CACHE_HOME"] = saved
+
+
+@pytest.fixture(autouse=True)
+def hang():
+    """The tests wait for their events with no deadline of their own, so a
+    test that hangs prints every thread's stack and ends its process here."""
+    faulthandler.dump_traceback_later(3600, exit=True)
+    yield
+    faulthandler.cancel_dump_traceback_later()
 
 
 def scene_file(tmp_path, doc, name="s.scene.json"):

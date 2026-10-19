@@ -155,8 +155,9 @@ screen.save("ramp.png")
 
 `feed` takes a list of floats, or a buffer such as a numpy array. Bytes, from
 `bytes` or a numpy `uint8` array, become 0 to 1: each byte is divided by 255.
-On a Pi 0 to 3, an array stores only bytes, so floats outside 0 to 1 clamp. On
-a Pi 4 or 5, or a desktop, an array stores true floats, with no clamping.
+On a Pi Zero to Pi 3, an array stores only bytes, so floats outside 0 to 1
+clamp. On a Pi 4 or Pi 5, or a desktop, an array stores true floats, with no
+clamping.
 
 Use `set_param` to set a param of the scene, and `in_pass="blur"` to set the
 param of its [pass](scenes.md#passes) `blur`.

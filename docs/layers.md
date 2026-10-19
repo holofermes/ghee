@@ -352,4 +352,4 @@ gives its value, or None at its default.
 
 Most changes show on the next frame, such as position, colour or opacity.
 Changing a key such as `font_size`, or adding an effect, makes ghee build the
-layer again, which can take a few frames on a Pi 0 to 3.
+layer again, which can take a few frames on a Pi Zero to Pi 3.

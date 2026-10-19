@@ -1107,6 +1107,31 @@ def test_a_picture_that_is_no_image_raises_type_error(image, error):
         d.image(image(np))
 
 
+def test_a_scene_layer_takes_the_pictures_that_d_image_takes():
+    np = numpy()
+    Image = pytest.importorskip("PIL.Image")
+    pictures = [
+        np.full((2, 2, 3), (255, 0, 0), np.uint8),
+        Image.new("RGBA", (1, 1), (255, 255, 0, 255)),
+    ]
+    black = "void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); }"
+    with ghee.open(width=8, height=4, timestep=0) as screen:
+        with screen.draw() as d:
+            for i, picture in enumerate(pictures):
+                d.image(picture, x=4 * i, y=0, width=4, height=4)
+        drawn = screen.pixels()
+    layers = [
+        ghee.Layer(f"p{i}", image=picture, x=4 * i, y=0, width=4, height=4)
+        for i, picture in enumerate(pictures)
+    ]
+    scene = ghee.Scene(passes=[ghee.Pass("main", black, layers=layers)])
+    with ghee.open(scene, width=8, height=4, timestep=0) as screen:
+        screen.frame()
+        assert screen.pixels() == drawn
+    assert tuple(drawn[0:3]) == (255, 0, 0)
+    assert tuple(drawn[16:19]) == (255, 255, 0)
+
+
 # A scene whose text layer `title` declares its place, its size and its
 # colour, red.
 OWN = {

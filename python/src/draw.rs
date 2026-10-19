@@ -1105,14 +1105,11 @@ impl Drawing {
         blend: Option<Bound<'py, PyAny>>,
         visible: Option<Bound<'py, PyAny>>,
     ) -> PyResult<()> {
-        let image = match image.is_none()
-            || image.cast::<PyString>().is_ok()
-            || image.hasattr(pyo3::intern!(py, "__fspath__"))?
-        {
-            true => Some(image).filter(|i| !i.is_none()),
+        let image = match image.is_none() {
+            true => None,
             false => Some(
                 py.import("ghee._look")?
-                    .getattr("_image_data")?
+                    .getattr("_image")?
                     .call1((image,))?,
             ),
         };

@@ -182,8 +182,9 @@ class Layer:
     height and speed, `scroll` takes speed, and `blink` takes rate. Under
     `render` "slug", ghee skips text_shadow, glow and text_stroke.
 
-    An image layer draws `image`, the name of an image Asset or a .png or
-    .jpg file, over `width` by `height` pass pixels: one of them left out
+    An image layer draws `image`, the name of an image Asset, a .png or
+    .jpg file, a Pillow image or a numpy array of HxWx3 or HxWx4 uint8, over
+    `width` by `height` pass pixels: one of them left out
     keeps the image's aspect, and both left out take its own size. Its
     `color` is a tint that multiplies the picture.
 
@@ -220,7 +221,7 @@ class Layer:
     wave: dict | None = None
     scroll: dict | None = None
     blink: dict | None = None
-    image: str | os.PathLike[str] | None = None
+    image: str | os.PathLike[str] | Any | None = None
     width: float | None = None
     height: float | None = None
     shape: Shape | None = None

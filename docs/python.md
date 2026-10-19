@@ -360,6 +360,9 @@ file, and takes its keys as keywords:
 | `ghee.Asset(name, file, ...)` | an asset | [Assets](layers.md#assets), [Data files](scenes.md#data-files) |
 | `ghee.Layer(name, ...)` | a layer | [Layers](layers.md) |
 
+Give `ghee.Layer` its `image` as you give `d.image` one: a `.png` or `.jpg`
+file, an image asset, a Pillow image or a numpy array.
+
 In this scene, a `color` param `ink` holds orange, and the shader paints it from
 the top down to black. `uv`, which ghee gives every shader, runs from 0 at the
 top to 1 at the bottom ([Built-in names](scenes.md#built-in-names)). A text

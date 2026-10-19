@@ -91,7 +91,7 @@ def _look(f: dict, name: str | None) -> dict:
     if f["text"] is not None:
         d["text"] = f["text"]
     if f["image"] is not None:
-        d["image"] = _plain(f["image"])
+        d["image"] = _image(f["image"])
     if f["shape"] is not None:
         d["shape"] = f["shape"]
     for k in (
@@ -187,6 +187,15 @@ _DATA: dict[bytes, str] = {}
 _DATA_KEPT = 16
 
 
+def _image(image: Any) -> str:
+    """An image layer's `image` from what `d.image` and `ghee.Layer` take: a
+    path or an image asset's name as its str, and a picture as
+    _image_data() gives it."""
+    if isinstance(image, (str, os.PathLike)):
+        return os.fspath(image)
+    return _image_data(image)
+
+
 def _image_data(image: Any) -> str:
     """`image`, a Pillow image or a numpy array of HxWx3 or HxWx4 uint8, as
     a PNG data URI, which an image layer's `image` takes.
@@ -205,17 +214,17 @@ def _image_data(image: Any) -> str:
         shape = tuple(getattr(image, "shape", ()))
         if str(image.dtype) != "uint8" or len(shape) != 3 or shape[2] not in (3, 4):
             raise TypeError(
-                "d.image takes a numpy array of HxWx3 or HxWx4 uint8, got "
+                "an image takes a numpy array of HxWx3 or HxWx4 uint8, got "
                 f"{image.dtype} of shape {shape}"
             )
         (h, w, n), data = shape, image.tobytes(order="C")
     else:
         raise TypeError(
-            "d.image takes a .png or .jpg path, an image asset's name, a Pillow image "
+            "an image takes a .png or .jpg path, an image asset's name, a Pillow image "
             f"or a numpy array of HxWx3 or HxWx4 uint8, got {type(image).__name__}"
         )
     if not w or not h:
-        raise ValueError(f"d.image takes a picture of one pixel or more, got {w}x{h}")
+        raise ValueError(f"an image takes a picture of one pixel or more, got {w}x{h}")
     key = hashlib.sha1(struct.pack("<III", w, h, n) + data).digest()
     uri = _DATA.pop(key, None)
     if uri is None:

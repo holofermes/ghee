@@ -780,6 +780,21 @@ pub fn probe_dri_cards() -> Vec<String> {
     }
 }
 
+/// A device node that its open refused, with the errno of that open.
+#[derive(Debug)]
+pub struct NodeError {
+    pub errno: i32,
+    message: String,
+}
+
+impl std::fmt::Display for NodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for NodeError {}
+
 /// A card node that drives a connected display, held open. The kernel puts
 /// its console back on the display at the card's last close, so the card
 /// stays open from the probe that finds the display to the renderer that
@@ -826,6 +841,13 @@ impl Card {
             // node's own open tells the two apart.
             let failed = fs::OpenOptions::new().read(true).write(true).open(&device);
             why.push(match failed {
+                Err(e) if named.is_some() => {
+                    return Err(NodeError {
+                        errno: e.raw_os_error().unwrap_or(0),
+                        message: format!("{device}: {}", crate::scene::strerror(&e)),
+                    }
+                    .into());
+                }
                 Err(e) => format!("{device}: {}", crate::scene::strerror(&e)),
                 Ok(_) => format!("{device}: no connected display"),
             });

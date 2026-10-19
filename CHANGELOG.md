@@ -27,6 +27,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Pass `display=` and `serve=` to `ghee.open`. `output=` and `stats=` raise
   TypeError. `display` takes `"kms"` or None.
 - Install on CPython 3.10 or newer.
+- Catch OSError instead of RuntimeError where a GPU or a display won't
+  open. A device node that refuses its open raises the subclass of its
+  errno, such as PermissionError.
 - Set up SPI and I2C panels with `ghee overlay`, and draw on them with
   `--display kms` ([Outputs and displays](docs/displays.md)). ghee's own
   `st7789` and `ssd1306` drivers and `--display-opts` are gone.

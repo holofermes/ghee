@@ -22,19 +22,23 @@ use std::path::PathBuf;
 use std::thread::{self, ThreadId};
 
 use ghee::output::{unpremultiply, AlphaForm};
-use pyo3::exceptions::{PyImportError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyImportError, PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyString, PyTuple};
 use serde_json::{Map, Value};
 
-use session::{Fault, Fed, Opening, Session, Source, StreamMax, Tick};
+use session::{Fault, Fed, Kind, Opening, Session, Source, StreamMax, Tick};
 
-/// A scene error is the caller's text: ValueError. A system error is the
-/// host's: RuntimeError.
+/// A scene error is the caller's text: ValueError. A GPU or a display that
+/// won't open is OSError, and with an errno, the subclass that Python's
+/// OSError picks for it, such as PermissionError. Any other system error is
+/// the host's: RuntimeError.
 fn fault(f: Fault) -> PyErr {
-    match f.scene {
-        true => PyValueError::new_err(f.message),
-        false => PyRuntimeError::new_err(f.message),
+    match f.kind {
+        Kind::Scene => PyValueError::new_err(f.message),
+        Kind::Device(Some(errno)) => PyOSError::new_err((errno, f.message)),
+        Kind::Device(None) => PyOSError::new_err(f.message),
+        Kind::System => PyRuntimeError::new_err(f.message),
     }
 }
 

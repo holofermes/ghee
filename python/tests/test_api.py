@@ -767,8 +767,14 @@ def test_a_headless_screen_reads_no_brightness_and_refuses_one():
 
 
 def test_dri_names_the_device_that_renders():
-    with pytest.raises(RuntimeError, match="/dev/dri/no-such-node"):
+    with pytest.raises(OSError, match="/dev/dri/no-such-node"):
         ghee.open(width=8, height=8, dri="/dev/dri/no-such-node")
+
+
+def test_a_display_node_that_wont_open_raises_the_oserror_of_its_errno():
+    """PEP 3151: OSError picks the subclass of the open's errno."""
+    with pytest.raises(FileNotFoundError, match="/dev/dri/no-such-card"):
+        ghee.open(display="kms", dri="/dev/dri/no-such-card")
 
 
 def test_measure_gives_the_size_of_the_words_and_raises_for_an_unknown_font():

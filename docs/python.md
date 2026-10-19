@@ -477,7 +477,9 @@ while True:
 Use a screen from the thread that opened it: a call from another thread
 raises RuntimeError.
 
-A mistake in the scene, its GLSL, a param or a feed raises ValueError. A
-failure of the system, such as a GPU that does not open, raises RuntimeError.
+A mistake in the scene, its GLSL, a param or a feed raises ValueError. A GPU
+or a display that won't open raises OSError, or its subclass for the error,
+such as PermissionError for a device node that you may not open. Any other
+failure of the system raises RuntimeError.
 
 While `frame()` draws, your other Python threads keep running.

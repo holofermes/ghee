@@ -1,7 +1,8 @@
 """What a caller gets wrong, and what it reads.
 
-A scene, a GLSL or a param error is a ValueError. A system or a thread error
-is a RuntimeError.
+A scene, a GLSL or a param error is a ValueError. A GPU or a display that
+won't open is an OSError. Any other system error, or a thread error, is a
+RuntimeError.
 """
 
 import concurrent.futures

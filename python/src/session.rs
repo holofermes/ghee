@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use ghee::console::hub::{frame_format, gpu_caps, HwLane, RawFrame};
 use ghee::draw::Call;
-use ghee::engine::{quarter_turns, Card, Feed, Given, Refused, Renderer, DEFAULT_SIZE};
+use ghee::engine::{quarter_turns, Card, Feed, Given, NodeError, Refused, Renderer, DEFAULT_SIZE};
 use ghee::filters::apply_filters;
 use ghee::layer::{is_image_file, Address, Layer};
 use ghee::live::Live;
@@ -33,24 +33,34 @@ pub const KMS: &str = "kms";
 /// The quality of a saved JPEG, `ghee render`'s own.
 const JPEG_QUALITY: u8 = 75;
 
-/// A failure reported to a host. `scene` marks what the caller wrote: the
-/// scene, the GLSL, a param name, a feed. Anything else is the system.
+/// A failure reported to a host.
 pub struct Fault {
-    pub scene: bool,
+    pub kind: Kind,
     pub message: String,
+}
+
+/// Whose a failure is.
+pub enum Kind {
+    /// What the caller wrote: the scene, the GLSL, a param name, a feed.
+    Scene,
+    /// A GPU or a display that won't open, with the errno of a device node
+    /// that its open refused.
+    Device(Option<i32>),
+    /// Anything else.
+    System,
 }
 
 impl Fault {
     pub fn scene(message: impl Into<String>) -> Fault {
         Fault {
-            scene: true,
+            kind: Kind::Scene,
             message: message.into(),
         }
     }
 
     pub fn system(message: impl Into<String>) -> Fault {
         Fault {
-            scene: false,
+            kind: Kind::System,
             message: message.into(),
         }
     }
@@ -70,6 +80,13 @@ fn scene_fault(e: anyhow::Error) -> Fault {
 
 fn system_fault(e: anyhow::Error) -> Fault {
     Fault::system(format!("{e:#}"))
+}
+
+fn device_fault(e: anyhow::Error) -> Fault {
+    Fault {
+        kind: Kind::Device(e.downcast_ref::<NodeError>().map(|n| n.errno)),
+        message: format!("{e:#}"),
+    }
 }
 
 /// A refusal of the caller's value as a fault of the caller's, anything
@@ -310,7 +327,7 @@ pub fn probed(dri: Option<&str>) -> Option<Card> {
 fn display_card(dri: Option<&str>) -> Outcome<Card> {
     match probed(dri) {
         Some(card) => Ok(card),
-        None => Card::open(dri).map_err(system_fault),
+        None => Card::open(dri).map_err(device_fault),
     }
 }
 
@@ -403,7 +420,7 @@ impl Session {
             Some(card) => Renderer::on_card(card, w, h, rgb565),
             None => Renderer::new(w, h, components, dri.as_deref(), kms, rgb565),
         }
-        .map_err(system_fault)?;
+        .map_err(device_fault)?;
         if drop {
             renderer.set_drop(true).map_err(system_fault)?;
         }

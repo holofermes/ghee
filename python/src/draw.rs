@@ -16,7 +16,7 @@
 //! shim's `_call_look`. The changed calls of the layers that the screen holds
 //! go out at once, typed: to the session itself on a native handle, to the
 //! scene check that `_live()` gives on the shim's wire, which writes them as
-//! one kind 8 message and hands it to `_send()`, through `_draw()` on a
+//! one kind 6 patch and hands it to `_send()`, through `_draw()` on a
 //! handle that has one, and as looks through `_update_layer()` on any other,
 //! which also takes the calls that the typed path leaves. A layer that sits
 //! under the layer of a call before its own moves after it through

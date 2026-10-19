@@ -402,5 +402,6 @@ mod tests {
 }
 
 pub mod locks;
+pub mod patch;
 pub mod process;
 pub(crate) mod wheel;

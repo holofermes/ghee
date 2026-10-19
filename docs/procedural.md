@@ -191,7 +191,7 @@ To draw only layers, write one pass that clears to black:
 ```
 
 Then add layers with kind 6, such as the text layer `{"name": "title",
-"text": "hello"}` ([Layers](layers.md)).
+"text": "hello"}` ([Changing layers](#changing-layers)).
 
 ghee waits 30 seconds for the scene, then stops with an error.
 
@@ -277,11 +277,7 @@ names.
 | 3 | `<layer>.key` | UTF-8 text | sets any other key of the layer: text, such as `mono` for `render`, or JSON for a list or an effect, such as `{"strength": 0.5}` for `glow` |
 | 4 | an array | bytes | feeds the array, each byte read as byte / 255 |
 | 5 | no name field | none | done with this frame, under [lockstep](#lockstep) |
-| 6 | a pass | JSON | adds a layer: `{"index": 0, "layer": {...}}`. `index` runs from 0, drawn first, to the pass's number of layers, which appends |
-| 7 | a layer | JSON | gives the layer the keys in the JSON, whose `name` must be the message's name. A key that it leaves out keeps the value from the [console](console.md#what-a-program-locks), else the scene's own value for a layer that the scene declares, else takes its default |
-| 8 | empty, length 0 | JSON | gives several layers their keys at once: a list of layers as kind 7 takes them, each layer at most once |
-| 9 | a layer | none, count 0 | removes the layer |
-| 10 | a layer | JSON | moves the layer among its pass's layers: `{"index": 2}` |
+| 6 | empty, length 0 | JSON | changes the scene's layers with a JSON Patch ([Changing layers](#changing-layers)) |
 
 Kinds 0, 1 and 3 set a key of a layer. A key that doesn't change at runtime,
 such as `font_size`, makes ghee build the layer again ([Changing a layer at
@@ -299,11 +295,37 @@ each mistake:
 - a param that the scene doesn't declare
 - a value of the wrong type, or too few or too many values
 - a layer or a pass that the scene doesn't have
-- JSON that holds no layer
+- JSON that holds no JSON Patch, or an operation that names no layer
 
 ```
   careful  bars.py: param 'nope' is not a param this scene declares, so it changes nothing
 ```
+
+### Changing layers
+
+To add, change, move or take out layers, send kind 6 with an [RFC
+6902](https://www.rfc-editor.org/rfc/rfc6902) JSON Patch. Its document is
+the scene's layers: an object of each pass's name and the list of its
+layers, in the order that they draw. `/main/2` is the third layer of pass
+`main`, `/main/-` the end of its list, `/main/2/x` a key of that layer, and
+`/main/2/glow/strength` a field of its effect. This patch adds a text layer
+as the first of `main`, moves the layer at 2 to the end, and puts the `x`
+of the layer at 1 back to its default:
+
+```json
+[{"op": "add", "path": "/main/0", "value": {"name": "title", "text": "hi"}},
+ {"op": "move", "from": "/main/2", "path": "/main/-"},
+ {"op": "remove", "path": "/main/1/x"}]
+```
+
+A `null` value puts a key back to its default, as `remove` does. A
+`replace` of a whole layer gives it the keys of the value. A key that the
+value leaves out keeps the value from the
+[console](console.md#what-a-program-locks), else the scene's own value for a
+layer that the scene declares, else takes its default. A layer keeps its
+name, and moves within its own pass. ghee applies the operations in order,
+and stops at the first one that it refuses, or at a `test` that fails. The
+operations before it stay.
 
 ### Checking the wire
 

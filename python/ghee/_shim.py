@@ -543,10 +543,9 @@ def draw() -> Drawing:
 
 class _Wire:
     """The scene that ghee runs, as a drawing reaches it: each layer that the
-    drawing adds goes out with the tick's answer as kind 6, the new looks
-    that differ in live fields alone as one kind 8, any other new look as
-    kind 7, a layer taken out as kind 9, a layer moved as kind 10, and a
-    hidden layer as a live set."""
+    drawing adds, gives a new look, takes out or moves goes out with the
+    tick's answer as a kind 6 patch, the new looks that differ in live fields
+    alone as one patch, and a hidden layer as a live set."""
 
     def _tick(self) -> Tick | None:
         return _TICK
@@ -948,7 +947,7 @@ def _live():
 
 def _send(kind: int, wire: str, body, what: str = "") -> None:
     """Queue one message for the tick's answer: `body` the text of kinds 3
-    and 6 to 10, or the numbers of kinds 0 and 1, which `what` names in an
+    and 6, or the numbers of kinds 0 and 1, which `what` names in an
     error."""
     if isinstance(body, str):
         text = body.encode("utf-8")

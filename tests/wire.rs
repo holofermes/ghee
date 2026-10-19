@@ -50,10 +50,10 @@ fn message(kind: u8, name: &str, count: usize, payload: &[u8]) -> String {
     format!("printf '{octal}'\n")
 }
 
-/// A message of JSON text, kind 6 or kind 7.
-fn text(kind: u8, name: &str, doc: &Value) -> String {
-    let body = doc.to_string();
-    message(kind, name, body.len(), body.as_bytes())
+/// A kind 6 message: the JSON Patch `ops` over the scene's layers.
+fn patch(ops: &Value) -> String {
+    let body = ops.to_string();
+    message(6, "", body.len(), body.as_bytes())
 }
 
 /// The bar that the tests add, at index 1 of pass `main`, over the words.
@@ -142,7 +142,7 @@ fn lime(frame: &[u8]) -> usize {
 fn a_layer_added_mid_run_draws_as_if_it_was_there_from_the_start() {
     let (plain, _) = render("plain", &process(&[], &[]));
     let (held, _) = render("held", &process(&[bar()], &[]));
-    let add = text(6, "main", &json!({"index": 1, "layer": bar()}));
+    let add = patch(&json!([{"op": "add", "path": "/main/1", "value": bar()}]));
     let (grown, err) = render("grown", &process(&[], &[(3, add)]));
     assert_eq!(err, "");
     assert!(lime(&held[3]) > 0);
@@ -157,7 +157,7 @@ fn a_layer_given_a_new_look_mid_run_is_built_again_alone() {
     let mut added = bar();
     added["blend"] = json!("add");
     let (held, _) = render("held-add", &process(&[added.clone()], &[]));
-    let look = text(7, "bar", &added);
+    let look = patch(&json!([{"op": "replace", "path": "/main/1", "value": added}]));
     let (rebuilt, err) = render("rebuilt", &process(&[bar()], &[(3, look)]));
     assert_eq!(err, "");
     assert_ne!(rebuilt[2], held[2]);
@@ -168,7 +168,7 @@ fn a_layer_given_a_new_look_mid_run_is_built_again_alone() {
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn an_added_layer_hidden_mid_run_draws_nothing() {
     let (plain, _) = render("plain-hide", &process(&[], &[]));
-    let add = text(6, "main", &json!({"index": 1, "layer": bar()}));
+    let add = patch(&json!([{"op": "add", "path": "/main/1", "value": bar()}]));
     let hide = message(1, "bar.visible", 1, &0f32.to_le_bytes());
     let (hidden, err) = render("hidden", &process(&[], &[(1, add), (4, hide)]));
     assert_eq!(err, "");
@@ -182,7 +182,7 @@ fn a_layer_that_the_scene_refuses_is_logged_and_the_run_goes_on() {
     let (plain, _) = render("plain-refused", &process(&[], &[]));
     let mut broken = bar();
     broken["color"] = json!("nosuch");
-    let add = text(6, "main", &json!({"index": 1, "layer": broken}));
+    let add = patch(&json!([{"op": "add", "path": "/main/-", "value": broken}]));
     let (refused, err) = render("refused", &process(&[], &[(2, add)]));
     assert_eq!(refused, plain);
     assert_eq!(err.lines().count(), 1, "{err}");

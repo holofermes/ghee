@@ -35,8 +35,8 @@ pub struct LayerWire {
     places: HashMap<String, (usize, usize)>,
 }
 
-/// The kind of the message that gives several layers their looks.
-const UPDATE_LAYERS: u8 = 8;
+/// The kind of the message that patches the scene's layers.
+const PATCH_LAYERS: u8 = 6;
 
 /// The pass and the place among its layers of each layer of `scene`.
 fn places(scene: &Scene) -> HashMap<String, (usize, usize)> {
@@ -143,14 +143,14 @@ impl LayerWire {
         }
     }
 
-    /// The kind 8 message that gives the layers of `calls` the looks of the
+    /// The kind 6 message that gives the layers of `calls` the looks of the
     /// calls whose looks differ in live fields alone, as Session gives them
-    /// to the renderer: the kind, no name and the JSON text of the looks,
-    /// None when no such call changes its layer. The scene takes those
-    /// looks. Returns the indexes of the other calls too, for update(),
-    /// which says why the scene refuses one.
+    /// to the renderer: the kind, no name and the JSON text of the patch
+    /// that replaces those layers, None when no such call changes its
+    /// layer. The scene takes those looks. Returns the indexes of the other
+    /// calls too, for update(), which says why the scene refuses one.
     pub(crate) fn draw(&mut self, calls: &[Call]) -> (Option<(u8, String, String)>, Vec<usize>) {
-        let mut looks = Vec::new();
+        let mut ops = Vec::new();
         let mut left = Vec::new();
         for (k, call) in calls.iter().enumerate() {
             let Some(&(p, i)) = self.places.get(&call.layer) else {
@@ -161,20 +161,46 @@ impl LayerWire {
                 Some(None) => {}
                 Some(Some(new)) => {
                     self.scene.passes[p].layers[i] = new;
-                    looks.push(draw::look_of(call));
+                    ops.push(op(
+                        "replace",
+                        &self.pointer(p, Some(i)),
+                        Some(draw::look_of(call)),
+                    ));
                 }
                 None => left.push(k),
             }
         }
-        let message = (!looks.is_empty()).then(|| {
-            (
-                UPDATE_LAYERS,
-                String::new(),
-                Value::Array(looks).to_string(),
-            )
-        });
+        let message = (!ops.is_empty()).then(|| patch(ops));
         (message, left)
     }
+
+    /// The pointer of the layer at `index` among the layers of pass `pass`,
+    /// `-` past the last, as kind 6 names it.
+    fn pointer(&self, pass: usize, index: Option<usize>) -> String {
+        let index = index.map_or("-".to_string(), |i| i.to_string());
+        format!("/{}/{index}", self.scene.passes[pass].name)
+    }
+
+    /// The pointer of layer `name`.
+    fn pointer_of(&self, name: &str) -> Option<String> {
+        let &(p, i) = self.places.get(name)?;
+        Some(self.pointer(p, Some(i)))
+    }
+}
+
+/// One operation of a JSON Patch.
+fn op(op: &str, path: &str, value: Option<Value>) -> Value {
+    let mut o = serde_json::json!({"op": op, "path": path});
+    if let Some(value) = value {
+        o["value"] = value;
+    }
+    o
+}
+
+/// The kind 6 message of the patch `ops`: the kind, no name, and its JSON
+/// text.
+fn patch(ops: Vec<Value>) -> (u8, String, String) {
+    (PATCH_LAYERS, String::new(), Value::Array(ops).to_string())
 }
 
 #[pymethods]
@@ -249,8 +275,8 @@ impl LayerWire {
     }
 
     /// The message that adds `layer`, a layer as a scene declares it, at
-    /// `index` among the layers of pass `pass`: kind 6, the pass, and its
-    /// JSON text. Raises ValueError as Handle._add_layer() does.
+    /// `index` among the layers of pass `pass`, as add_layer() gives it.
+    /// Raises ValueError as Handle._add_layer() does.
     fn add(
         &mut self,
         pass: &str,
@@ -269,13 +295,13 @@ impl LayerWire {
             .map_err(fault)?;
         self.places = places(&self.scene);
         self.took(&name);
-        let text = serde_json::json!({"index": index, "layer": layer}).to_string();
-        Ok((6, pass.to_string(), text))
+        let path = self.pointer_of(&name).expect("the layer was just added");
+        Ok(patch(vec![op("add", &path, Some(layer))]))
     }
 
     /// The message that gives the layer of the name of `layer` the look of
-    /// `layer`, a layer as a scene declares it: kind 7, the layer's name,
-    /// and its JSON text, None when the layer has that look already. Raises
+    /// `layer`, a layer as a scene declares it: the kind 6 message that
+    /// replaces it, None when the layer has that look already. Raises
     /// ValueError as Handle._update_layer() does.
     fn update(&mut self, layer: &Bound<'_, PyAny>) -> PyResult<Option<(u8, String, String)>> {
         let look = to_json(layer)?;
@@ -289,34 +315,39 @@ impl LayerWire {
         }
         let name = look["name"].as_str().unwrap_or_default().to_string();
         self.took(&name);
-        Ok(Some((7, name, look.to_string())))
+        let path = self.pointer_of(&name).expect("the layer was just updated");
+        Ok(Some(patch(vec![op("replace", &path, Some(look))])))
     }
 
-    /// The message that takes layer `name` out of the scene: kind 9, the
-    /// layer's name, and no text. Raises ValueError for a name that names
-    /// no layer.
+    /// The kind 6 message that takes layer `name` out of the scene. Raises
+    /// ValueError for a name that names no layer.
     fn remove(&mut self, name: &str) -> PyResult<(u8, String, String)> {
+        let path = self.pointer_of(name);
         self.scene
             .remove_layer(name)
             .map_err(scene_fault)
             .map_err(fault)?;
         self.places = places(&self.scene);
         self.index = Index::of(&self.scene);
-        Ok((9, name.to_string(), String::new()))
+        let path = path.expect("the scene had the layer");
+        Ok(patch(vec![op("remove", &path, None)]))
     }
 
-    /// The message that puts layer `name` at `index` among the layers of
-    /// its pass: kind 10, the layer's name, and the JSON text of its place.
-    /// Raises ValueError as Handle._move_layer() does.
+    /// The kind 6 message that puts layer `name` at `index` among the
+    /// layers of its pass. Raises ValueError as Handle._move_layer() does.
     #[pyo3(name = "move")]
     fn move_layer(&mut self, name: &str, index: usize) -> PyResult<(u8, String, String)> {
+        let from = self.pointer_of(name);
         self.scene
             .move_layer(name, index)
             .map_err(scene_fault)
             .map_err(fault)?;
         self.places = places(&self.scene);
-        let text = serde_json::json!({ "index": index }).to_string();
-        Ok((10, name.to_string(), text))
+        let from = from.expect("the scene had the layer");
+        let path = self.pointer_of(name).expect("the layer moved");
+        let mut moved = op("move", &path, None);
+        moved["from"] = Value::from(from);
+        Ok(patch(vec![moved]))
     }
 
     /// The message of a live set of `field` of layer `name`, or of its

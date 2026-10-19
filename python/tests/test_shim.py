@@ -84,9 +84,9 @@ def messages(buf):
         i += nlen
         (count,) = struct.unpack_from("<I", buf, i)
         i += 4
-        if kind in (3, 6, 7, 8, 9, 10):
+        if kind in (3, 6):
             text = buf[i : i + count].decode()
-            out.append((kind, name, text if kind in (3, 9) else json.loads(text)))
+            out.append((kind, name, text if kind == 3 else json.loads(text)))
             i += count
             continue
         width = 1 if kind == 4 else 4

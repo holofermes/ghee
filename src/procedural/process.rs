@@ -31,6 +31,7 @@ use crate::layer::{Address, Rgb};
 use crate::live::Live;
 use crate::looper::{RenderTarget, SceneController};
 use crate::procedural::locks::Locks;
+use crate::procedural::patch::{self, Op, Place};
 use crate::procedural::resolve;
 use crate::scene::{py_repr, round_half_up, ArraySize, ParamValue, Reach, Scene};
 
@@ -83,11 +84,7 @@ const CLEAN: u8 = 2;
 const SET_STRING: u8 = 3;
 const SET_ARRAY_U8: u8 = 4;
 const END_TICK: u8 = 5;
-const ADD_LAYER: u8 = 6;
-const UPDATE_LAYER: u8 = 7;
-const UPDATE_LAYERS: u8 = 8;
-const REMOVE_LAYER: u8 = 9;
-const MOVE_LAYER: u8 = 10;
+const PATCH_LAYERS: u8 = 6;
 
 const SIGTERM: c_int = 15;
 
@@ -426,29 +423,19 @@ enum ParamData {
     Str(String),
 }
 
-/// One message that sets something by name: a param or a live field of a
-/// layer (kinds 1 and 3), a layer added to the pass of that name (kind 6),
-/// the new look of the layer of that name (kind 7), the new looks of
-/// several layers (kind 8), each of those three as its JSON text, the layer
-/// of that name taken out (kind 9), or the layer of that name moved, as the
-/// JSON text of its new place (kind 10).
+/// One message: the set of a param or of a live field of a layer by name
+/// (kinds 1 and 3), or the JSON text of a patch of the scene's layers (kind
+/// 6).
 enum Set {
     Param(ParamData),
-    Layer(String),
-    Look(String),
-    Looks(String),
-    Remove,
-    Move(String),
+    Patch(String),
 }
 
 impl Set {
     /// True when this set, the newer, leaves nothing of `older`, a set of
     /// the same name.
     fn overrides(&self, older: &Set) -> bool {
-        matches!(
-            (self, older),
-            (Set::Param(_), Set::Param(_)) | (Set::Look(_), Set::Look(_))
-        )
+        matches!((self, older), (Set::Param(_), Set::Param(_)))
     }
 }
 
@@ -476,9 +463,7 @@ fn newest<T>(into: &mut Vec<(String, T)>, name: String, values: T) {
 }
 
 /// Queue `set` of `name` last, and drop each older set of that name that it
-/// overrides. The queue then ends in the newest state of every layer, when
-/// the answers to several ticks arrive between two frames: a layer hidden
-/// by one answer and drawn again by the next ends up shown.
+/// overrides.
 fn latest(into: &mut Vec<(String, Set)>, name: String, set: Set) {
     into.retain(|(n, older)| *n != name || !set.overrides(older));
     into.push((name, set));
@@ -842,116 +827,189 @@ impl SceneProcess {
         Ok(())
     }
 
-    /// Add the layer of a kind 6 message to pass `pass`, `text` its JSON.
-    fn add_layer(&mut self, renderer: &mut dyn RenderTarget, pass: &str, text: &str) -> Result<()> {
-        let (index, layer) = match added(pass, text) {
-            Ok(found) => found,
+    /// Apply the kind 6 message `text`, a JSON Patch over the scene's
+    /// layers, in its order. A run of replaced layers goes to the renderer as
+    /// one batch. The first operation that the scene refuses ends the patch,
+    /// and the operations before it stay.
+    fn patch(&mut self, renderer: &mut dyn RenderTarget, text: &str) -> Result<()> {
+        let ops = match patch::ops_of(text) {
+            Ok(ops) => ops,
             Err(why) => {
-                self.refuse(pass, &why);
+                self.refuse("kind 6", &why);
                 return Ok(());
             }
         };
-        let name = layer.get("name").and_then(Value::as_str).unwrap_or(pass);
-        let name = name.to_string();
-        match self.live.add_layer(renderer, pass, index, &layer) {
-            Ok(()) => Ok(()),
-            Err(e) => self.refuse_or_fail(&name, e),
-        }
-    }
-
-    /// Give layer `name` the look of a kind 7 message, `text` its JSON.
-    fn update_layer(
-        &mut self,
-        renderer: &mut dyn RenderTarget,
-        name: &str,
-        text: &str,
-    ) -> Result<()> {
-        match look_of(name, text) {
-            Ok(look) => self.give_look(renderer, name, &look),
-            Err(why) => {
-                self.refuse(name, &why);
-                Ok(())
-            }
-        }
-    }
-
-    /// Give layer `name` the look `look`, where each key that `look` leaves
-    /// out and a console changed keeps the console's value.
-    fn give_look(
-        &mut self,
-        renderer: &mut dyn RenderTarget,
-        name: &str,
-        look: &Value,
-    ) -> Result<()> {
-        match self.live.update_layer(renderer, look) {
-            Ok(_) => Ok(()),
-            Err(e) => self.refuse_or_fail(name, e),
-        }
-    }
-
-    /// Give the layers of a kind 8 message their looks, `text` its JSON. The
-    /// looks that draw::call_of() reads go to the renderer as calls, at
-    /// once, and each call that the renderer leaves, and each other look,
-    /// takes its look as kind 7 gives it, in the order of the list.
-    fn update_layers(&mut self, renderer: &mut dyn RenderTarget, text: &str) -> Result<()> {
-        let looks = match looks_of(text) {
-            Ok(looks) => looks,
-            Err(why) => {
-                self.refuse("kind 8", &why);
+        let mut k = 0;
+        while k < ops.len() {
+            let looks = ops[k..]
+                .iter()
+                .take_while(|o| matches!(o, Op::Replace(at, _) if at.keys.is_empty()))
+                .count();
+            let applied = match looks {
+                0 => self.apply(renderer, &ops[k])?,
+                n => self.give_looks(renderer, &ops[k..k + n])?,
+            };
+            if !applied {
                 return Ok(());
             }
+            k += looks.max(1);
+        }
+        Ok(())
+    }
+
+    /// Log `why`, a refusal of the operation at `at`, and return false.
+    fn refused(&mut self, at: &Place, why: &str) -> bool {
+        self.refuse(&at.pointer(), why);
+        false
+    }
+
+    /// refuse_or_fail() for the operation at `at`: false when the scene
+    /// refused it.
+    fn refused_or_failed(&mut self, at: &Place, e: anyhow::Error) -> Result<bool> {
+        self.refuse_or_fail(&at.pointer(), e).map(|()| false)
+    }
+
+    /// Apply `op`, any operation but the replace of a whole layer. False
+    /// when the scene refused it.
+    fn apply(&mut self, renderer: &mut dyn RenderTarget, op: &Op) -> Result<bool> {
+        match op {
+            Op::Add(at, value) if at.keys.is_empty() => {
+                let Some(names) = renderer.pass_layers(&at.pass) else {
+                    return Ok(self.refused(at, &format!("the scene has no pass '{}'", at.pass)));
+                };
+                let index = at.index.unwrap_or(names.len());
+                match self.live.add_layer(renderer, &at.pass, index, value) {
+                    Ok(()) => Ok(true),
+                    Err(e) => self.refused_or_failed(at, e),
+                }
+            }
+            Op::Add(at, value) | Op::Replace(at, value) => self.put(renderer, at, value),
+            Op::Remove(at) if at.keys.is_empty() => {
+                let name = match layer_at(renderer, at) {
+                    Ok(name) => name,
+                    Err(why) => return Ok(self.refused(at, &why)),
+                };
+                match self.live.remove_layer(renderer, &name) {
+                    Ok(()) => Ok(true),
+                    Err(e) => self.refused_or_failed(at, e),
+                }
+            }
+            Op::Remove(at) => self.put(renderer, at, &Value::Null),
+            Op::Move { from, path } if from.keys.is_empty() && path.keys.is_empty() => {
+                if from.pass != path.pass {
+                    return Ok(self.refused(path, "a layer moves within its own pass"));
+                }
+                let name = match layer_at(renderer, from) {
+                    Ok(name) => name,
+                    Err(why) => return Ok(self.refused(from, &why)),
+                };
+                let last = renderer.pass_layers(&path.pass).map_or(0, |n| n.len() - 1);
+                match self
+                    .live
+                    .move_layer(renderer, &name, path.index.unwrap_or(last))
+                {
+                    Ok(()) => Ok(true),
+                    Err(e) => self.refused_or_failed(path, e),
+                }
+            }
+            Op::Move { from, path } | Op::Copy { from, path } => {
+                let value = match read(renderer, from) {
+                    Ok(value) => value,
+                    Err(why) => return Ok(self.refused(from, &why)),
+                };
+                if let Op::Move { .. } = op {
+                    if from.keys.is_empty() {
+                        return Ok(self.refused(path, "a layer moves to a place among layers"));
+                    }
+                    if !self.apply(renderer, &Op::Remove(from.clone()))? {
+                        return Ok(false);
+                    }
+                }
+                self.apply(renderer, &Op::Add(path.clone(), value))
+            }
+            Op::Test(at, value) => match read(renderer, at) {
+                Ok(now) if patch::same(&now, value) => Ok(true),
+                Ok(now) => Ok(self.refused(at, &format!("the test found {now}"))),
+                Err(why) => Ok(self.refused(at, &why)),
+            },
+        }
+    }
+
+    /// Set the key or the effect's field at `at` to `value`, null for its
+    /// default. False when the scene refused it.
+    fn put(&mut self, renderer: &mut dyn RenderTarget, at: &Place, value: &Value) -> Result<bool> {
+        let name = match layer_at(renderer, at) {
+            Ok(name) => name,
+            Err(why) => return Ok(self.refused(at, &why)),
         };
+        let (effect, field) = match at.keys.as_slice() {
+            [field] => (None, field.as_str()),
+            [effect, field] => (Some(effect.as_str()), field.as_str()),
+            _ => unreachable!("a layer's place takes a key"),
+        };
+        let address = Address {
+            layer: &name,
+            effect,
+            field,
+        };
+        match self.live.set_layer(renderer, &address, Given::Json(value)) {
+            Ok(()) => Ok(true),
+            Err(e) => self.refused_or_failed(at, e),
+        }
+    }
+
+    /// Give the layers of `ops`, each the replace of a whole layer, their
+    /// looks. The looks that draw::call_of() reads go to the renderer as
+    /// calls, at once, and each call that the renderer leaves, and each
+    /// other look, takes its look as update_layer() gives it, in the order
+    /// of `ops`. A look takes the name of the layer that it replaces, and
+    /// keeps it. False when the scene refused one.
+    fn give_looks(&mut self, renderer: &mut dyn RenderTarget, ops: &[Op]) -> Result<bool> {
+        let mut looks = Vec::with_capacity(ops.len());
+        for op in ops {
+            let Op::Replace(at, look) = op else {
+                unreachable!("give_looks() takes replaces alone");
+            };
+            let name = match layer_at(renderer, at) {
+                Ok(name) => name,
+                Err(why) => return Ok(self.refused(at, &why)),
+            };
+            let mut look = look.clone();
+            match look.as_object_mut() {
+                Some(o) if o.get("name").is_none_or(|n| *n == name) => {
+                    o.insert("name".to_string(), Value::from(name));
+                }
+                Some(_) => return Ok(self.refused(at, &format!("layer '{name}' keeps its name"))),
+                None => return Ok(self.refused(at, "a layer is an object")),
+            }
+            looks.push((at, look));
+        }
         let mut calls = Vec::with_capacity(looks.len());
-        let mut at = Vec::with_capacity(looks.len());
+        let mut placed = Vec::with_capacity(looks.len());
         let mut slow = Vec::new();
-        for (k, look) in looks.iter().enumerate() {
+        for (k, (_, look)) in looks.iter().enumerate() {
             match draw::call_of(look) {
                 Some(call) => {
                     calls.push(call);
-                    at.push(k);
+                    placed.push(k);
                 }
                 None => slow.push(k),
             }
         }
         if !calls.is_empty() {
             match self.live.update_calls(renderer, &calls) {
-                Ok(left) => slow.extend(left.iter().map(|&i| at[i])),
-                Err(e) => return self.refuse_or_fail("kind 8", e),
+                Ok(left) => slow.extend(left.iter().map(|&i| placed[i])),
+                Err(e) => return self.refused_or_failed(looks[0].0, e),
             }
         }
         slow.sort_unstable();
         for k in slow {
-            let name = looks[k]["name"].as_str().unwrap_or_default().to_string();
-            self.give_look(renderer, &name, &looks[k])?;
-        }
-        Ok(())
-    }
-
-    /// Take layer `name` out of the scene, for a kind 9 message.
-    fn remove_layer(&mut self, renderer: &mut dyn RenderTarget, name: &str) -> Result<()> {
-        match self.live.remove_layer(renderer, name) {
-            Ok(()) => Ok(()),
-            Err(e) => self.refuse_or_fail(name, e),
-        }
-    }
-
-    /// Put layer `name` in the place of a kind 10 message, `text` its JSON.
-    fn move_layer(
-        &mut self,
-        renderer: &mut dyn RenderTarget,
-        name: &str,
-        text: &str,
-    ) -> Result<()> {
-        match place_of(name, text) {
-            Ok(index) => match self.live.move_layer(renderer, name, index) {
-                Ok(()) => Ok(()),
-                Err(e) => self.refuse_or_fail(name, e),
-            },
-            Err(why) => {
-                self.refuse(name, &why);
-                Ok(())
+            let (at, look) = &looks[k];
+            if let Err(e) = self.live.update_layer(renderer, look) {
+                return self.refused_or_failed(at, e);
             }
         }
+        Ok(true)
     }
 
     /// Index the compiled scene: its params, any param added by a filter or
@@ -1139,24 +1197,8 @@ impl SceneController for SceneProcess {
         }
         for (name, set) in std::mem::take(&mut self.incoming) {
             let data = match set {
-                Set::Layer(text) => {
-                    self.add_layer(renderer, &name, &text)?;
-                    continue;
-                }
-                Set::Look(text) => {
-                    self.update_layer(renderer, &name, &text)?;
-                    continue;
-                }
-                Set::Looks(text) => {
-                    self.update_layers(renderer, &text)?;
-                    continue;
-                }
-                Set::Remove => {
-                    self.remove_layer(renderer, &name)?;
-                    continue;
-                }
-                Set::Move(text) => {
-                    self.move_layer(renderer, &name, &text)?;
+                Set::Patch(text) => {
+                    self.patch(renderer, &text)?;
                     continue;
                 }
                 Set::Param(data) => data,
@@ -1305,69 +1347,29 @@ fn as_param(ty: &str, values: &[f32]) -> Option<ParamValue> {
     }
 }
 
-/// The place and the layer of a kind 6 message to pass `pass`, read from
-/// `text`, its JSON, or why the message carries none.
-fn added(pass: &str, text: &str) -> Result<(usize, Value), String> {
-    let doc: Value = serde_json::from_str(text)
-        .map_err(|e| format!("kind 6 to pass '{pass}' is no JSON: {e}"))?;
-    let index = doc
-        .get("index")
-        .and_then(Value::as_u64)
-        .and_then(|i| usize::try_from(i).ok());
-    let layer = doc.get("layer").filter(|l| l.is_object());
-    match (index, layer, doc.as_object().map(Map::len)) {
-        (Some(index), Some(layer), Some(2)) => Ok((index, layer.clone())),
-        _ => Err(format!(
-            "kind 6 to pass '{pass}' needs {{\"index\": n, \"layer\": {{...}}}}, n a whole \
-             number from 0"
-        )),
-    }
+/// The name of the layer at `at`, or why no layer is there.
+fn layer_at(renderer: &dyn RenderTarget, at: &Place) -> Result<String, String> {
+    let names = renderer
+        .pass_layers(&at.pass)
+        .ok_or_else(|| format!("the scene has no pass '{}'", at.pass))?;
+    at.index
+        .and_then(|i| names.get(i).cloned())
+        .ok_or_else(|| format!("pass '{}' has no layer there", at.pass))
 }
 
-/// The place of a kind 10 message to layer `layer`, read from `text`, its
-/// JSON, or why the message carries none.
-fn place_of(layer: &str, text: &str) -> Result<usize, String> {
-    let doc: Value = serde_json::from_str(text)
-        .map_err(|e| format!("kind 10 to layer '{layer}' is no JSON: {e}"))?;
-    let index = doc
-        .get("index")
-        .and_then(Value::as_u64)
-        .and_then(|i| usize::try_from(i).ok());
-    match (index, doc.as_object().map(Map::len)) {
-        (Some(index), Some(1)) => Ok(index),
-        _ => Err(format!(
-            "kind 10 to layer '{layer}' needs {{\"index\": n}}, n a whole number from 0"
-        )),
+/// The value at `at`, as the scene writes it, or why none is there.
+fn read(renderer: &dyn RenderTarget, at: &Place) -> Result<Value, String> {
+    let name = layer_at(renderer, at)?;
+    let mut value = renderer
+        .layer(&name)
+        .ok_or_else(|| format!("the scene has no layer '{name}'"))?;
+    for key in &at.keys {
+        value = value
+            .get(key.as_str())
+            .cloned()
+            .ok_or_else(|| format!("layer '{name}' holds no '{key}'"))?;
     }
-}
-
-/// The look of a kind 7 message to layer `layer`, read from `text`, its
-/// JSON, or why the message carries none.
-fn look_of(layer: &str, text: &str) -> Result<Value, String> {
-    let doc: Value = serde_json::from_str(text)
-        .map_err(|e| format!("kind 7 to layer '{layer}' is no JSON: {e}"))?;
-    match doc.get("name").and_then(Value::as_str) {
-        Some(name) if name == layer => Ok(doc),
-        _ => Err(format!(
-            "kind 7 to layer '{layer}' holds no layer named '{layer}'"
-        )),
-    }
-}
-
-/// The looks of a kind 8 message, read from `text`, its JSON, or why the
-/// message carries none.
-fn looks_of(text: &str) -> Result<Vec<Value>, String> {
-    let doc: Value = serde_json::from_str(text).map_err(|e| format!("kind 8 is no JSON: {e}"))?;
-    match doc {
-        Value::Array(looks)
-            if looks
-                .iter()
-                .all(|l| l.get("name").is_some_and(Value::is_string)) =>
-        {
-            Ok(looks)
-        }
-        _ => Err("kind 8 needs a list of layers, each with its name".to_string()),
-    }
+    Ok(value)
 }
 
 /// Poll until the condition holds or the patience runs out.
@@ -1487,8 +1489,8 @@ fn messages(
             answered.notify_all();
             continue;
         }
-        if kind[0] > MOVE_LAYER {
-            return Err(format!("wrote message kind {} (0 to 10 only)", kind[0]));
+        if kind[0] > PATCH_LAYERS {
+            return Err(format!("wrote message kind {} (0 to 6 only)", kind[0]));
         }
         let mut len = [0u8; 1];
         let mut count = [0u8; 4];
@@ -1518,17 +1520,10 @@ fn messages(
             newest(&mut lock(inbox).arrays, name, Feed::DataU8(body));
             continue;
         }
-        if matches!(
-            kind[0],
-            SET_STRING | ADD_LAYER | UPDATE_LAYER | UPDATE_LAYERS | REMOVE_LAYER | MOVE_LAYER
-        ) {
+        if matches!(kind[0], SET_STRING | PATCH_LAYERS) {
             let text = String::from_utf8_lossy(&body).into_owned();
             let set = match kind[0] {
-                ADD_LAYER => Set::Layer(text),
-                UPDATE_LAYER => Set::Look(text),
-                UPDATE_LAYERS => Set::Looks(text),
-                REMOVE_LAYER => Set::Remove,
-                MOVE_LAYER => Set::Move(text),
+                PATCH_LAYERS => Set::Patch(text),
                 _ => Set::Param(ParamData::Str(text)),
             };
             latest(&mut lock(inbox).params, name, set);
@@ -1713,6 +1708,17 @@ sleep 60
         log: std::cell::RefCell<Vec<String>>,
         /// The layer that layer() gives for its name.
         now: Value,
+        /// The names of the layers of pass `main`, in their order, which
+        /// adds, removes and moves keep.
+        main: std::cell::RefCell<Vec<String>>,
+    }
+
+    /// A Stub whose pass `main` holds the layers `names`, in that order.
+    fn stub(names: &[&str]) -> Stub {
+        Stub {
+            main: std::cell::RefCell::new(names.iter().map(|n| (*n).to_string()).collect()),
+            ..Stub::default()
+        }
     }
 
     impl RenderTarget for Stub {
@@ -1789,6 +1795,8 @@ sleep 60
             self.log
                 .borrow_mut()
                 .push(format!("add {pass} {index} {layer}"));
+            let name = layer["name"].as_str().unwrap_or_default().to_string();
+            self.main.borrow_mut().insert(index, name);
             Ok(())
         }
 
@@ -1801,8 +1809,13 @@ sleep 60
             (self.now["name"] == name).then(|| self.now.clone())
         }
 
+        fn pass_layers(&self, pass: &str) -> Option<Vec<String>> {
+            (pass == "main").then(|| self.main.borrow().clone())
+        }
+
         fn remove_layer(&mut self, name: &str) -> Result<()> {
             self.log.borrow_mut().push(format!("remove {name}"));
+            self.main.borrow_mut().retain(|n| n != name);
             Ok(())
         }
 
@@ -1812,6 +1825,9 @@ sleep 60
                 return Err(Refused("a place past the pass's layers".to_string()).into());
             }
             self.log.borrow_mut().push(format!("move {name} {index}"));
+            let mut main = self.main.borrow_mut();
+            main.retain(|n| n != name);
+            main.insert(index, name.to_string());
             Ok(())
         }
 
@@ -2790,7 +2806,7 @@ done
             thread::sleep(Duration::from_millis(10));
         }
         let e = last.unwrap_err().to_string();
-        assert!(e.contains("wrote message kind 11 (0 to 10 only)"), "{e}");
+        assert!(e.contains("wrote message kind 11 (0 to 6 only)"), "{e}");
     }
 
     const DOTTED_SCRIPT: &str = r#"#!/bin/sh
@@ -3021,15 +3037,41 @@ while IFS= read -r line; do :; done
         );
     }
 
+    /// A kind 6 message that replaces the layer at /main/0 with `look`, its
+    /// JSON text.
+    fn replace(look: &str) -> String {
+        let look: Value = serde_json::from_str(look).unwrap();
+        patch(&serde_json::json!([{"op": "replace", "path": "/main/0", "value": look}]))
+    }
+
+    /// A kind 6 message of the JSON Patch `ops`.
+    fn patch(ops: &Value) -> String {
+        let text = ops.to_string();
+        message(6, "", text.len() as u32, text.as_bytes())
+    }
+
     /// A process that adds the text layer `title` to pass `main`, sets its
     /// words and its x, gives it a new look, adds the line `scope`, adds a
     /// layer that the renderer refuses, sends a kind 6 message that holds no
-    /// layer, then sets the points of `scope` in a kind 0 message.
+    /// patch, then sets the points of `scope` in a kind 0 message.
     fn grow_script() -> String {
-        let title = r#"{"index": 1, "layer": {"name": "title", "text": "hi"}}"#;
-        let look = r#"{"name": "title", "text": "ho", "font_size": 20}"#;
-        let scope = r#"{"index": 2, "layer": {"name": "scope", "shape": "line", "points": [[0, 0], [1, 1]]}}"#;
-        let refused = r#"{"index": 0, "layer": {"name": "refused", "shape": "rect"}}"#;
+        let add = |at: &str, layer: Value| {
+            patch(&serde_json::json!([{"op": "add", "path": at, "value": layer}]))
+        };
+        let title = add(
+            "/main/1",
+            serde_json::json!({"name": "title", "text": "hi"}),
+        );
+        let look = patch(&serde_json::json!([{"op": "replace", "path": "/main/1",
+            "value": {"name": "title", "text": "ho", "font_size": 20}}]));
+        let scope = add(
+            "/main/-",
+            serde_json::json!({"name": "scope", "shape": "line", "points": [[0, 0], [1, 1]]}),
+        );
+        let refused = add(
+            "/main/0",
+            serde_json::json!({"name": "refused", "shape": "rect"}),
+        );
         let points: Vec<u8> = [0f32, 1.0, 2.0, 3.0]
             .iter()
             .flat_map(|v| v.to_le_bytes())
@@ -3042,13 +3084,13 @@ while IFS= read -r line; do :; done
         [
             "#!/bin/sh\n".to_string(),
             format!("printf '%s\\n' '{doc}'\n"),
-            message(6, "main", title.len() as u32, title.as_bytes()),
+            title,
             message(3, "title.text", 2, b"ho"),
             numbers("title.x", &[4.0]),
-            message(7, "title", look.len() as u32, look.as_bytes()),
-            message(6, "main", scope.len() as u32, scope.as_bytes()),
-            message(6, "main", refused.len() as u32, refused.as_bytes()),
-            message(6, "main", 4, b"nope"),
+            look,
+            scope,
+            refused,
+            message(6, "", 4, b"nope"),
             message(0, "scope.points", 4, &points),
             "while IFS= read -r line; do printf '%s\\n' \"$line\" >> ticks.jsonl; done\n"
                 .to_string(),
@@ -3057,7 +3099,7 @@ while IFS= read -r line; do :; done
     }
 
     #[test]
-    fn a_kind_6_message_adds_a_layer_that_later_messages_address() {
+    fn a_kind_6_patch_adds_a_layer_that_later_messages_address() {
         let d = tmpdir("grow");
         let path = script(&d, "grow", &grow_script());
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
@@ -3066,10 +3108,9 @@ while IFS= read -r line; do :; done
             f.drain();
             f.data.contains_key("scope.points")
         }));
-        let mut stub = Stub::default();
+        let mut stub = stub(&["dot"]);
         f.update(&mut stub, 0, 0.0).unwrap();
         let title = r#"{"name":"title","text":"hi"}"#;
-        let look = r#"{"name":"title","text":"ho","font_size":20}"#;
         let scope = r#"{"name":"scope","shape":"line","points":[[0,0],[1,1]]}"#;
         assert_eq!(
             *stub.log.borrow(),
@@ -3077,12 +3118,12 @@ while IFS= read -r line; do :; done
                 format!("add main 1 {title}"),
                 "set title.text Text(\"ho\")".to_string(),
                 "set title.x Numbers([4.0])".to_string(),
-                format!("look {look}"),
+                "calls title".to_string(),
                 format!("add main 2 {scope}"),
                 "set scope.points Numbers([0.0, 1.0, 2.0, 3.0])".to_string(),
             ]
         );
-        assert_eq!(refused_names(&f), ["main", "refused"]);
+        assert_eq!(refused_names(&f), ["/main/0", "kind 6"]);
         // the console's words for the added layer reach the process, and
         // the process's own words stay with it
         let at = Address {
@@ -3100,53 +3141,7 @@ while IFS= read -r line; do :; done
     }
 
     #[test]
-    fn a_layer_message_that_holds_no_layer_says_what_it_needs() {
-        assert_eq!(
-            added(
-                "main",
-                r#"{"index": -1, "layer": {"name": "t", "text": "hi"}}"#
-            ),
-            Err(
-                "kind 6 to pass 'main' needs {\"index\": n, \"layer\": {...}}, n a whole number \
-                 from 0"
-                    .to_string()
-            )
-        );
-        for text in [r#"{"index": 0}"#, r#"{"index": 0, "layer": {}, "more": 1}"#] {
-            let e = added("main", text).unwrap_err();
-            assert!(e.starts_with("kind 6 to pass 'main' needs"), "{e}");
-        }
-        let e = added("main", "nope").unwrap_err();
-        assert!(e.starts_with("kind 6 to pass 'main' is no JSON: "), "{e}");
-        assert_eq!(
-            look_of("title", r#"{"name": "other", "text": "hi"}"#),
-            Err("kind 7 to layer 'title' holds no layer named 'title'".to_string())
-        );
-        let e = look_of("title", "[1]").unwrap_err();
-        assert!(
-            e.starts_with("kind 7 to layer 'title' holds no layer"),
-            "{e}"
-        );
-        assert_eq!(
-            place_of("title", r#"{"index": -1}"#),
-            Err(
-                "kind 10 to layer 'title' needs {\"index\": n}, n a whole number from 0"
-                    .to_string()
-            )
-        );
-        for text in [r#"{}"#, r#"{"index": 0, "more": 1}"#] {
-            let e = place_of("title", text).unwrap_err();
-            assert!(e.starts_with("kind 10 to layer 'title' needs"), "{e}");
-        }
-        let e = place_of("title", "nope").unwrap_err();
-        assert!(
-            e.starts_with("kind 10 to layer 'title' is no JSON: "),
-            "{e}"
-        );
-    }
-
-    #[test]
-    fn a_kind_9_message_takes_a_layer_out_and_a_kind_10_message_moves_one() {
+    fn a_patch_takes_a_layer_out_and_moves_one() {
         let d = tmpdir("place");
         let doc = serde_json::json!({
             "version": 1,
@@ -3155,13 +3150,12 @@ while IFS= read -r line; do :; done
                                    {"name": "bar", "shape": "rect"},
                                    {"name": "title", "text": "hi"}]}],
         });
-        let (first, past) = (r#"{"index": 0}"#, r#"{"index": 3}"#);
         let body = [
             "#!/bin/sh\n".to_string(),
             format!("printf '%s\\n' '{doc}'\n"),
-            message(10, "bar", first.len() as u32, first.as_bytes()),
-            message(9, "title", 0, b""),
-            message(10, "dot", past.len() as u32, past.as_bytes()),
+            patch(&serde_json::json!([{"op": "move", "from": "/main/1", "path": "/main/0"}])),
+            patch(&serde_json::json!([{"op": "remove", "path": "/main/2"}])),
+            patch(&serde_json::json!([{"op": "move", "from": "/main/1", "path": "/main/3"}])),
             numbers("bar.x", &[1.0]),
             "while IFS= read -r line; do :; done\n".to_string(),
         ]
@@ -3173,7 +3167,7 @@ while IFS= read -r line; do :; done
             f.drain();
             f.incoming.iter().any(|(n, _)| n == "bar.x")
         }));
-        let mut stub = Stub::default();
+        let mut stub = stub(&["dot", "bar", "title"]);
         f.update(&mut stub, 0, 0.0).unwrap();
         assert_eq!(
             *stub.log.borrow(),
@@ -3183,13 +3177,69 @@ while IFS= read -r line; do :; done
                 "set bar.x Numbers([1.0])".to_string(),
             ]
         );
-        assert_eq!(refused_names(&f), ["dot"]);
+        assert_eq!(refused_names(&f), ["/main/3"]);
         // the words of the layer that left go out with no tick
         assert!(!f.live.tick_params().contains_key("title.text"));
     }
 
+    /// RFC 6902: add and replace set a key, null puts it back to its
+    /// default, as remove does, copy and move read the value at `from`, and
+    /// a test that fails ends the patch.
     #[test]
-    fn a_kind_8_message_gives_each_layer_its_look_and_the_calls_go_at_once() {
+    fn a_patch_sets_keys_and_its_first_refusal_ends_it() {
+        let d = tmpdir("keys");
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "main", "fragment": "void main(){}",
+                        "layers": [{"name": "title", "text": "hi", "x": 3},
+                                   {"name": "bar", "shape": "rect"}]}],
+        });
+        let ops = serde_json::json!([
+            {"op": "replace", "path": "/main/0/opacity", "value": 0.5},
+            {"op": "remove", "path": "/main/0/y"},
+            {"op": "add", "path": "/main/0/glow/strength", "value": 0.25},
+            {"op": "replace", "path": "/main/1/width", "value": null},
+            {"op": "copy", "from": "/main/0/x", "path": "/main/1/x"},
+            {"op": "test", "path": "/main/0/text", "value": "hi"},
+            {"op": "test", "path": "/main/0/text", "value": "ho"},
+            {"op": "replace", "path": "/main/1/height", "value": 9},
+        ]);
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            patch(&ops),
+            numbers("bar.y", &[1.0]),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "keys", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        assert!(wait_until(Duration::from_secs(5), || {
+            f.drain();
+            f.incoming.iter().any(|(n, _)| n == "bar.y")
+        }));
+        let mut stub = Stub {
+            now: serde_json::json!({"name": "title", "text": "hi", "x": 3}),
+            ..stub(&["title", "bar"])
+        };
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert_eq!(
+            *stub.log.borrow(),
+            [
+                "set title.opacity Json(Number(0.5))".to_string(),
+                "set title.y Json(Null)".to_string(),
+                "set title.glow.strength Json(Number(0.25))".to_string(),
+                "set bar.width Json(Null)".to_string(),
+                "set bar.x Json(Number(3))".to_string(),
+                "set bar.y Numbers([1.0])".to_string(),
+            ]
+        );
+        assert_eq!(refused_names(&f), ["/main/0/text"]);
+    }
+
+    #[test]
+    fn a_patch_of_replaced_layers_gives_each_its_look_and_the_calls_go_at_once() {
         // title's look reads as a call, the renderer leaves slow's call,
         // and odd's width is no key of a text call: the last two go as
         // looks, in the order of the list.
@@ -3202,14 +3252,16 @@ while IFS= read -r line; do :; done
                                    {"name": "odd", "text": "o"},
                                    {"name": "same", "shape": "rect"}]}],
         });
-        let looks = r#"[{"name": "title", "text": "ho", "x": 4},
-            {"name": "slow", "shape": "rect", "x": 2},
-            {"name": "odd", "text": "o", "width": 3},
-            {"name": "same", "shape": "rect"}]"#;
+        let looks = serde_json::json!([
+            {"op": "replace", "path": "/main/0", "value": {"name": "title", "text": "ho", "x": 4}},
+            {"op": "replace", "path": "/main/1", "value": {"name": "slow", "shape": "rect", "x": 2}},
+            {"op": "replace", "path": "/main/2", "value": {"name": "odd", "text": "o", "width": 3}},
+            {"op": "replace", "path": "/main/3", "value": {"shape": "rect"}},
+        ]);
         let body = [
             "#!/bin/sh\n".to_string(),
             format!("printf '%s\\n' '{doc}'\n"),
-            message(8, "", looks.len() as u32, looks.as_bytes()),
+            patch(&looks),
             numbers("title.y", &[1.0]),
             "while IFS= read -r line; do :; done\n".to_string(),
         ]
@@ -3222,7 +3274,7 @@ while IFS= read -r line; do :; done
             f.drain();
             f.incoming.iter().any(|(n, _)| n == "title.y")
         }));
-        let mut stub = Stub::default();
+        let mut stub = stub(&["title", "slow", "odd", "same"]);
         f.update(&mut stub, 0, 0.0).unwrap();
         assert_eq!(
             *stub.log.borrow(),
@@ -3249,18 +3301,18 @@ while IFS= read -r line; do :; done
     }
 
     #[test]
-    fn a_kind_7_message_keeps_the_console_s_value_of_each_key_that_it_leaves_out() {
+    fn a_replaced_layer_keeps_the_console_s_value_of_each_key_that_it_leaves_out() {
         let d = tmpdir("kept");
         let doc = serde_json::json!({
             "version": 1,
             "passes": [{"name": "main", "fragment": "void main(){}",
-                        "layers": [{"name": "title", "text": "hi"}]}],
+                        "layers": [{"name": "slow", "text": "hi"}]}],
         });
-        let look = r#"{"name": "title", "text": "ho", "font_size": 9}"#;
+        let look = r#"{"name": "slow", "text": "ho", "font_size": 9}"#;
         let body = [
             "#!/bin/sh\n".to_string(),
             format!("printf '%s\\n' '{doc}'\n"),
-            message(7, "title", look.len() as u32, look.as_bytes()),
+            replace(look),
             "while IFS= read -r line; do :; done\n".to_string(),
         ]
         .concat();
@@ -3269,7 +3321,7 @@ while IFS= read -r line; do :; done
         f.bind(&scene);
         let locks = f.locks();
         let at = |effect, field| Address {
-            layer: "title",
+            layer: "slow",
             effect,
             field,
         };
@@ -3280,40 +3332,43 @@ while IFS= read -r line; do :; done
             !f.incoming.is_empty()
         }));
         let mut stub = Stub {
-            now: serde_json::json!({"name": "title", "text": "hi", "x": 3, "opacity": 0.5,
+            now: serde_json::json!({"name": "slow", "text": "hi", "x": 3, "opacity": 0.5,
                                     "glow": {"strength": 0.25}}),
-            ..Stub::default()
+            ..stub(&["slow"])
         };
         f.update(&mut stub, 0, 0.0).unwrap();
-        let given = stub.log.borrow()[0]
-            .strip_prefix("look ")
+        let given = stub
+            .log
+            .borrow()
+            .iter()
+            .find_map(|l| l.strip_prefix("look "))
             .unwrap()
             .to_string();
         assert_eq!(
             serde_json::from_str::<Value>(&given).unwrap(),
-            serde_json::json!({"font_size": 9, "glow": {"strength": 0.25}, "name": "title",
+            serde_json::json!({"font_size": 9, "glow": {"strength": 0.25}, "name": "slow",
                                "opacity": 0.5, "text": "ho"})
         );
         assert_eq!(
             lock(&locks).to_json()["fields"],
-            serde_json::json!(["title.font_size", "title.text"])
+            serde_json::json!(["slow.font_size", "slow.text"])
         );
     }
 
     #[test]
-    fn a_kind_7_message_keeps_the_scene_s_value_of_each_key_that_it_leaves_out() {
+    fn a_replaced_layer_keeps_the_scene_s_value_of_each_key_that_it_leaves_out() {
         let d = tmpdir("own");
         let doc = serde_json::json!({
             "version": 1,
             "passes": [{"name": "main", "fragment": "void main(){}",
-                        "layers": [{"name": "title", "text": "hi", "x": 3, "font_size": 12,
+                        "layers": [{"name": "slow", "text": "hi", "x": 3, "font_size": 12,
                                     "color": "red", "visible": false}]}],
         });
-        let look = r#"{"name": "title", "text": "ho", "font_size": 9}"#;
+        let look = r#"{"name": "slow", "text": "ho", "font_size": 9}"#;
         let body = [
             "#!/bin/sh\n".to_string(),
             format!("printf '%s\\n' '{doc}'\n"),
-            message(7, "title", look.len() as u32, look.as_bytes()),
+            replace(look),
             "while IFS= read -r line; do :; done\n".to_string(),
         ]
         .concat();
@@ -3321,7 +3376,7 @@ while IFS= read -r line; do :; done
         let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
         f.bind(&scene);
         let at = Address {
-            layer: "title",
+            layer: "slow",
             effect: None,
             field: "color",
         };
@@ -3331,13 +3386,16 @@ while IFS= read -r line; do :; done
             !f.incoming.is_empty()
         }));
         let mut stub = Stub {
-            now: serde_json::json!({"name": "title", "text": "hi", "x": 3, "font_size": 12,
+            now: serde_json::json!({"name": "slow", "text": "hi", "x": 3, "font_size": 12,
                                     "color": "lime", "visible": false}),
-            ..Stub::default()
+            ..stub(&["slow"])
         };
         f.update(&mut stub, 0, 0.0).unwrap();
-        let given = stub.log.borrow()[0]
-            .strip_prefix("look ")
+        let given = stub
+            .log
+            .borrow()
+            .iter()
+            .find_map(|l| l.strip_prefix("look "))
             .unwrap()
             .to_string();
         let mut given = serde_json::from_str::<Value>(&given).unwrap();
@@ -3345,7 +3403,7 @@ while IFS= read -r line; do :; done
         assert_eq!(x.as_ref().and_then(Value::as_f64), Some(3.0));
         assert_eq!(
             given,
-            serde_json::json!({"color": "lime", "font_size": 9, "name": "title", "text": "ho"})
+            serde_json::json!({"color": "lime", "font_size": 9, "name": "slow", "text": "ho"})
         );
     }
 
@@ -3355,18 +3413,18 @@ while IFS= read -r line; do :; done
         let doc = serde_json::json!({
             "version": 1,
             "passes": [{"name": "main", "fragment": "void main(){}",
-                        "layers": [{"name": "title", "text": "hi"}]}],
+                        "layers": [{"name": "slow", "text": "hi"}]}],
         });
         let (first, then) = (
-            r#"{"name": "title", "text": "ho", "font_size": 9}"#,
-            r#"{"name": "title", "text": "hu"}"#,
+            r#"{"name": "slow", "text": "ho", "font_size": 9}"#,
+            r#"{"name": "slow", "text": "hu"}"#,
         );
         let body = [
             "#!/bin/sh\n".to_string(),
             format!("printf '%s\\n' '{doc}'\n"),
-            message(7, "title", first.len() as u32, first.as_bytes()),
+            replace(first),
             "read -r line\n".to_string(),
-            message(7, "title", then.len() as u32, then.as_bytes()),
+            replace(then),
             "while IFS= read -r line; do :; done\n".to_string(),
         ]
         .concat();
@@ -3378,8 +3436,8 @@ while IFS= read -r line; do :; done
             !f.incoming.is_empty()
         }));
         let mut stub = Stub {
-            now: serde_json::json!({"name": "title", "text": "hi"}),
-            ..Stub::default()
+            now: serde_json::json!({"name": "slow", "text": "hi"}),
+            ..stub(&["slow"])
         };
         f.update(&mut stub, 0, 0.0).unwrap();
         // the page read the scene before the program's look, and changes
@@ -3388,16 +3446,16 @@ while IFS= read -r line; do :; done
             &serde_json::json!({
                 "version": 1,
                 "passes": [{"name": "main", "fragment": "void main(){}",
-                            "layers": [{"name": "title", "text": "hi", "font_size": 12,
+                            "layers": [{"name": "slow", "text": "hi", "font_size": 12,
                                         "text_align": "center"}]}],
             }),
             None,
             None,
         )
         .unwrap();
-        stub.now = serde_json::json!({"name": "title", "text": "ho", "font_size": 9});
+        stub.now = serde_json::json!({"name": "slow", "text": "ho", "font_size": 9});
         f.live.console_scene(&stub, &mut posted).unwrap();
-        let title = posted.layer("title").unwrap().to_dict();
+        let title = posted.layer("slow").unwrap().to_dict();
         assert_eq!(
             (&title["text"], &title["font_size"], &title["text_align"]),
             (
@@ -3414,13 +3472,16 @@ while IFS= read -r line; do :; done
         }));
         stub.log.borrow_mut().clear();
         f.update(&mut stub, 1, 0.0).unwrap();
-        let given = stub.log.borrow()[0]
-            .strip_prefix("look ")
+        let given = stub
+            .log
+            .borrow()
+            .iter()
+            .find_map(|l| l.strip_prefix("look "))
             .unwrap()
             .to_string();
         assert_eq!(
             serde_json::from_str::<Value>(&given).unwrap(),
-            serde_json::json!({"name": "title", "text": "hu", "text_align": "center"})
+            serde_json::json!({"name": "slow", "text": "hu", "text_align": "center"})
         );
     }
 
@@ -3465,23 +3526,7 @@ while IFS= read -r line; do :; done
     }
 
     #[test]
-    fn a_kind_8_message_that_holds_no_list_of_layers_says_what_it_needs() {
-        let e = looks_of("nope").unwrap_err();
-        assert!(e.starts_with("kind 8 is no JSON: "), "{e}");
-        for text in [
-            r#"{"name": "t"}"#,
-            r#"[{"text": "hi"}]"#,
-            r#"[{"name": 1}]"#,
-        ] {
-            assert_eq!(
-                looks_of(text),
-                Err("kind 8 needs a list of layers, each with its name".to_string())
-            );
-        }
-    }
-
-    #[test]
-    fn the_answers_of_several_ticks_leave_each_layer_in_its_newest_state() {
+    fn the_answers_of_several_ticks_apply_in_order_and_a_param_takes_its_newest_value() {
         let d = tmpdir("newest");
         let doc = serde_json::json!({
             "version": 1,
@@ -3495,9 +3540,9 @@ while IFS= read -r line; do :; done
             "#!/bin/sh\n".to_string(),
             format!("printf '%s\\n' '{doc}'\n"),
             // one tick draws dot, the next hides it, the next draws it again
-            message(7, "dot", first.len() as u32, first.as_bytes()),
+            replace(&first),
             numbers("dot.visible", &[0.0]),
-            message(7, "dot", again.len() as u32, again.as_bytes()),
+            replace(&again),
             numbers("bar.x", &[1.0]),
             numbers("bar.x", &[2.0]),
             "while IFS= read -r line; do :; done\n".to_string(),
@@ -3513,13 +3558,14 @@ while IFS= read -r line; do :; done
             f.drain();
             f.incoming.iter().any(last)
         }));
-        let mut stub = Stub::default();
+        let mut stub = stub(&["dot", "bar"]);
         f.update(&mut stub, 0, 0.0).unwrap();
         assert_eq!(
             *stub.log.borrow(),
             [
+                "calls dot".to_string(),
                 "set dot.visible Numbers([0.0])".to_string(),
-                r#"look {"name":"dot","shape":"rect","x":2}"#.to_string(),
+                "calls dot".to_string(),
                 "set bar.x Numbers([2.0])".to_string(),
             ]
         );

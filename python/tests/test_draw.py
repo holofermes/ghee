@@ -575,11 +575,11 @@ def answers(buf):
 
 
 def test_a_drawing_in_a_tick_goes_out_with_the_ticks_answer(monkeypatch):
-    """A call that runs for the first time adds its layer, kind 6, the layer
-    of a call that did not run leaves, kind 9, the calls whose looks change
-    in live fields alone give their layers the new looks in one kind 8, a
-    call that builds its layer again gives it the new look as kind 7, and a
-    tick whose calls changed nothing sends nothing."""
+    """Each change goes out as a kind 6 JSON Patch: a call that runs for the
+    first time adds its layer, the layer of a call that did not run leaves,
+    the calls whose looks change in live fields alone replace their layers
+    in one patch, a call that builds its layer again replaces its layer
+    alone, and a tick whose calls changed nothing sends nothing."""
     shim = load()
 
     @shim.tick
@@ -595,16 +595,23 @@ def test_a_drawing_in_a_tick_goes_out_with_the_ticks_answer(monkeypatch):
     text = {"name": "text", "x": 0.0, "y": 0.0}
     big = {"name": "text2", "text": "big", "y": 8.0}
     rect = {"name": "rect", "x": 2.0, "shape": "rect", "width": 4.0, "height": 4.0}
+
+    def patch(op, path, value=None):
+        o = {"op": op, "path": path}
+        if value is not None:
+            o["value"] = value
+        return (6, "", [o])
+
     assert answers(out) == [
         [
-            (6, "main", {"index": 0, "layer": {**text, "text": "t0"}}),
-            (6, "main", {"index": 1, "layer": {**big, "font_size": 8.0}}),
-            (6, "main", {"index": 2, "layer": rect}),
+            patch("add", "/main/0", {**text, "text": "t0"}),
+            patch("add", "/main/1", {**big, "font_size": 8.0}),
+            patch("add", "/main/2", rect),
         ],
         [
-            (9, "rect", ""),
-            (8, "", [{**text, "text": "t1"}]),
-            (7, "text2", {**big, "font_size": 9.0}),
+            patch("remove", "/main/2"),
+            patch("replace", "/main/0", {**text, "text": "t1"}),
+            patch("replace", "/main/1", {**big, "font_size": 9.0}),
         ],
         [],
     ]
@@ -620,13 +627,15 @@ def test_a_drawing_in_a_tick_moves_a_layer_into_the_order_of_the_calls(monkeypat
                 d.rect(name=name)
 
     _, out = drive(shim, None, ticks(2), monkeypatch)
-    assert answers(out)[1] == [(10, "b", {"index": 0})]
+    assert answers(out)[1] == [
+        (6, "", [{"op": "move", "from": "/main/1", "path": "/main/0"}])
+    ]
 
 
 def test_numpy_values_and_paths_go_out_as_the_values_that_they_hold(monkeypatch):
     """A numpy array, a numpy number and a path draw as the list, the number
     and the str that they hold: a change in live fields alone goes out in
-    kind 8, and the same values again send nothing."""
+    one patch, and the same values again send nothing."""
     np = numpy()
     shim = load()
 
@@ -647,7 +656,11 @@ def test_numpy_values_and_paths_go_out_as_the_values_that_they_hold(monkeypatch)
     }
     image = {"name": "image", "image": "wifi.png", "x": 1.0}
     assert [m[0] for m in sent[0]] == [6, 6]
-    assert sent[1:] == [[(8, "", [line, image])], []]
+    replace = [
+        {"op": "replace", "path": "/main/0", "value": line},
+        {"op": "replace", "path": "/main/1", "value": image},
+    ]
+    assert sent[1:] == [[(6, "", replace)], []]
 
 
 @pytest.mark.parametrize("bad", [0, 1])

@@ -804,6 +804,10 @@ impl RenderTarget for SharedRenderer {
         RenderTarget::layer(&*self.renderer.borrow(), name)
     }
 
+    fn pass_layers(&self, pass: &str) -> Option<Vec<String>> {
+        RenderTarget::pass_layers(&*self.renderer.borrow(), pass)
+    }
+
     fn update_calls(&mut self, calls: &[Call]) -> Result<Taken> {
         self.renderer.borrow_mut().update_calls(calls)
     }
@@ -3484,11 +3488,11 @@ mod tests {
              "fragment": "void main(){ gl_FragColor = vec4(level_at(0), 0.0, 0.0, 1.0); }"},
             {"name": "tint", "channels": [{"buffer": "main"}],
              "params": {"amt": {"type": "float", "value": 0.0}}, "fragment": TINT}]});
-        let dot = r#"{"index": 0, "layer": {"name": "dot", "shape": "rect", "x": 0, "y": 0, "width": 4, "height": 4, "color": "blue"}}"#;
+        let dot = r#"[{"op": "add", "path": "/main/0", "value": {"name": "dot", "shape": "rect", "x": 0, "y": 0, "width": 4, "height": 4, "color": "blue"}}]"#;
         let answer = [
             wire(4, "level", 1, &[128]),
             wire(1, "amt", 1, &0.75f32.to_le_bytes()),
-            wire(6, "main", dot.len(), dot.as_bytes()),
+            wire(6, "", dot.len(), dot.as_bytes()),
         ]
         .concat();
         format!(
@@ -3628,12 +3632,11 @@ mod tests {
             {"name": "main", "params": {"amt": {"type": "float", "value": 0.0}},
              "fragment": "void main(){ gl_FragColor = vec4(amt, 0.0, 0.0, 1.0); }",
              "layers": [{"name": "title", "text": "I", "font_size": 8, "x": 1, "y": 1}]}]});
-        let dot =
-            r#"{"index": 1, "layer": {"name": "dot", "shape": "rect", "width": 2, "height": 2}}"#;
+        let dot = r#"[{"op": "add", "path": "/main/1", "value": {"name": "dot", "shape": "rect", "width": 2, "height": 2}}]"#;
         let answer = [
             wire(1, "amt", 1, &0.75f32.to_le_bytes()),
             wire(1, "title.x", 1, &20.0f32.to_le_bytes()),
-            wire(6, "main", dot.len(), dot.as_bytes()),
+            wire(6, "", dot.len(), dot.as_bytes()),
         ]
         .concat();
         format!(

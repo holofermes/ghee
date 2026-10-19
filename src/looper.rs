@@ -88,6 +88,13 @@ pub trait RenderTarget {
         None
     }
 
+    /// The names of the layers of pass `pass` of the running scene, in the
+    /// order that they draw. None when the target draws no pass of that
+    /// name.
+    fn pass_layers(&self, _pass: &str) -> Option<Vec<String>> {
+        None
+    }
+
     /// Give the layers of `calls` their looks, as Renderer::update_calls()
     /// does. A target that draws no layers leaves every call for
     /// update_layer().
@@ -194,6 +201,14 @@ impl RenderTarget for Renderer {
 
     fn layer(&self, name: &str) -> Option<Value> {
         self.with_layer(name, |_, l| l.to_dict())
+    }
+
+    fn pass_layers(&self, pass: &str) -> Option<Vec<String>> {
+        self.with_scene(|scene| {
+            let pass = scene.passes.iter().find(|p| p.name == pass)?;
+            Some(pass.layers.iter().map(|l| l.name().to_string()).collect())
+        })
+        .flatten()
     }
 
     fn update_calls(&mut self, calls: &[Call]) -> Result<Taken> {

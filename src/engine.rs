@@ -6,9 +6,9 @@
 //! ghee/_engine/engine.h lists its calls, and `crate::ffi` declares them. A
 //! [`Renderer`] holds one engine and drives it from a [`Scene`]:
 //!
-//! - [`Renderer::new`] opens the engine on the device named by `$GHEE_DRI`,
-//!   else on the first render node that works, or on a card for a KMS
-//!   display.
+//! - [`RendererBuilder::build`] opens the engine on the device that it
+//!   names, else on the one named by `$GHEE_DRI`, else on the first render
+//!   node that works, or on a card for a KMS display.
 //! - [`Renderer::setup`] writes each pass's GLSL, compiles the passes and
 //!   their layers beside the running scene, and swaps them in at once. A
 //!   compile error leaves the running scene drawing, and names the line of

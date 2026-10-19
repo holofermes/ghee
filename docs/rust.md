@@ -129,9 +129,9 @@ first.
 
 `Card::open(None)` opens the first card with a connected display, and the
 render takes the display's mode as its size. To pick a card, pass its node,
-such as `Some("/dev/dri/card1")`. It fails on a node that won't open, with
-no connected display, and with GL that runs in software. Leave `display` at
-None to render with no display, at `size` or 320x240.
+such as `Some("/dev/dri/card1")`. Its `CardError` says why it failed: a
+node that won't open, no connected display, or GL that runs in software.
+Leave `display` at None to render with no display, at `size` or 320x240.
 
 An `ArraySource` gives the data of one array from the array's size and the
 frame number, in a `Feed` as `render`'s closure does. An array with no
@@ -191,9 +191,9 @@ fn main() -> anyhow::Result<()> {
 the console. Implement `persists` to return true when your sink keeps
 showing its last frame, and ghee then skips a frame that would come out the
 same. Implement `turn_on` and `turn_off` for a sink with a power state, such
-as a backlight: ghee turns it on before it writes the first frame, and
-before the first frame after a pause, and off while the render pauses and
-when it ends.
+as a backlight: ghee turns it on before the first frame and before the
+first frame after each pause, and off while the render pauses and when it
+ends.
 
 ## Stop and pause
 

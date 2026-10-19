@@ -367,7 +367,8 @@ impl Fit {
     /// The GLSL that takes `name`'s coverage at this pixel.
     fn cover(&self, name: &str) -> String {
         format!(
-            "{name}_cover((uv * iResolution.xy - vec2({:.4}, {:.4})) / {:.4}, {:.4})",
+            "{name}_cover((vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y) \
+             - vec2({:.4}, {:.4})) / {:.4}, {:.4})",
             self.x, self.y, self.ppem, self.ppem
         )
     }

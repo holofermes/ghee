@@ -427,7 +427,7 @@ TEXT_SCENE = '''#!/usr/bin/env python3
 import ghee
 
 CODE = (
-    "void main(){ vec2 px = floor(uv * iResolution.xy) + 0.5;"
+    "void main(){ vec2 px = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y);"
     " gl_FragColor = vec4(vec3(words_cover(px / 12.0, 12.0)), 1.0); }"
 )
 

@@ -3175,7 +3175,7 @@ const CORNER: &str = r#"    // A quad reaches half a pixel past its glyph's box 
 /// The lines that place a vertex at ghee_xy, its pass pixel, and HIDE, the
 /// condition that takes its quad out of the pass.
 const POSITION: &str = r#"    uv = ghee_xy / iResolution.xy;
-    gl_Position = vec4((uv * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
+    gl_Position = vec4((uv * 2.0 - 1.0) * vec2(1.0, -ghee_vflip), 0.0, 1.0);
     // A hidden glyph's quad lies outside the pass.
     if (HIDE) gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);"#;
 
@@ -3251,9 +3251,10 @@ void main() {
     vec2 ghee_org = mix(vec2(ghee_NAME_x, ghee_NAME_y), (iResolution.xy - ghee_wh) * 0.5,
                         ghee_NAME_centre);
     uv = (ghee_org + ghee_a0.xy * ghee_wh) / iResolution.xy;
-    // The point on the image, and its step per pass pixel.
-    ghee_v0 = vec4(ghee_a0.xy, 1.0 / max(ghee_wh, vec2(1.0e-6)));
-    gl_Position = vec4((uv * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
+    // The point on the image, which holds its bottom row first, and its
+    // step per pass pixel.
+    ghee_v0 = vec4(ghee_a0.x, 1.0 - ghee_a0.y, vec2(1.0, -1.0) / max(ghee_wh, vec2(1.0e-6)));
+    gl_Position = vec4((uv * 2.0 - 1.0) * vec2(1.0, -ghee_vflip), 0.0, 1.0);
     // A hidden layer's quad lies outside the pass.
     if (ghee_NAME_visible < 0.5) gl_Position = vec4(-2.0, -2.0, 0.0, 1.0);
 }"#;

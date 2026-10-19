@@ -121,6 +121,21 @@ pub enum AssetData<'a> {
     F32(&'a [f32]),
 }
 
+/// The first `rows` rows of `row` values each of `data`, the last row first.
+fn bottom_first<T: Copy>(data: &[T], row: usize, rows: usize) -> Vec<T> {
+    match row {
+        0 => Vec::new(),
+        _ => data
+            .get(..row * rows)
+            .unwrap_or(data)
+            .chunks_exact(row)
+            .rev()
+            .flatten()
+            .copied()
+            .collect(),
+    }
+}
+
 /// How a batch's colour lands on its pass's buffer. The colour is
 /// premultiplied by its alpha. Multiply and Screen hold their formulas over
 /// an opaque buffer.
@@ -2263,13 +2278,16 @@ impl Renderer {
         Ok(true)
     }
 
-    /// Hand one named image asset to the engine.
+    /// Hand one named image asset to the engine, its top row first, as an
+    /// image file holds it.
     ///
     /// Every pass that reads it gets it as a sampler uniform `<name>_tex`,
-    /// plus a vec2 `<name>_size` of (width, height). An asset outlives the
-    /// scene: setup() keeps it, and the same name again replaces its pixels.
-    /// `linear` samples with GL_LINEAR, f32 pixels fall back to nearest
-    /// without data_texture_linear().
+    /// plus a vec2 `<name>_size` of (width, height). The texture holds the
+    /// bottom row first, as GL reads a texture, so `texture2D(<name>_tex,
+    /// uv)` shows the image upright. An asset outlives the scene: setup()
+    /// keeps it, and the same name again replaces its pixels. `linear`
+    /// samples with GL_LINEAR, f32 pixels fall back to nearest without
+    /// data_texture_linear().
     pub fn set_asset(
         &self,
         name: &str,
@@ -2283,7 +2301,18 @@ impl Renderer {
             true => ffi::GHEE_FILTER_LINEAR,
             false => ffi::GHEE_FILTER_NEAREST,
         };
-        self.put_asset(name, width, height, components, filter, data)
+        let row = width as usize * components as usize;
+        let rows = height as usize;
+        match data {
+            AssetData::U8(d) => {
+                let up = bottom_first(d, row, rows);
+                self.put_asset(name, width, height, components, filter, AssetData::U8(&up))
+            }
+            AssetData::F32(d) => {
+                let up = bottom_first(d, row, rows);
+                self.put_asset(name, width, height, components, filter, AssetData::F32(&up))
+            }
+        }
     }
 
     /// set_asset() with a filter of the engine's: GHEE_FILTER_NEAREST,
@@ -2459,12 +2488,12 @@ impl Renderer {
         self.glyph_bytes
             .set(self.glyph_bytes.get() + c.texels.len());
         if c.height > glyphs.rows() {
-            self.set_asset(
+            self.put_asset(
                 GLYPHS,
                 c.width,
                 c.height,
                 4,
-                false,
+                ffi::GHEE_FILTER_NEAREST,
                 AssetData::U8(&c.texels),
             )?;
             self.scene_asset(GLYPHS);
@@ -4194,12 +4223,12 @@ impl Renderer {
             }
         } else if built.width > 0 {
             let curves = text::internal(name, "_curves");
-            self.set_asset(
+            self.put_asset(
                 &curves,
                 built.width,
                 built.height,
                 4,
-                false,
+                ffi::GHEE_FILTER_NEAREST,
                 AssetData::U8(&built.texels),
             )?;
             self.scene_asset(&curves);
@@ -4388,7 +4417,8 @@ impl Renderer {
             let tex = text::internal(name, "_hinted");
             if up.resized {
                 let a = &bitmaps.atlas;
-                self.set_asset(&tex, a.width, a.height, 4, false, AssetData::U8(&a.texels))?;
+                let data = AssetData::U8(&a.texels);
+                self.put_asset(&tex, a.width, a.height, 4, ffi::GHEE_FILTER_NEAREST, data)?;
                 self.scene_asset(&tex);
                 self.bind_asset(drawn.batch, &text::internal(GLSL_NAME, "_hinted"), &tex)?;
             } else {
@@ -6436,9 +6466,9 @@ mod tests {
         }";
         let ghee = "void main() {
             vec4 here = texture2D(iChannel0, uv);
-            vec2 q = floor(gl_FragCoord.xy / 4.0) - vec2(0.0, 1.0);
+            vec2 q = floor(gl_FragCoord.xy / 4.0) + vec2(0.0, 1.0);
             vec4 up = texture2D(iChannel0, (q + 0.5) / iChannelResolution[0].xy);
-            vec4 last = texture2D(iChannel1, uv - vec2(0.0, 1.0) / iResolution.xy);
+            vec4 last = texture2D(iChannel1, uv + vec2(0.0, 1.0) / iResolution.xy);
             float t = 1.0 - 2.0 / (exp(2.0 * (2.0 * last.b + here.b)) + 1.0);
             float odd = mod(floor(gl_FragCoord.x), 2.0);
             gl_FragColor = vec4(mix(here.r, 1.0 - here.r, odd), up.g, t * 0.9, 1.0);
@@ -6454,8 +6484,8 @@ mod tests {
             frames.push(r.render(None).unwrap().to_vec());
         }
         let (got, want) = (&frames[0], &frames[1]);
-        assert!(px(want, W, 0, 4, 1) + 100.0 < px(want, W, 0, H - 4, 1));
-        assert!(px(want, W, 0, 0, 2) > 100.0 && px(want, W, 0, H - 1, 2) < 100.0);
+        assert!(px(want, W, 0, H - 4, 1) + 100.0 < px(want, W, 0, 4, 1));
+        assert!(px(want, W, 0, H - 1, 2) > 100.0 && px(want, W, 0, 0, 2) < 100.0);
         for (k, (a, b)) in got.iter().zip(want).enumerate() {
             let at = k / COMPONENTS;
             assert!(
@@ -8112,6 +8142,30 @@ mod tests {
         assert_eq!(r.render(None).unwrap(), before);
     }
 
+    /// A grid fed top row first reads the right way up through `uv`, y up:
+    /// its first value at the top left of the frame.
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_grid_read_through_uv_puts_its_first_row_on_top() {
+        let (_g, mut r) = gpu();
+        let sc = scene_of(json!([{
+            "name": "main",
+            "arrays": [{"name": "mask", "size": [2, 2]}],
+            "fragment": "void main(){ gl_FragColor = vec4(vec3(mask_sample2(uv)), 1.0); }",
+        }]));
+        for shader_lerp in [false, true] {
+            r.shader_lerp = shader_lerp;
+            assert_eq!(r.setup(&sc).unwrap(), "");
+            r.set_time(Some(0.0));
+            let mut provider = |_: &str, _: ArraySize| Feed::Data(vec![1.0, 0.0, 0.0, 0.0]);
+            let f = r.render(Some(&mut provider)).unwrap().to_vec();
+            assert!(px(&f, W, 0, 0, 0) > 250.0, "{shader_lerp}");
+            for (x, y) in [(W - 1, 0), (0, H - 1), (W - 1, H - 1)] {
+                assert!(px(&f, W, x, y, 0) < 5.0, "{shader_lerp} at ({x}, {y})");
+            }
+        }
+    }
+
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_short_2d_feed_is_zero_padded_and_a_long_1d_one_is_cut() {
@@ -8121,7 +8175,7 @@ mod tests {
         let sc = scene_of(json!([{
             "name": "main",
             "arrays": [{"name": "mask", "size": [2, 2]}, {"name": "vals", "size": 2}],
-            "fragment": "void main(){ gl_FragColor = vec4(mask_sample2(vec2(0.75, 0.75)), \
+            "fragment": "void main(){ gl_FragColor = vec4(mask_sample2(vec2(0.75, 0.25)), \
                      vals_at(1), 0.0, 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
@@ -8376,11 +8430,11 @@ mod tests {
     fn sample2_matches_bilinear() {
         // _sample2 reads points mid-texel in one axis, in both, and in neither.
         let (_g, mut r) = gpu();
-        let m: Vec<f32> = vec![0.0, 1.0, 0.5, 0.25]; // A 2x2 mask, indexed [y][x].
+        let m: Vec<f32> = vec![0.0, 1.0, 0.5, 0.25]; // A 2x2 mask, the top row first.
         let reads = [
             ((0.5, 0.5), 0.4375),             // The centre reads all four texels.
             ((0.25, 0.5), (0.0 + 0.5) / 2.0), // Column 0, between the rows.
-            ((0.5, 0.25), (0.0 + 1.0) / 2.0), // Row 0, between the columns.
+            ((0.5, 0.75), (0.0 + 1.0) / 2.0), // Row 0, between the columns.
         ];
         for ((uv, want), shader_lerp) in reads.iter().flat_map(|c| [(*c, false), (*c, true)]) {
             r.shader_lerp = shader_lerp;
@@ -8899,8 +8953,8 @@ mod tests {
         let sc = scene_of(json!([{
             "name": "main",
             "arrays": [{"name": "mask", "size": [2, 2]}, {"name": "vals", "size": 3}],
-            "fragment": "void main(){ gl_FragColor = vec4(mask_sample2(vec2(0.25, 0.25)), \
-                     mask_sample2(vec2(0.75, 0.75)), vals_at(2), 1.0); }",
+            "fragment": "void main(){ gl_FragColor = vec4(mask_sample2(vec2(0.25, 0.75)), \
+                     mask_sample2(vec2(0.75, 0.25)), vals_at(2), 1.0); }",
         }]));
         assert_eq!(r.setup(&sc).unwrap(), "");
         r.set_time(Some(0.0));
@@ -8975,7 +9029,7 @@ mod tests {
     const PRECISION: &str = "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\n\
         precision highp float;\n#else\nprecision mediump float;\n#endif\n";
 
-    /// ghee_a0.xy is the vertex in pass pixels, y down like uv, and
+    /// ghee_a0.xy is the vertex in pass pixels, y down as a layer counts, and
     /// ghee_a1 the premultiplied colour.
     fn batch_vs(extra: &str) -> String {
         format!(
@@ -8984,7 +9038,7 @@ mod tests {
              varying vec4 v_color; varying vec2 v_px;\n{extra}\n\
              void main() {{\n\
                vec2 ndc = ghee_a0.xy / iResolution.xy * 2.0 - 1.0;\n\
-               gl_Position = vec4(ndc.x, ndc.y * ghee_vflip, 0.0, 1.0);\n\
+               gl_Position = vec4(ndc.x, -ndc.y * ghee_vflip, 0.0, 1.0);\n\
                v_color = ghee_a1; v_px = ghee_a0.xy;\n\
              }}"
         )
@@ -9063,11 +9117,11 @@ mod tests {
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
     fn a_batch_lands_with_rows_counted_like_v_tex_coord() {
-        // The pass paints the top rows, uv.y < 0.25, red. The batch
-        // covers the same rows by pixel and adds green.
+        // The pass paints the top rows, uv.y > 0.75, red. The batch
+        // covers the same rows by pixel, y down, and adds green.
         let (_g, mut r) = gpu();
         let sc = scene_of(json!([{"name": "main", "fragment":
-            "void main(){ gl_FragColor = vec4(uv.y < 0.25 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"}]));
+            "void main(){ gl_FragColor = vec4(uv.y > 0.75 ? 1.0 : 0.0, 0.0, 0.0, 1.0); }"}]));
         assert_eq!(
             r.setup_batches(&sc, &[batch("main", PLAIN_FS, Blend::Add)])
                 .unwrap(),
@@ -9532,7 +9586,7 @@ mod tests {
             "{PRECISION}{attributes}\
              uniform vec3 iResolution; uniform float ghee_vflip; varying vec4 v_color;\n\
              void main() {{ vec2 ndc = ghee_a0.xy / iResolution.xy * 2.0 - 1.0;\n\
-               gl_Position = vec4(ndc.x, ndc.y * ghee_vflip, 0.0, 1.0);\n\
+               gl_Position = vec4(ndc.x, -ndc.y * ghee_vflip, 0.0, 1.0);\n\
                v_color = vec4(ghee_a1.x + ghee_a5.x, ghee_a2.y + ghee_a6.y, ghee_a3.z + ghee_a7.z,\n\
                               ghee_a4.w); }}"
         );
@@ -11342,7 +11396,8 @@ mod tests {
 
     /// Each pixel of the scene holds its column in red and its row from the
     /// top in green, which read back exactly.
-    const POSITION: &str = "void main(){ vec2 p = floor(uv * iResolution.xy); \
+    const POSITION: &str = "void main(){ \
+        vec2 p = floor(vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y)); \
         gl_FragColor = vec4(p / 255.0, 0.0, 1.0); }";
 
     /// The frame's pixel (x, y) of a w x h frame shows the scene pixel that a
@@ -11414,7 +11469,7 @@ mod tests {
             );
             let f = r.render(None).unwrap().to_vec();
             assert_pixels(&f, w, h, p, |x, y| {
-                [(x % 256) as f64, (y % 256) as f64, 0.0]
+                [(x % 256) as f64, ((h - 1 - y) % 256) as f64, 0.0]
             });
         }
     }
@@ -11492,6 +11547,7 @@ mod tests {
             f = r.render(None).unwrap().to_vec();
         }
         assert_pixels(&f, w, h, "uv", |x, y| {
+            let y = h - 1 - y;
             [
                 (x % 256) as f64,
                 (y % 256) as f64,

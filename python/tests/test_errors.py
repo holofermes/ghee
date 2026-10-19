@@ -107,7 +107,7 @@ def test_a_font_that_is_nowhere_draws_error_boxes(tmp_path, monkeypatch, capfd):
             {
                 "name": "main",
                 "fragment": (
-                    "void main(){ vec2 px = floor(uv * iResolution.xy) + 0.5;"
+                    "void main(){ vec2 px = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y);"
                     " gl_FragColor = vec4(vec3(words_cover(px / 16.0, 16.0)), 1.0); }"
                 ),
                 "layers": [
@@ -137,7 +137,7 @@ WIRE_WORDS = """#!{python}
 import ghee
 
 CODE = (
-    "void main(){{ vec2 px = floor(uv * iResolution.xy) + 0.5;"
+    "void main(){{ vec2 px = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y);"
     " gl_FragColor = vec4(vec3(words_cover(px / 12.0, 12.0)), 1.0); }}"
 )
 

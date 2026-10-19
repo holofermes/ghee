@@ -751,7 +751,7 @@ pub(crate) const VERTEX_MAIN: &str = r#"    float code = ghee_a1.x;
     ghee_v2 = ghee_a2;
     ghee_v3 = ghee_a3;
     vec2 ghee_tc = at / iResolution.xy;
-    gl_Position = vec4((ghee_tc * 2.0 - 1.0) * vec2(1.0, ghee_vflip), 0.0, 1.0);
+    gl_Position = vec4((ghee_tc * 2.0 - 1.0) * vec2(1.0, -ghee_vflip), 0.0, 1.0);
 "#;
 
 /// The varyings of the fragment shader of every shape.

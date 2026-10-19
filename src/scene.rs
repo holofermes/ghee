@@ -1223,7 +1223,7 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
     if let ArraySize::Grid(w, h) = a.size {
         if hw_linear {
             return vec![format!(
-                "float {n}_sample2(vec2 p){{ return texture2D({n}_tex, p).r; }}"
+                "float {n}_sample2(vec2 p){{ return texture2D({n}_tex, vec2(p.x, 1.0 - p.y)).r; }}"
             )];
         }
         return vec![
@@ -1233,7 +1233,7 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
                 py_float(w as f64),
                 py_float(h as f64)
             ),
-            "  vec2 x = clamp(p * dim - 0.5, vec2(0.0), dim - 1.0);".to_string(),
+            "  vec2 x = clamp(vec2(p.x, 1.0 - p.y) * dim - 0.5, vec2(0.0), dim - 1.0);".to_string(),
             "  vec2 i = vec2(ivec2(x));".to_string(),
             "  vec2 lo = (i + 0.5) / dim;".to_string(),
             "  vec2 hi = lo + 1.0 / dim;".to_string(),
@@ -1962,18 +1962,20 @@ impl Pass {
                 "vec2 uv;",
                 "vec4 ghee_fragcoord;",
                 // VC4 interpolates a varying up to a tenth of a pixel off the
-                // pixel centre, and puts gl_FragCoord.xy on the pixel's top
-                // left corner in the buffer's row order, which the window
-                // surface turns upside down. Flipped to that order, the floor
-                // of gl_FragCoord is the pixel on every GPU. float(int(x)) is
-                // that floor for x >= 0, in 2 VC4 instructions to floor's 5.
+                // pixel centre, and puts gl_FragCoord.xy on a corner of the
+                // pixel. ghee_yflip turns gl_FragCoord.y into the picture's
+                // rows, y up, with the corner inside the pixel, so its floor
+                // is the pixel on every GPU. float(int(x)) is that floor for
+                // x >= 0, in 2 VC4 instructions to floor's 5. A pass drawn
+                // mirrored takes -1 in ghee_yflip.x, which turns dFdy back.
                 "void ghee_centre() {",
                 "  float y = gl_FragCoord.y * ghee_yflip.x + ghee_yflip.y;",
                 "  vec2 p = vec2(ivec2(gl_FragCoord.x, y)) + 0.5;",
-                "  ghee_fragcoord = vec4(p, 0.0, 1.0);",
+                "  ghee_fragcoord = vec4(p, gl_FragCoord.zw);",
                 "  uv = p * ghee_pixel;",
                 "}",
                 "#define gl_FragCoord ghee_fragcoord",
+                "#define dFdy(p) (ghee_yflip.x * dFdy(p))",
             ]
             .map(str::to_string),
         );
@@ -2140,8 +2142,7 @@ fn with_main(version: Glsl, mut l: Vec<String>, body: &str) -> String {
             Glsl::Es300 => "ghee_colour",
         };
         return format!(
-            "{}\n\n{body}\nvoid main() {{ ghee_centre(); \
-             mainImage({out}, vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y)); }}",
+            "{}\n\n{body}\nvoid main() {{ ghee_centre(); mainImage({out}, gl_FragCoord.xy); }}",
             l.join("\n")
         );
     }
@@ -2152,39 +2153,14 @@ fn with_main(version: Glsl, mut l: Vec<String>, body: &str) -> String {
     )
 }
 
-/// The GLSL that a pass written for Shadertoy reads beside the preamble: the
-/// texture reads with y up, through ghee_up. GLSL ES 3.00 adds the colour
-/// that mainImage writes, and its other reads by position.
+/// The GLSL that a pass written for Shadertoy reads beside the preamble:
+/// `texture` in GLSL ES 1.00, and the colour that mainImage writes in GLSL
+/// ES 3.00.
 fn shadertoy_lines(version: Glsl) -> Vec<String> {
-    let mut l: Vec<&str> = Vec::new();
-    if version == Glsl::Es300 {
-        l.push("out vec4 ghee_colour;");
+    match version {
+        Glsl::Es100 => vec!["#define texture texture2D".to_string()],
+        Glsl::Es300 => vec!["out vec4 ghee_colour;".to_string()],
     }
-    l.extend([
-        "vec2 ghee_up(vec2 p) { return vec2(p.x, 1.0 - p.y); }",
-        "vec4 ghee_texture(sampler2D s, vec2 p) { return texture2D(s, ghee_up(p)); }",
-        "vec4 ghee_texture(sampler2D s, vec2 p, float bias) {",
-        "  return texture2D(s, ghee_up(p), bias);",
-        "}",
-        "#define texture ghee_texture",
-    ]);
-    if version == Glsl::Es300 {
-        l.extend([
-            "vec4 ghee_texture_lod(sampler2D s, vec2 p, float lod) {",
-            "  return textureLod(s, ghee_up(p), lod);",
-            "}",
-            "#define textureLod ghee_texture_lod",
-            "vec4 ghee_texture_grad(sampler2D s, vec2 p, vec2 dx, vec2 dy) {",
-            "  return textureGrad(s, ghee_up(p), dx * vec2(1.0, -1.0), dy * vec2(1.0, -1.0));",
-            "}",
-            "#define textureGrad ghee_texture_grad",
-            "vec4 ghee_fetch(sampler2D s, ivec2 p, int lod) {",
-            "  return texelFetch(s, ivec2(p.x, textureSize(s, lod).y - 1 - p.y), lod);",
-            "}",
-            "#define texelFetch ghee_fetch",
-        ]);
-    }
-    l.into_iter().map(str::to_string).collect()
 }
 
 /// True when `glsl` names the coverage reader of text layer `name`. A reader

@@ -90,10 +90,10 @@ struct mp_use {
 struct mp_locs {
     GLint res;                           // iResolution, which a draw sets: a batch's program may serve passes of two sizes
     GLint pixel;                         // ghee_pixel, 1 / iResolution.xy
-    GLint yflip;                         // ghee_yflip, scale and offset from gl_FragCoord.y to the buffer's row order
+    GLint yflip;                         // ghee_yflip, scale and offset from gl_FragCoord.y to the picture's rows, y up
     GLint time, dt, frame;
     GLint chan_res;                      // iChannelResolution, the size of each channel's source, which a draw sets
-    GLint vflip;                         // ghee_vflip of vertex_shader_source, -1 to draw into the window surface
+    GLint vflip;                         // ghee_vflip of vertex_shader_source, -1 to draw into a lent scanout buffer
     GLint visible;                       // VISIBLE_UNIFORM
     GLint chan[MP_MAX_CHANNELS];
     GLint data[MP_MAX_DATATEX];
@@ -119,10 +119,10 @@ struct mp_prog {
     char *vertex, *fragment;
     int holders;
     int loaded;                          // the id of the batch whose values it holds, 0 for none
-    // The batch, flip and bind_epoch of the last full mp_bind, whose sizes
+    // The batch, target and bind_epoch of the last full mp_bind, whose sizes
     // and texture units the program still holds. bound_batch 0 for none.
     int bound_batch;
-    float bound_vflip;
+    int bound_into;
     unsigned bound_epoch;
 };
 
@@ -331,7 +331,7 @@ struct GheeScene {
     uint64_t flip_queued_frame;  // flip_queued's number among them
     uint64_t taken;              // the number of the latest frame that the display took
     GLuint blit_prog;
-    GLint blit_sampler, blit_flip, blit_opaque, blit_turn, blit_shift;
+    GLint blit_sampler, blit_opaque, blit_turn, blit_shift;
     GLuint preview_fbo, preview_tex;   // small FBO for a cheap downscaled readback
     int preview_w, preview_h;
     // A batch below opacity 1 draws into the fade buffer, as large as the
@@ -373,13 +373,15 @@ struct GheeScene {
     bool error_is_compile;               // last_error is a GLSL compile or link log
 };
 
+// Where a pass draws: its own buffer, the window surface, or a lent scanout
+// buffer.
+enum { INTO_BUFFER, INTO_WINDOW, INTO_SCANOUT };
+
 // The vertex shader of every pass's full-screen quad, and of the present
-// blit. ghee_vflip = -1 mirrors the quad in y, for a pass that draws straight
-// into the window surface, which Mesa stores top row first. A lent scanout
-// buffer is an FBO and keeps GL's row order, the order of the readback, so a
-// pass draws into it unmirrored. uv stays as it is either way, and a pass's
-// preamble turns gl_FragCoord.y by ghee_yflip, so a pass's own GLSL reads the
-// same coordinates.
+// blit. A pass's buffer stores the picture's bottom row first, GL's row
+// order. A lent scanout buffer is an FBO that the card reads top row first,
+// so a pass that draws straight into it takes ghee_vflip = -1, which mirrors
+// the quad in y, and its preamble turns gl_FragCoord.y back by ghee_yflip.
 #define QUAD_MAIN \
     "uniform float ghee_vflip;" \
     "void main() {" \
@@ -402,21 +404,17 @@ static const char *vertex_shader_es3_source =
     "out vec2 uv;"
     QUAD_MAIN;
 
-// Present blit: sample the final pass texture onto the scanout target. flipY
-// mirrors it for the window surface, which Mesa stores top row first, `turn`
-// and `shift` map the target's uv onto the frame's, and opaque 1 writes
-// alpha 1.
+// Blit: sample the final pass texture onto a target. `turn` and `shift` map
+// the target's uv onto the texture's, and opaque 1 writes alpha 1.
 static const char *blit_fragment_source =
     "#version 100\n"
     "precision mediump float;"
     "varying vec2 uv;"
     "uniform sampler2D tex;"
-    "uniform float flipY;"
     "uniform float opaque;"
     "uniform mat2 turn;"
     "uniform vec2 shift;"
-    "void main() { vec2 at = vec2(uv.x, mix(uv.y, 1.0 - uv.y, flipY));"
-    " vec4 c = texture2D(tex, turn * at + shift);"
+    "void main() { vec4 c = texture2D(tex, turn * uv + shift);"
     " gl_FragColor = vec4(c.rgb, max(c.a, opaque)); }";
 
 // Lay the fade buffer on a pass at `opacity`: `scale` maps the pass's uv
@@ -430,10 +428,9 @@ static const char *fade_fragment_source =
     "uniform float opacity;"
     "void main() { gl_FragColor = texture2D(tex, uv * scale) * opacity; }";
 
-// Each quarter turn clockwise as the blit's `turn`, column-major, then its
-// `shift`: the target's uv o samples the frame at turn * o + shift, both with
-// y down from the top row. No turn multiplies by 1 and adds 0, which leaves
-// every uv exact.
+// Each quarter turn clockwise as a matrix, column-major, then its shift: the
+// target's uv o samples the frame at turn * o + shift, both with y down from
+// the top row.
 static const GLfloat TURNS[4][6] = {
     { 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f },
     { 0.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f },
@@ -1601,8 +1598,8 @@ static void mp_forget_asset(struct mp_locs *loc, int a) {
 }
 
 // Resolve the locations of a committed program that draws into a w x h buffer,
-// and set its iResolution, its ghee_pixel, its iOutputResolution and an
-// unflipped vflip and ghee_yflip.
+// and set its iResolution, its ghee_pixel, its iOutputResolution, and its
+// ghee_vflip and ghee_yflip for a pass's own buffer.
 // Program 0, a pass with no quad, has no uniforms.
 static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *loc) {
     loc->res = loc->pixel = loc->yflip = loc->time = loc->dt = loc->frame = loc->chan_res =
@@ -1632,7 +1629,7 @@ static void mp_resolve(GheeScene *g, GLuint prog, int w, int h, struct mp_locs *
     loc->vflip = glGetUniformLocation(prog, "ghee_vflip");
     if (loc->vflip >= 0) glUniform1f(loc->vflip, 1.0f);
     loc->yflip = glGetUniformLocation(prog, "ghee_yflip");
-    if (loc->yflip >= 0) glUniform2f(loc->yflip, 1.0f, 0.0f);
+    if (loc->yflip >= 0) glUniform2f(loc->yflip, 1.0f, 0.25f);
     loc->visible = glGetUniformLocation(prog, VISIBLE_UNIFORM);
     g->bind_epoch++;
 }
@@ -2557,13 +2554,20 @@ static float elapsed_seconds(GheeScene *g) {
 // the program in use, and point its samplers at the units: the pass's channels,
 // then its arrays, then the assets the program samples. `bind` also binds the
 // pass's channel and array textures, which then stay bound for its batches.
-static void mp_bind(GheeScene *g, int p, const struct mp_locs *loc, float vflip,
+static void mp_bind(GheeScene *g, int p, const struct mp_locs *loc, int into,
                     float elapsed, bool bind) {
     if (loc->res >= 0) glUniform3f(loc->res, (float)g->mp_w[p], (float)g->mp_h[p], 1.0f);
     if (loc->pixel >= 0)
         glUniform2f(loc->pixel, 1.0f / (float)g->mp_w[p], 1.0f / (float)g->mp_h[p]);
-    if (loc->vflip >= 0) glUniform1f(loc->vflip, vflip);
-    if (loc->yflip >= 0) glUniform2f(loc->yflip, vflip, vflip < 0.0f ? (float)g->mp_h[p] : 0.0f);
+    if (loc->vflip >= 0) glUniform1f(loc->vflip, into == INTO_SCANOUT ? -1.0f : 1.0f);
+    if (loc->yflip >= 0) {
+        // VC4 puts gl_FragCoord on a corner of the pixel, the low one in a
+        // buffer and the high one in the window surface. Each offset puts
+        // either corner, and the centre, in the pixel whose floor it takes.
+        if (into == INTO_SCANOUT) glUniform2f(loc->yflip, -1.0f, (float)g->mp_h[p] - 0.25f);
+        else if (into == INTO_WINDOW) glUniform2f(loc->yflip, 1.0f, -0.25f);
+        else glUniform2f(loc->yflip, 1.0f, 0.25f);
+    }
     if (loc->time >= 0) glUniform1f(loc->time, elapsed);
     if (loc->dt >= 0) glUniform1f(loc->dt, g->dt);
     if (loc->frame >= 0) glUniform1i(loc->frame, g->frame);
@@ -2621,17 +2625,17 @@ static void mp_bind(GheeScene *g, int p, const struct mp_locs *loc, float vflip,
 // mp_bind() of batch `l` of pass p, its program in use. A program that this
 // batch bound last at this flip still holds its sizes and its texture units,
 // and takes the time and the asset textures alone.
-static void mp_bind_batch(GheeScene *g, int p, const struct mp_batch *l, float vflip, float elapsed) {
+static void mp_bind_batch(GheeScene *g, int p, const struct mp_batch *l, int into, float elapsed) {
     const struct mp_locs *loc = &l->loc;
     struct mp_prog *pr = NULL;
     for (int i = 0; i < g->mp_nprog && !pr; i++)
         if (g->mp_prog[i].program == l->program) pr = &g->mp_prog[i];
-    if (!pr || pr->bound_batch != l->id || pr->bound_vflip != vflip ||
+    if (!pr || pr->bound_batch != l->id || pr->bound_into != into ||
         pr->bound_epoch != g->bind_epoch) {
-        mp_bind(g, p, loc, vflip, elapsed, false);
+        mp_bind(g, p, loc, into, elapsed, false);
         if (pr) {
             pr->bound_batch = l->id;
-            pr->bound_vflip = vflip;
+            pr->bound_into = into;
             pr->bound_epoch = g->bind_epoch;
         }
         return;
@@ -2759,7 +2763,7 @@ static bool ensure_fade(GheeScene *g, int w, int h) {
 // pass's quad. A batch below opacity 1 draws into the fade buffer, each
 // quad over the ones before it, and the buffer then lands on the target at
 // the batch's opacity by its blend.
-static void mp_draw_batches(GheeScene *g, int p, GLuint target, float vflip, float elapsed) {
+static void mp_draw_batches(GheeScene *g, int p, GLuint target, int into, float elapsed) {
     bool drew = false;
     for (int k = 0; k < g->mp_nbatch; k++) {
         struct mp_batch *l = &g->mp_batch[g->mp_order[k]];
@@ -2787,17 +2791,17 @@ static void mp_draw_batches(GheeScene *g, int p, GLuint target, float vflip, flo
             glClear(GL_COLOR_BUFFER_BIT);
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             // The fade buffer keeps GL's row order, as a pass's buffer does.
-            mp_bind_batch(g, p, l, 1.0f, elapsed);
+            mp_bind_batch(g, p, l, INTO_BUFFER, elapsed);
             mp_blend(GHEE_BLEND_NORMAL);
         } else {
-            mp_bind_batch(g, p, l, vflip, elapsed);
+            mp_bind_batch(g, p, l, into, elapsed);
             mp_blend(l->blend);
         }
         mp_draw_quads(l);
         if (alone) {
             glBindFramebuffer(GL_FRAMEBUFFER, target);
             glUseProgram(g->fade_prog);
-            glUniform1f(g->fade_vflip, vflip);
+            glUniform1f(g->fade_vflip, into == INTO_SCANOUT ? -1.0f : 1.0f);
             glUniform2f(g->fade_scale, (float)g->mp_w[p] / (float)g->fade_w,
                         (float)g->mp_h[p] / (float)g->fade_h);
             glUniform1f(g->fade_opacity, l->opacity);
@@ -2820,27 +2824,29 @@ static void mp_draw_batches(GheeScene *g, int p, GLuint target, float vflip, flo
 }
 
 // Render every pass into its buffer, for the readback and for the present.
-// direct_last draws the last pass straight into the buffer that scans out,
-// in place of its own buffer, mirrored by ghee_vflip when that buffer is the
-// window surface. The caller sets it only when nothing reads the last pass
-// this frame, neither a channel nor a preview.
+// direct_last draws the last pass straight into scan_fbo, in place of its own
+// buffer, mirrored when that is a lent scanout buffer. The caller sets it
+// only when nothing reads the last pass this frame, neither a channel nor a
+// preview.
 static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
     for (int p = 0; p < g->mp_count; p++) {
         const bool direct = direct_last && p == g->mp_count - 1;
         const GLuint target = direct ? g->scan_fbo : g->mp_fbo[p][g->mp_write[p]];
+        int into = INTO_BUFFER;
+        if (direct && !target) into = INTO_WINDOW;
+        else if (direct && g->display_mode) into = INTO_SCANOUT;
         glBindFramebuffer(GL_FRAMEBUFFER, target);
         // The per-pass buffer size. The output pass is always full-size (the caller
         // enforces that), so the direct scanout draw still gets the display
         // viewport.
         glViewport(0, 0, g->mp_w[p], g->mp_h[p]);
-        const float vflip = direct && !target ? -1.0f : 1.0f;
         if (g->mp_program[p]) {
             // The fullscreen quad overwrites every pixel, so the clear is invisible, and
             // on tiled GPUs (VC4) it flags the target as not-loaded, skipping a
             // full-frame tile read from memory before the draw.
             glClear(GL_COLOR_BUFFER_BIT);
             glUseProgram(g->mp_program[p]);
-            mp_bind(g, p, &g->mp_loc[p], vflip, elapsed, true);
+            mp_bind(g, p, &g->mp_loc[p], into, elapsed, true);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         } else {
             // A pass of batches alone draws them over transparent black. The
@@ -2848,9 +2854,9 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
             glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
             glClear(GL_COLOR_BUFFER_BIT);
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-            mp_bind(g, p, &g->mp_loc[p], vflip, elapsed, true);
+            mp_bind(g, p, &g->mp_loc[p], into, elapsed, true);
         }
-        mp_draw_batches(g, p, target, vflip, elapsed);
+        mp_draw_batches(g, p, target, into, elapsed);
         if (g->mp_filter[p] == GHEE_FILTER_MIPMAP && !direct) {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, g->mp_tex[p][g->mp_write[p]]);
@@ -2864,23 +2870,38 @@ static void render_passes(GheeScene *g, float elapsed, bool direct_last) {
 
 // Read a rectangle back as `components` bytes a pixel. A GL that cannot hand
 // back RGB reads RGBA into scratch, and the copy drops every fourth byte.
-static void read_pixels(GheeScene *g, int w, int h, int components, uint8_t *out) {
+// `out` takes the top row first, and the bound buffer holds it last when
+// bottom_first.
+static void read_pixels(GheeScene *g, int w, int h, int components, bool bottom_first,
+                        uint8_t *out) {
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    if (components != 3 || g->reads_rgb) {
-        glReadPixels(0, 0, w, h, components == 3 ? GL_RGB : GL_RGBA, GL_UNSIGNED_BYTE, out);
-        return;
-    }
-    const size_t want = (size_t)w * h * 4;
+    const bool direct = components != 3 || g->reads_rgb;
+    const size_t want = direct ? (bottom_first ? (size_t)w * components : 0) : (size_t)w * h * 4;
     if (g->rgba_scratch_size < want) {
         uint8_t *grown = realloc(g->rgba_scratch, want);
         if (!grown) { set_error(g, "cannot allocate a %dx%d readback buffer", w, h); return; }
         g->rgba_scratch = grown;
         g->rgba_scratch_size = want;
     }
+    if (direct) {
+        glReadPixels(0, 0, w, h, components == 3 ? GL_RGB : GL_RGBA, GL_UNSIGNED_BYTE, out);
+        if (!bottom_first) return;
+        const size_t row = (size_t)w * components;
+        for (int y = 0; y < h / 2; y++) {
+            uint8_t *a = out + (size_t)y * row, *b = out + (size_t)(h - 1 - y) * row;
+            memcpy(g->rgba_scratch, a, row);
+            memcpy(a, b, row);
+            memcpy(b, g->rgba_scratch, row);
+        }
+        return;
+    }
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, g->rgba_scratch);
-    const uint8_t *src = g->rgba_scratch;
-    for (size_t i = 0, n = (size_t)w * h; i < n; i++, src += 4, out += 3) {
-        out[0] = src[0]; out[1] = src[1]; out[2] = src[2];
+    for (int y = 0; y < h; y++) {
+        const uint8_t *src = g->rgba_scratch + (size_t)(bottom_first ? h - 1 - y : y) * w * 4;
+        uint8_t *dst = out + (size_t)y * w * 3;
+        for (int x = 0; x < w; x++, src += 4, dst += 3) {
+            dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2];
+        }
     }
 }
 
@@ -3263,24 +3284,30 @@ static bool ensure_blit(GheeScene *g) {
         return false;
     }
     g->blit_sampler = glGetUniformLocation(g->blit_prog, "tex");
-    g->blit_flip = glGetUniformLocation(g->blit_prog, "flipY");
     g->blit_opaque = glGetUniformLocation(g->blit_prog, "opaque");
     g->blit_turn = glGetUniformLocation(g->blit_prog, "turn");
     g->blit_shift = glGetUniformLocation(g->blit_prog, "shift");
-    glUseProgram(g->blit_prog);   // ghee_vflip stays 1: the blit mirrors with flipY in its fragment shader
+    glUseProgram(g->blit_prog);
     const GLint bvf = glGetUniformLocation(g->blit_prog, "ghee_vflip");
     if (bvf >= 0) glUniform1f(bvf, 1.0f);
     return true;
 }
 
 // Set the blit program up to sample `tex`, the frame, turned as the output
-// takes it. flipY mirrors it for the window surface, and opaque 1 writes alpha 1.
-static void bind_blit(GheeScene *g, GLuint tex, float flipY, float opaque) {
+// takes it, into a target that stores its top row first when top_first, or
+// its bottom row first as GL does. opaque 1 writes alpha 1.
+static void bind_blit(GheeScene *g, GLuint tex, bool top_first, float opaque) {
+    // The target's uv, turned y down, goes through TURNS onto the frame, y
+    // down, and then onto the texture, which holds the frame's bottom row
+    // first.
+    const GLfloat *t = TURNS[g->turn];
+    const GLfloat dy = top_first ? 1.0f : -1.0f, oy = top_first ? 0.0f : 1.0f;
+    const GLfloat turn[4] = { t[0], -t[1], t[2] * dy, -t[3] * dy };
+    const GLfloat shift[2] = { t[2] * oy + t[4], 1.0f - (t[3] * oy + t[5]) };
     glUseProgram(g->blit_prog);
-    glUniform1f(g->blit_flip, flipY);
     glUniform1f(g->blit_opaque, opaque);
-    glUniformMatrix2fv(g->blit_turn, 1, GL_FALSE, TURNS[g->turn]);
-    glUniform2fv(g->blit_shift, 1, TURNS[g->turn] + 4);
+    glUniformMatrix2fv(g->blit_turn, 1, GL_FALSE, turn);
+    glUniform2fv(g->blit_shift, 1, shift);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex);
     glUniform1i(g->blit_sampler, 0);
@@ -3340,10 +3367,9 @@ static void read_preview(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
     }
     glBindFramebuffer(GL_FRAMEBUFFER, g->preview_fbo);
     glViewport(0, 0, pw, ph);
-    // the preview matches glReadPixels orientation
-    bind_blit(g, g->mp_tex[last][g->mp_write[last]], 0.0f, g->keep_alpha ? 0.0f : 1.0f);
+    bind_blit(g, g->mp_tex[last][g->mp_write[last]], true, g->keep_alpha ? 0.0f : 1.0f);
     draw_blit(g, pw, ph);
-    read_pixels(g, pw, ph, g->components, buffer_rgb);
+    read_pixels(g, pw, ph, g->components, false, buffer_rgb);
 }
 
 // Blank the display, or light it again. Blanking stops the CRTC driving the
@@ -3413,7 +3439,7 @@ void ghee_mp_present(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         glBindFramebuffer(GL_FRAMEBUFFER, g->scan_fbo);
         glViewport(0, 0, g->out_w, g->out_h);
         glClear(GL_COLOR_BUFFER_BIT);   // skip the tile load (see render_passes)
-        bind_blit(g, g->mp_tex[last][g->mp_write[last]], g->lent_count ? 0.0f : 1.0f, 1.0f);
+        bind_blit(g, g->mp_tex[last][g->mp_write[last]], g->lent_count > 0, 1.0f);
         draw_blit(g, g->out_w, g->out_h);
     }
     if (g->lent_count) {
@@ -3581,8 +3607,9 @@ static bool reads_linear(GheeScene *g) {
     return ensure_linear(g);
 }
 
-// Copy the frame out of the linear buffer, as read_pixels reads the last
-// pass's buffer. false with the error set when the CPU cannot map it.
+// Copy the frame out of the linear buffer, which holds it bottom row first,
+// as read_pixels reads the last pass's buffer. false with the error set when
+// the CPU cannot map it.
 static bool read_linear(GheeScene *g, uint8_t *out) {
     uint32_t stride = 0;
     void *map = NULL;
@@ -3597,7 +3624,7 @@ static bool read_linear(GheeScene *g, uint8_t *out) {
     // A last pass that stores no alpha reads back 255 from its RGB buffer.
     const bool opaque = !(g->mp_alpha[g->mp_count - 1] && g->keep_alpha);
     for (int y = 0; y < h; y++) {
-        const uint8_t *row = src + (size_t)y * stride;
+        const uint8_t *row = src + (size_t)(h - 1 - y) * stride;
         uint8_t *dst = out + (size_t)y * w * c;
         if (c == 4) {
             memcpy(dst, row, (size_t)w * 4);
@@ -3626,7 +3653,7 @@ static void lin_restore(GheeScene *g) {
     glBindFramebuffer(GL_FRAMEBUFFER, g->mp_fbo[last][1 - g->mp_write[last]]);
     glViewport(0, 0, g->out_w, g->out_h);
     glDisable(GL_BLEND);
-    bind_blit(g, g->lin_tex, 0.0f, 0.0f);
+    bind_blit(g, g->lin_tex, false, 0.0f);
     draw_blit(g, g->out_w, g->out_h);
 }
 
@@ -3660,7 +3687,7 @@ void ghee_mp_render(GheeScene *g, uint8_t *buffer_rgb, int pw, int ph) {
         read_preview(g, buffer_rgb, g->out_w, g->out_h);
     } else if (buffer_rgb) {
         glBindFramebuffer(GL_FRAMEBUFFER, g->mp_fbo[last][g->mp_write[last]]);
-        read_pixels(g, g->out_w, g->out_h, g->components, buffer_rgb);
+        read_pixels(g, g->out_w, g->out_h, g->components, true, buffer_rgb);
         // An RGB buffer reads back alpha 255 by itself. A final pass that
         // stores its alpha takes 255 here.
         if (g->components == 4 && g->mp_alpha[last] && !g->keep_alpha) {
@@ -3817,7 +3844,7 @@ void *ghee_i_egl_display(GheeScene *g) { return g->display; }
 void  ghee_i_make_current(GheeScene *g) { make_current(g); }
 void  ghee_i_error(GheeScene *g, const char *msg) { set_error(g, "%s", msg); }
 
-void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY) {
+void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h) {
     if (g->mp_count <= 0) { set_error(g, "blit: the scene has no passes"); return; }
     if (!ensure_blit(g)) return;
     const int last = g->mp_count - 1;
@@ -3825,7 +3852,7 @@ void ghee_i_blit_last(GheeScene *g, unsigned fbo, int w, int h, float flipY) {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, w, h);
     glClear(GL_COLOR_BUFFER_BIT);
-    bind_blit(g, g->mp_tex[last][buf], flipY, 1.0f);
+    bind_blit(g, g->mp_tex[last][buf], true, 1.0f);
     draw_blit(g, w, h);
 }
 

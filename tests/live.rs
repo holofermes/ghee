@@ -474,7 +474,7 @@ fn a_shader_reads_a_hidden_layers_words_as_a_shown_ones_and_its_new_words_at_onc
             {"name": "words", "fragment": BLACK, "layers": [
                 {"name": "t", "text": words, "font_size": 16, "visible": visible}]},
             {"name": "main", "fragment": "void main(){ float fs = 16.0; \
-                vec2 px = floor(uv * iResolution.xy) + 0.5; \
+                vec2 px = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y); \
                 vec2 p = (px - 0.5 * (iResolution.xy - t_size * fs)) / fs; \
                 gl_FragColor = vec4(vec3(t_cover(p, fs)), 1.0); }"},
         ]})

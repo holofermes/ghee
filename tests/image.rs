@@ -266,6 +266,38 @@ fn painted(
     out
 }
 
+/// A shader reads an image asset through `uv`, y up, the right way up: the
+/// file's top row at the top of the frame, as an image layer over the whole
+/// pass paints it.
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_shader_reads_an_image_asset_upright_through_uv_as_its_layer_paints_it() {
+    let dir = Dir::new("upright");
+    write_picture(dir.path());
+    let (_g, mut r) = gpu(4, 4);
+    let mut doc = image_scene(json!([]));
+    doc["passes"][0]["fragment"] = json!("void main(){ gl_FragColor = texture2D(pic_tex, uv); }");
+    let read = render(&mut r, &loaded(&doc, dir.path()));
+    let layered = render(
+        &mut r,
+        &loaded(
+            &image_scene(json!([{"name": "p", "image": "pic", "x": 0, "y": 0, "width": 4}])),
+            dir.path(),
+        ),
+    );
+    for (x, y) in (0..4).flat_map(|y| (0..4).map(move |x| (x, y))) {
+        let at = (y * 4 + x) * 4;
+        assert_eq!(
+            read[at..at + 3],
+            PICTURE[y / 2 * 2 + x / 2][..3],
+            "({x}, {y})"
+        );
+    }
+    let opaque =
+        |f: &[u8]| -> Vec<u8> { f.chunks(4).take(8).flat_map(|p| p[..3].to_vec()).collect() };
+    assert_eq!(opaque(&read), opaque(&layered));
+}
+
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn an_image_layer_paints_its_picture_where_its_keys_place_it() {

@@ -2540,7 +2540,7 @@ float ghee_NAME_glyph(float h, vec2 q, vec2 sz, float font_size) {
     return ghee_NAME_outline(h + 1.0, vec2(ghee_NAME_nb), q / sz * LATTICE, sz * (font_size / LATTICE));
 }
 // The coverage of the words at p, in em from the top left of the block, y
-// down like uv, drawn at font_size pixels per em.
+// down, drawn at font_size pixels per em.
 float NAME_cover(vec2 p, float font_size) {
     float cov = 0.0;
     vec2 at = vec2(p.x, NAME_size.y - p.y);

@@ -443,10 +443,8 @@ static int encode_common(GheeScene *g, GheeEncoder *e,
     }
     const int idx = e->freeidx[--e->nfree];
 
-    // flipY 0.0: an FBO's memory rows come out in glReadPixels order, which is
-    // what the codec consumes top-first (same as the preview readback, opposite
-    // of the scanout blit).
-    ghee_i_blit_last(g, e->in[idx].fbo, e->w, e->h, 0.0f);
+    // The codec reads an FBO's memory rows, GL's row 0 first, as the top.
+    ghee_i_blit_last(g, e->in[idx].fbo, e->w, e->h);
     // The full fence is REQUIRED: there is no implicit sync between V3D and
     // bcm2835-codec, so the VPU reads the dmabuf the moment it is queued.
     // glFlush is not enough, and the encoder captures half-blitted tiles at

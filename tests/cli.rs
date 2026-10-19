@@ -206,7 +206,7 @@ fn a_render_that_drops_an_effect_says_which_and_draws_on() {
 /// Each pixel of the scene holds its column in red and its row from the top
 /// in green.
 const POSITION: &str = r#"{"passes": [{"name": "main",
-    "fragment": "void main(){ vec2 p = floor(uv * iResolution.xy); gl_FragColor = vec4(p / 255.0, 0.0, 1.0); }"}]}"#;
+    "fragment": "void main(){ vec2 p = floor(vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y)); gl_FragColor = vec4(p / 255.0, 0.0, 1.0); }"}]}"#;
 
 /// The PNG's size and its RGBA rows, decoded by the png crate.
 fn decode(path: &Path) -> ((u32, u32), Vec<u8>) {

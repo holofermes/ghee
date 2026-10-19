@@ -493,6 +493,32 @@ fn broken_pipe(e: &anyhow::Error) -> bool {
     })
 }
 
+/// The reader of stdout went away: the render ends by SIGPIPE.
+#[derive(Debug)]
+struct Piped;
+
+impl std::fmt::Display for Piped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the reader of stdout closed the pipe")
+    }
+}
+
+impl std::error::Error for Piped {}
+
+/// End the process by SIGPIPE, as a filter ends when its reader goes away.
+/// Rust and Python start with SIGPIPE ignored, so its default action comes
+/// back first. Returns the status of a SIGPIPE that a handler took.
+fn die_by_sigpipe() -> i32 {
+    extern "C" {
+        fn signal(sig: std::ffi::c_int, handler: usize) -> usize;
+    }
+    const SIGPIPE: i32 = 13;
+    const SIG_DFL: usize = 0;
+    unsafe { signal(SIGPIPE, SIG_DFL) };
+    control::reraise(SIGPIPE);
+    128 + SIGPIPE
+}
+
 /// One render into as many sinks as the flags ask for.
 fn cmd_render(a: &Ns) -> Result<()> {
     render(a, None)
@@ -668,16 +694,15 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
         true => usage_now(engines.as_ref()),
         false => Usage::default(),
     };
-    let pipe = text(&a.output) == "-" || text(&a.h264) == "-";
-    let ran = match ran {
-        Err(e) if pipe && broken_pipe(&e) => Ok(()),
-        other => other,
-    };
     let mut closed = Ok(());
     for s in sink_list(&mut scanout, &mut file, &mut h264) {
         closed = closed.and(s.close());
     }
     r.close();
+    let pipe = text(&a.output) == "-" || text(&a.h264) == "-";
+    if pipe && (ran.as_ref().is_err_and(broken_pipe) || closed.as_ref().is_err_and(broken_pipe)) {
+        return Err(anyhow::Error::new(Piped));
+    }
     if a.control.signal().is_none() {
         ran?;
         closed?;
@@ -915,12 +940,12 @@ fn serve_stats() -> server::StatsHook {
     })
 }
 
-/// One line of a listing. A reader that closes the pipe ends the command,
-/// the way `ghee displays | head` does.
+/// One line of a listing. A reader that closes the pipe ends the command
+/// by SIGPIPE, the way `ghee displays | head` does.
 fn line(text: &str) {
     if let Err(e) = writeln!(stdout(), "{text}") {
         if e.kind() == std::io::ErrorKind::BrokenPipe {
-            std::process::exit(0);
+            std::process::exit(die_by_sigpipe());
         }
         report::fail("ghee", e.to_string());
         std::process::exit(1);
@@ -1686,12 +1711,16 @@ pub fn main(argv: Vec<String>) -> i32 {
 
 /// The exit status of a command that ended with `ran` under `control`: 1 for
 /// an error, which this prints. After SIGINT or SIGTERM this sends the
-/// signal again, and the process ends by it. 128 plus the signal's number is
-/// the status when a handler of the caller's takes it instead.
+/// signal again, and after a closed stdout SIGPIPE, and the process ends by
+/// it. 128 plus the signal's number is the status when a handler of the
+/// caller's takes it instead.
 fn status(control: &Control, ran: Result<()>) -> i32 {
     if let Some(sig) = control.signal() {
         control::reraise(sig);
         return 128 + sig;
+    }
+    if ran.as_ref().is_err_and(|e| e.is::<Piped>()) {
+        return die_by_sigpipe();
     }
     match ran {
         Ok(()) => 0,
@@ -1861,6 +1890,9 @@ pub fn direct(prog: &str, flags: &[String], here: Here, card: Option<Card>) -> R
     if let Some(sig) = a.control.signal() {
         control::reraise(sig);
         return Ok(0);
+    }
+    if ran.as_ref().is_err_and(|e| e.is::<Piped>()) {
+        return Ok(die_by_sigpipe());
     }
     ran.map(|()| 0)
 }

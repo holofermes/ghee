@@ -3903,6 +3903,7 @@ int ghee_display_renders_on(int card) {
     struct gbm_device *gbm = NULL;
     EGLDisplay dpy = EGL_NO_DISPLAY;
     EGLContext ctx = EGL_NO_CONTEXT;
+    const int hushed = hush_stderr();
     gbm = gbm_create_device(card);
     if (!gbm) goto out;
     dpy = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, gbm, NULL);
@@ -3927,5 +3928,6 @@ out:
     if (ctx != EGL_NO_CONTEXT) eglDestroyContext(dpy, ctx);
     if (dpy != EGL_NO_DISPLAY) eglTerminate(dpy);
     if (gbm) gbm_device_destroy(gbm);
+    unhush_stderr(hushed);
     return hw;
 }

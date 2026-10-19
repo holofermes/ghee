@@ -224,6 +224,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   of `None`. `set_param` raises ValueError for them.
 - A pass that holds GLSL ES 3.00 and lacks `#version 300 es` fails with the
   line to add, instead of the GPU's errors.
+- `--display kms` on an SPI or I2C panel no longer prints `MESA-LOADER:
+  failed to retrieve device information`.
 
 ## 0.4.0 - 2026-08-06
 

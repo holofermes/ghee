@@ -200,6 +200,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   instead of `localhost`.
 - ghee turns a display off when it lets go of it, instead of leaving it lit
   with the kernel's framebuffer.
+- A SIGTERM to a program with a display open through `ghee.open` turns the
+  display off and then ends the program by SIGTERM, unless the program
+  handles SIGTERM itself.
 - A Pi 5's SPI or I2C panel shows the frame that the GPU drew, instead of
   stale fragments of earlier frames.
 - ghee frees each scene's GPU buffers at a switch. A console on a Pi 5 ran

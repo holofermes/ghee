@@ -24,7 +24,10 @@ use std::thread::{self, ThreadId};
 use ghee::output::{unpremultiply, AlphaForm};
 use pyo3::exceptions::{PyImportError, PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyString, PyTuple};
+use pyo3::types::{
+    PyBool, PyBytes, PyCFunction, PyDict, PyFloat, PyString, PyTuple, PyWeakrefMethods,
+    PyWeakrefReference,
+};
 use serde_json::{Map, Value};
 
 use session::{Fault, Fed, Kind, Opening, Session, Source, StreamMax, Tick};
@@ -324,7 +327,7 @@ fn port_of(port: i64) -> PyResult<u16> {
 }
 
 /// A rendering scene, and the output it draws to.
-#[pyclass(module = "ghee")]
+#[pyclass(module = "ghee", weakref)]
 struct Handle {
     /// (width, height) of the frame: of pixels() and of a saved frame
     #[pyo3(get)]
@@ -332,6 +335,40 @@ struct Handle {
     held: Affine<Session>,
     /// What the screen's drawing keeps from one frame to the next.
     screen: Option<Py<draw::Screen>>,
+    /// The SIGTERM handler that _hold_sigterm() set, which close() takes
+    /// back.
+    sigterm: Option<Py<PyAny>>,
+}
+
+impl Handle {
+    /// Put SIGTERM back to its default, when the handler of _hold_sigterm()
+    /// still holds it.
+    fn let_go_sigterm(&mut self, py: Python<'_>) -> PyResult<()> {
+        let Some(handler) = self.sigterm.take() else {
+            return Ok(());
+        };
+        let signal = py.import("signal")?;
+        let term = signal.getattr("SIGTERM")?;
+        if signal
+            .call_method1("getsignal", (&term,))?
+            .is(handler.bind(py))
+        {
+            signal.call_method1("signal", (&term, signal.getattr("SIG_DFL")?))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        if self.sigterm.is_some() {
+            // Python sets a handler on its main thread alone, so a drop
+            // elsewhere leaves the handler, which finds no handle to close.
+            Python::attach(|py| {
+                let _ = self.let_go_sigterm(py);
+            });
+        }
+    }
 }
 
 impl Handle {
@@ -618,11 +655,55 @@ impl Handle {
     }
 
     /// Drop everything the handle holds. A second call is no error.
-    fn close(&mut self) -> PyResult<()> {
+    fn close(&mut self, py: Python<'_>) -> PyResult<()> {
         if let Some(mut session) = self.held.take()? {
             session.close();
         }
-        Ok(())
+        self.let_go_sigterm(py)
+    }
+
+    /// While the handle is open, a SIGTERM closes it, which turns its
+    /// display off, and then ends the program by SIGTERM. open() calls it for
+    /// a display. A SIGTERM that the program handles itself, and a handle
+    /// opened off the main thread, where Python sets no handler, keep
+    /// SIGTERM as it is.
+    fn _hold_sigterm(slf: &Bound<'_, Self>) -> PyResult<()> {
+        let py = slf.py();
+        let signal = py.import("signal")?;
+        let term = signal.getattr("SIGTERM")?;
+        if !signal
+            .call_method1("getsignal", (&term,))?
+            .is(&signal.getattr("SIG_DFL")?)
+        {
+            return Ok(());
+        }
+        let weak = PyWeakrefReference::new(slf)?.unbind();
+        let handler = PyCFunction::new_closure(
+            py,
+            None,
+            None,
+            move |args: &Bound<'_, PyTuple>, _: Option<&Bound<'_, PyDict>>| -> PyResult<()> {
+                let py = args.py();
+                if let Some(handle) = weak.bind(py).upgrade() {
+                    if let Ok(mut handle) = handle.cast::<Handle>()?.try_borrow_mut() {
+                        handle.close(py)?;
+                    }
+                }
+                let signal = py.import("signal")?;
+                let term = signal.getattr("SIGTERM")?;
+                signal.call_method1("signal", (&term, signal.getattr("SIG_DFL")?))?;
+                signal.call_method1("raise_signal", (&term,))?;
+                Ok(())
+            },
+        )?;
+        match signal.call_method1("signal", (&term, &handler)) {
+            Ok(_) => {
+                slf.borrow_mut().sigterm = Some(handler.into_any().unbind());
+                Ok(())
+            }
+            Err(e) if e.is_instance_of::<PyValueError>(py) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -630,8 +711,8 @@ impl Handle {
     }
 
     #[pyo3(signature = (*_args))]
-    fn __exit__(&mut self, _args: &Bound<'_, PyTuple>) -> PyResult<bool> {
-        self.close()?;
+    fn __exit__(&mut self, py: Python<'_>, _args: &Bound<'_, PyTuple>) -> PyResult<bool> {
+        self.close(py)?;
         Ok(false)
     }
 
@@ -696,6 +777,7 @@ impl Handle {
 ))]
 #[allow(clippy::too_many_arguments)]
 fn open(
+    py: Python<'_>,
     scene: Option<&Bound<'_, PyAny>>,
     display: Option<String>,
     opts: Option<&Bound<'_, PyAny>>,
@@ -711,7 +793,7 @@ fn open(
     alpha: Option<&Bound<'_, PyAny>>,
     base_dir: Option<PathBuf>,
     drop: bool,
-) -> PyResult<Handle> {
+) -> PyResult<Py<Handle>> {
     let alpha = alpha.map(alpha_of).transpose()?.flatten();
     let source = source_of(scene, base_dir)?;
     let serve = serve.map(bind_of).transpose()?;
@@ -736,6 +818,7 @@ fn open(
             ))
         }
     };
+    let shows = display.is_some();
     let session = Session::open(Opening {
         source,
         display,
@@ -752,11 +835,19 @@ fn open(
         drop,
     })
     .map_err(fault)?;
-    Ok(Handle {
-        size: session.size(),
-        held: Affine::new(session),
-        screen: None,
-    })
+    let handle = Bound::new(
+        py,
+        Handle {
+            size: session.size(),
+            held: Affine::new(session),
+            screen: None,
+            sigterm: None,
+        },
+    )?;
+    if shows {
+        Handle::_hold_sigterm(&handle)?;
+    }
+    Ok(handle.unbind())
 }
 
 /// The mode of the connected display on card `dri`, else on the first card

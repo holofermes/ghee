@@ -4,6 +4,7 @@ import array
 import json
 import pathlib
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -260,6 +261,56 @@ def test_a_handle_closes_once_and_says_what_it_is():
     h.close()
     assert repr(h) == "<ghee 8x8 closed>"
     assert h.size == (8, 8)
+
+
+def test_a_sigterm_closes_a_held_handle_and_then_ends_the_program_by_it(monkeypatch):
+    """open() holds SIGTERM so for a display. A program's own handler stays,
+    and close() puts the default back."""
+    before = signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    try:
+        h = ghee.open(RED, width=8, height=8)
+        h._hold_sigterm()
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        raised = []
+        monkeypatch.setattr(signal, "raise_signal", raised.append)
+        handler(signal.SIGTERM, None)
+        assert repr(h) == "<ghee 8x8 closed>"
+        assert raised == [signal.SIGTERM]
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+        with ghee.open(RED, width=8, height=8) as h:
+            h._hold_sigterm()
+            assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+
+        def own(_sig, _frame):
+            pass
+
+        signal.signal(signal.SIGTERM, own)
+        with ghee.open(RED, width=8, height=8) as h:
+            h._hold_sigterm()
+            assert signal.getsignal(signal.SIGTERM) is own
+        assert signal.getsignal(signal.SIGTERM) is own
+    finally:
+        signal.signal(signal.SIGTERM, before)
+
+
+def test_a_sigterm_ends_a_program_with_a_held_handle_by_sigterm(tmp_path):
+    """systemd counts a death by SIGTERM as a clean stop."""
+    path = tmp_path / "held.py"
+    path.write_text(
+        "import os, signal, time\n"
+        "import ghee\n"
+        f"h = ghee.open({RED!r}, width=8, height=8)\n"
+        "h._hold_sigterm()\n"
+        "os.kill(os.getpid(), signal.SIGTERM)\n"
+        "time.sleep(5)\n"
+    )
+    ran = subprocess.run(
+        [sys.executable, str(path)], capture_output=True, check=False, text=True
+    )
+    assert ran.returncode == -signal.SIGTERM, ran.stderr
 
 
 def test_the_module_names_its_version():

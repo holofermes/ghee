@@ -53,6 +53,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   Operator 8, any `.ttf` or `.otf`, a list of fonts, and colour emoji.
 - Draw from Python with no GLSL, in a `with screen.draw() as d:` block
   ([Python](docs/python.md)).
+- Give `ghee.Layer` a Pillow image or a numpy array as its `image`, as
+  `d.image` takes.
 - Change a layer at runtime with `screen.layers`, `ghee.layers` or `/set`.
 - Name a pass's param in `/set` as `name=main.tile`, as `set_param` takes
   it.

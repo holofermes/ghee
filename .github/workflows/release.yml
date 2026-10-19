@@ -36,8 +36,7 @@ jobs:
       - name: GLES and DRM development headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y libdrm-dev libgbm-dev libegl1-mesa-dev \
-            libgles2-mesa-dev
+          sudo apt-get install -y libdrm-dev libgbm-dev libegl-dev libgles-dev
       - name: maturin
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh

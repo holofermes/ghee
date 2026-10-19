@@ -195,8 +195,8 @@ class Layer:
     rounds its corners by that many pixels. A line runs through `points`,
     each [x, y] a pixel, `stroke_width` pixels thick, and `x`, `y` shift
     every point. A circle of `radius` pixels, the largest that fits the pass
-    on a radius left out, has the top left of its box at `x`, `y`, and takes
-    a `border` as a rect does.
+    on a radius left out, has its centre at `x`, `y`, and takes a `border`
+    as a rect does.
 
     `ghee.layers` and a handle's `layers` set a layer's live fields while
     the scene runs.

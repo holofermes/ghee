@@ -96,7 +96,7 @@ fn scene() -> Value {
             {"name": "bar", "shape": "rect", "x": 60, "y": 20, "width": 8, "height": 4},
             {"name": "trace", "shape": "line", "points": [[0, 40], [30, 30], [60, 44]],
              "stroke_width": 2, "color": "lime"},
-            {"name": "ring", "shape": "circle", "x": 100, "y": 4, "radius": 8},
+            {"name": "ring", "shape": "circle", "x": 108, "y": 12, "radius": 8},
             {"name": "dot", "image": "dot.png", "x": 90, "y": 30, "width": 6}
         ]}],
     })

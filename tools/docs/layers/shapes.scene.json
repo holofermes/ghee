@@ -9,7 +9,7 @@
       { "name": "fill", "shape": "rect", "x": 2, "y": 26, "width": 60, "height": 4, "border_radius": 2 },
       { "name": "scope", "shape": "line", "points": [[0, 12], [16, 4], [32, 16], [48, 8], [64, 18], [80, 2], [96, 12]],
         "color": "lime" },
-      { "name": "dot", "shape": "circle", "x": 106, "y": 3, "radius": 8, "color": "orange" }
+      { "name": "dot", "shape": "circle", "x": 114, "y": 11, "radius": 8, "color": "orange" }
     ]
   }]
 }

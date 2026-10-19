@@ -381,8 +381,8 @@ SHAPES = [
         lambda d: d.circle((110, 14), 10, color="white"),
         {
             "name": "circle",
-            "x": 100.0,
-            "y": 4.0,
+            "x": 110.0,
+            "y": 14.0,
             "color": "white",
             "shape": "circle",
             "radius": 10.0,

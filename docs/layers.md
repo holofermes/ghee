@@ -56,7 +56,7 @@ Positions and sizes are pixels of the pass, from its top left corner, y down.
 | --- | --- | --- | --- |
 | `name` | letters, digits and `_`, a letter first ([Names](scenes.md#names) has the rules) | required | the layer's name, to change it later and to read it in a shader |
 | `visible` | `true`, `false` | `true` | whether the layer draws |
-| `x`, `y` | pixels | centred (0 for a line) | where the layer's top left sits. A line's points move by `x`, `y` |
+| `x`, `y` | pixels | centred (0 for a line) | where the layer's top left sits, and a circle's centre. A line's points move by `x`, `y` |
 | `color` | a colour | white (no tint on an image) | the layer's colour |
 | `opacity` | 0 to 1 | 1 | how much of the layer shows |
 | `blend` | `normal`, `add`, `multiply`, `screen` | `normal` | how the layer mixes with what's under it |
@@ -227,7 +227,7 @@ at the right:
     "border_radius": 2 },
   { "name": "scope", "shape": "line", "color": "lime",
     "points": [[0, 12], [16, 4], [32, 16], [48, 8], [64, 18], [80, 2], [96, 12]] },
-  { "name": "dot", "shape": "circle", "x": 106, "y": 3, "radius": 8, "color": "orange" }
+  { "name": "dot", "shape": "circle", "x": 114, "y": 11, "radius": 8, "color": "orange" }
 ]
 ```
 
@@ -240,7 +240,7 @@ at the right:
 | `border_radius` | pixels | 0 | a rect's corners. Half the shorter side rounds the ends |
 | `points` | two or more `[x, y]` | required | the pixels that a line runs through |
 | `stroke_width` | pixels | 1 | a line's thickness |
-| `radius` | pixels | the largest circle that fits | a circle's size. `x`, `y` place the top left of its box |
+| `radius` | pixels | the largest circle that fits | a circle's size around its centre, `x`, `y`, as SVG's `cx`, `cy` |
 
 In Python, use `d.rect()` for a rect, `d.circle((x, y), radius)` for a circle
 around `(x, y)`, `d.line((x0, y0), (x1, y1))` for a line, and `d.lines(points)`

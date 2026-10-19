@@ -175,10 +175,10 @@ def _call_look(kind: int, vals: tuple, name: str | None) -> dict:
 
 
 def _circle(centre, radius) -> tuple:
-    """The x and y of the top left of the box of a circle of `radius`
-    around `centre`, and the radius."""
+    """The x and y of the centre of a circle of `radius` around `centre`,
+    and the radius."""
     cx, cy = _plain(centre)
-    return cx - radius, cy - radius, radius
+    return cx, cy, radius
 
 
 # The PNG data URIs of the last pictures that drawings drew, by the hash of

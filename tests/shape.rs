@@ -413,22 +413,23 @@ fn a_rect_fills_its_box_and_draws_its_border_inside_its_edge() {
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_circle_draws_as_the_square_rect_of_its_box_rounded_by_its_radius() {
     // A 96x64 pass. Each row: a circle's keys, and the keys of the rect of
-    // side 2 * radius whose border_radius is the radius. A circle with no
-    // radius is the largest that fits the pass.
+    // side 2 * radius around the circle's x, y, its centre as SVG's cx, cy,
+    // whose border_radius is the radius. A circle with no radius is the
+    // largest that fits the pass.
     let rows = [
         (
-            json!({"x": 10, "y": 8, "radius": 20, "color": "orange"}),
+            json!({"x": 30, "y": 28, "radius": 20, "color": "orange"}),
             json!({"x": 10, "y": 8, "width": 40, "height": 40, "border_radius": 20,
                    "color": "orange"}),
         ),
         (
-            json!({"x": 10.25, "y": 8.5, "radius": 12.75, "opacity": 0.5,
+            json!({"x": 23, "y": 21.25, "radius": 12.75, "opacity": 0.5,
                    "border": {"width": 3, "color": "navy"}}),
             json!({"x": 10.25, "y": 8.5, "width": 25.5, "height": 25.5, "border_radius": 12.75,
                    "opacity": 0.5, "border": {"width": 3, "color": "navy"}}),
         ),
         (
-            json!({"y": 4, "radius": 15, "color": "navy", "blend": "add"}),
+            json!({"y": 19, "radius": 15, "color": "navy", "blend": "add"}),
             json!({"y": 4, "width": 30, "height": 30, "border_radius": 15, "color": "navy",
                    "blend": "add"}),
         ),

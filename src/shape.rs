@@ -12,9 +12,9 @@
 //! corners rounded by `border_radius`, filled with `color`, and its `border`
 //! lies inside the box. A line runs through its `points`, each a pixel as
 //! luma and Pillow count them, so a point's centre is the pixel's centre, and
-//! `x`, `y` shift all of them. A circle of `radius` draws as the rect of side
-//! 2 * radius at `x`, `y` whose `border_radius` is the radius, its `border`
-//! too. The fragment shader antialiases every edge from the distance to the
+//! `x`, `y` shift all of them. A circle of `radius` around `x`, `y`, as SVG
+//! places a circle by `cx`, `cy`, draws as the rect of side 2 * radius
+//! around that centre whose `border_radius` is the radius, its `border` too. The fragment shader antialiases every edge from the distance to the
 //! shape.
 
 use anyhow::{bail, Result};
@@ -110,8 +110,8 @@ pub struct ShapeLayer {
     pub name: String,
     /// False hides the layer.
     pub visible: bool,
-    /// The top left of a rect or of a circle's box, centred on a missing
-    /// axis, or a line's shift, 0 on a missing axis.
+    /// The top left of a rect, the centre of a circle, either centred in the
+    /// pass on a missing axis, or a line's shift, 0 on a missing axis.
     pub x: Option<f64>,
     pub y: Option<f64>,
     /// The fill of a rect or a circle, the colour of a line.
@@ -472,11 +472,14 @@ impl ShapeLayer {
                 border_radius,
             } => {
                 let size = [width.unwrap_or(pass[0]), height.unwrap_or(pass[1])];
-                self.boxed(pass, size, *border_radius, border, fill, out);
+                let corner =
+                    [0, 1].map(|a| [self.x, self.y][a].unwrap_or((pass[a] - size[a]) / 2.0));
+                self.boxed(corner, size, *border_radius, border, fill, out);
             }
             Shape::Circle { radius, border } => {
                 let r = radius.unwrap_or(pass[0].min(pass[1]) / 2.0);
-                self.boxed(pass, [2.0 * r; 2], r, border, fill, out);
+                let centre = [0, 1].map(|a| [self.x, self.y][a].unwrap_or(pass[a] / 2.0));
+                self.boxed(centre.map(|c| c - r), [2.0 * r; 2], r, border, fill, out);
             }
             Shape::Line {
                 points,
@@ -524,12 +527,12 @@ impl ShapeLayer {
         }
     }
 
-    /// Append the quad of a box of `size` pixels in a pass of `pass` pixels,
+    /// Append the quad of a box of `size` pixels, its top left at `corner`,
     /// its corners rounded by `radius`, with `border` and the colour `fill`.
     /// An empty box has none.
     fn boxed(
         &self,
-        pass: [f64; 2],
+        corner: [f64; 2],
         size: [f64; 2],
         radius: f64,
         border: &Option<Border>,
@@ -539,8 +542,6 @@ impl ShapeLayer {
         if size[0] <= 0.0 || size[1] <= 0.0 {
             return;
         }
-        let at = [self.x, self.y];
-        let corner = [0, 1].map(|a| at[a].unwrap_or((pass[a] - size[a]) / 2.0));
         let (b, ink) = match border {
             Some(b) if b.visible && b.width > 0.0 => {
                 (b.width, premultiplied(b.color, self.opacity))

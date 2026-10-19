@@ -1896,9 +1896,12 @@ pub struct Options {
     pub my_scenes: Option<String>,
     /// Take uploads while the console listens on a network.
     pub uploads: bool,
-    /// Where the scenes' state files live. None takes the store's own, else
+    /// Where the scenes' drafts live. None takes the store's own, else
     /// state::default_dir().
     pub state_dir: Option<std::path::PathBuf>,
+    /// Where the scenes' saved edits live. None takes the store's own, else
+    /// state::default_edits_dir().
+    pub edits_dir: Option<std::path::PathBuf>,
     /// The render size. None takes the mode of `display`, else
     /// engine::DEFAULT_SIZE.
     pub size: Option<(i32, i32)>,
@@ -1967,6 +1970,7 @@ impl Default for Options {
             my_scenes: None,
             uploads: false,
             state_dir: None,
+            edits_dir: None,
             size: None,
             port: 8090,
             host: "127.0.0.1".to_string(),
@@ -2026,6 +2030,7 @@ pub fn run(opts: Options) -> Result<()> {
         my_scenes,
         uploads,
         state_dir,
+        edits_dir,
         size,
         port,
         host,
@@ -2060,9 +2065,13 @@ pub fn run(opts: Options) -> Result<()> {
     };
     let names = store.names();
     store.filters = filters;
-    store.state_dir = state_dir
+    let state_dir = state_dir
         .or_else(|| store.state_dir.take())
         .or_else(state::default_dir);
+    let edits_dir = edits_dir
+        .or_else(|| store.edits_dir.take())
+        .or_else(state::default_edits_dir);
+    store.keep_in(state_dir, edits_dir);
     let size = size
         .or_else(|| display.as_ref().map(Card::size))
         .unwrap_or(DEFAULT_SIZE);
@@ -2211,6 +2220,7 @@ mod tests {
         let states = crate::testing::TempDir::new(&format!("console-{tag}-state"));
         let mut store = SceneStore::new(&d, Vec::new());
         store.state_dir = Some(std::path::PathBuf::from(&*states));
+        store.edits_dir = store.state_dir.clone();
         (d, states, Arc::new(Console::new(store)))
     }
 
@@ -2322,6 +2332,7 @@ mod tests {
     fn clocks_again(d: &str, states: &str) -> ConsoleAPI<RenderLoopHost> {
         let mut store = SceneStore::new(d, Vec::new());
         store.state_dir = Some(std::path::PathBuf::from(states));
+        store.edits_dir = store.state_dir.clone();
         let console = Arc::new(Console::new(store));
         let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
         ready(&console, "clocks", opened);
@@ -2458,6 +2469,7 @@ mod tests {
         let m = crate::testing::TempDir::new(&format!("console-{tag}-mine"));
         let mut store = SceneStore::with_mine(&d, Some(&m), Vec::new());
         store.state_dir = console.store.state_dir.clone();
+        store.edits_dir = store.state_dir.clone();
         drop(states);
         (d, m, Arc::new(Console::new(store)))
     }
@@ -2974,6 +2986,7 @@ mod tests {
         let state_file = |dir: Option<String>, name: &str| {
             let mut store = dir_store(dir, None, Vec::new()).unwrap();
             store.state_dir = Some(states.to_path_buf());
+            store.edits_dir = store.state_dir.clone();
             store.state_file(name).unwrap().unwrap()
         };
         let demo = states.join("demo/bars.json");
@@ -3398,6 +3411,7 @@ mod tests {
         fs::write(&file, saved.to_string()).unwrap();
         let mut store = SceneStore::new(&d, Vec::new());
         store.state_dir = Some(std::path::PathBuf::from(&*states));
+        store.edits_dir = store.state_dir.clone();
         let console = Console::new(store);
         let renderer = RefCell::new(gpu(48, 24));
         let st = RefCell::new(Running::default());
@@ -3503,6 +3517,7 @@ mod tests {
         fs::write(&file, saved.to_string()).unwrap();
         let mut store = SceneStore::new(&d, Vec::new());
         store.state_dir = Some(std::path::PathBuf::from(&*states));
+        store.edits_dir = store.state_dir.clone();
         let mut console = Console::new(store);
         console.hub.publish_every = 0.0;
         let console = Arc::new(console);
@@ -3640,6 +3655,7 @@ mod tests {
         let states = crate::testing::TempDir::new("console-locks-states");
         let mut store = SceneStore::new(&d, Vec::new());
         store.state_dir = Some(std::path::PathBuf::from(&*states));
+        store.edits_dir = store.state_dir.clone();
         let mut console = Console::new(store);
         console.hub.publish_every = 0.0;
         let console = Arc::new(console);
@@ -3746,6 +3762,7 @@ mod tests {
         let states = crate::testing::TempDir::new("console-count-states");
         let mut store = SceneStore::new(&d, Vec::new());
         store.state_dir = Some(std::path::PathBuf::from(&*states));
+        store.edits_dir = store.state_dir.clone();
         // a saved edit of post's fragment, made over another default, which
         // waits for an answer
         let file = store.state_file("count").unwrap().unwrap();

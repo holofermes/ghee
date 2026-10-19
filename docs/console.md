@@ -95,8 +95,9 @@ and each shader goes back into the file that the scene names for it.
 
 Any other scene, such as a bundled example or a scene in a folder that you
 serve: ghee never touches its files. Save keeps only your changes, as
-overrides in a state file of their own, in `~/.local/state/ghee`, or in
-`--state-dir DIR`. Each time ghee opens that scene, in a console or in
+overrides in a file of their own, in `$XDG_DATA_HOME/ghee/edits`, by
+default `~/.local/share/ghee/edits`. To keep them elsewhere, pass
+`--edits-dir DIR`. Each time ghee opens that scene, in a console or in
 `ghee render`, it lays your overrides on top. To draw the scene as its
 files hold it, pass `--original` to `ghee render`.
 
@@ -109,11 +110,11 @@ console asks whether to keep it or drop it:
 ![a dialog that says the saved "assets" edits do not build, names the missing image, and offers drop them or keep them](../media/console/broken-edits.png)
 
 If ghee stops before you save, at a restart, a reboot or a crash, the scene
-comes back as you last saved it. Your unsaved changes wait in a draft
-beside the state file, and the first console that opens the scene asks
-whether to restore or drop them. A restore is one undo step. ghee writes the
-draft a second after your last change. Your own scenes keep no draft, so
-save them before ghee stops.
+comes back as you last saved it. Your unsaved changes wait in a draft, in
+`$XDG_STATE_HOME/ghee`, by default `~/.local/state/ghee`, or in `--state-dir
+DIR`. The first console that opens the scene asks whether to restore or drop
+them. A restore is one undo step. ghee writes the draft a second after your
+last change. Your own scenes keep no draft, so save them before ghee stops.
 
 ![a dialog that asks whether to restore the unsaved "neon" edits, with drop and restore](../media/console/restore-edits.png)
 

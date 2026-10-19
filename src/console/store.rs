@@ -36,8 +36,11 @@ pub struct SceneStore {
     /// The store holds the bundled demos, whose state files go by the
     /// scene's name.
     pub demo: bool,
-    /// Where the state files live. None reads and writes none.
+    /// Where the drafts live. None reads and writes none.
     pub state_dir: Option<PathBuf>,
+    /// Where the state files, the saved edits, live. None reads and writes
+    /// none.
+    pub edits_dir: Option<PathBuf>,
     /// Scene args for the whole session. The store hands them to every scene it
     /// loads.
     pub args: Vec<String>,
@@ -102,6 +105,7 @@ impl SceneStore {
             dir,
             demo: false,
             state_dir: None,
+            edits_dir: None,
             args,
             scenes,
             filters: Vec::new(),
@@ -271,7 +275,13 @@ impl SceneStore {
     /// The scene's state file, or None when the store keeps none. A scene
     /// that this console made has none.
     pub fn state_file(&self, name: &str) -> ConsoleResult<Option<PathBuf>> {
-        let Some(dir) = &self.state_dir else {
+        self.file_in(self.edits_dir.as_deref(), name)
+    }
+
+    /// The scene's file in `dir`, as state::file_of() places it, or None
+    /// with no `dir` and for a scene that this console made.
+    fn file_in(&self, dir: Option<&Path>, name: &str) -> ConsoleResult<Option<PathBuf>> {
+        let Some(dir) = dir else {
             return Ok(None);
         };
         let file = self.file(name)?;
@@ -279,6 +289,19 @@ impl SceneStore {
             return Ok(None);
         }
         Ok(Some(state::file_of(dir, &file, self.demo.then_some(name))))
+    }
+
+    /// Point the store at its drafts' and its saved edits' directories, and
+    /// move the saved edits that the drafts' directory still holds into
+    /// their own, logging each.
+    pub fn keep_in(&mut self, state_dir: Option<PathBuf>, edits_dir: Option<PathBuf>) {
+        self.state_dir = state_dir;
+        self.edits_dir = edits_dir;
+        if let (Some(drafts), Some(edits)) = (&self.state_dir, &self.edits_dir) {
+            for to in state::move_saved(drafts, edits) {
+                eprintln!("ghee: saved edits moved to {}", to.display());
+            }
+        }
     }
 
     /// The edits that the scene's state file holds. An unreadable file holds
@@ -304,10 +327,12 @@ impl SceneStore {
         }
     }
 
-    /// The draft beside the scene's state file, or None when the store keeps
-    /// no state file for the scene.
+    /// The scene's draft, or None when the store keeps none.
     pub fn draft_file(&self, name: &str) -> Option<PathBuf> {
-        let path = self.state_file(name).ok().flatten()?;
+        let path = self
+            .file_in(self.state_dir.as_deref(), name)
+            .ok()
+            .flatten()?;
         Some(state::draft_of(&path))
     }
 
@@ -362,7 +387,7 @@ impl SceneStore {
         let file = self.file(name)?;
         let path = self.state_file(name)?.ok_or_else(|| {
             ConsoleError::server_error(
-                "no state directory: set XDG_STATE_HOME or HOME, or pass --state-dir",
+                "no directory for saved edits: set XDG_DATA_HOME or HOME, or pass --edits-dir",
             )
         })?;
         state::write(&path, &file, edits).map_err(ConsoleError::server_error)
@@ -1530,7 +1555,32 @@ mod tests {
         let (d, mut store) = scenes(tag);
         let states = tmpdir(&format!("{tag}-state"));
         store.state_dir = Some(PathBuf::from(&*states));
+        store.edits_dir = store.state_dir.clone();
         (d, states, store)
+    }
+
+    /// XDG Base Directory: saved edits are user data, drafts are state. A
+    /// saved-edits file left among the drafts moves to the edits once, and
+    /// a draft stays.
+    #[test]
+    fn saved_edits_live_in_the_edits_dir_and_drafts_in_the_state_dir() {
+        let (d, mut store) = scenes("split");
+        let states = tmpdir("split-state");
+        let edits = tmpdir("split-edits");
+        let old = PathBuf::from(format!("{states}/scenes{d}/one.json"));
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, "{}").unwrap();
+        fs::write(state::draft_of(&old), "{}").unwrap();
+        store.keep_in(Some(PathBuf::from(&*states)), Some(PathBuf::from(&*edits)));
+        let saved = PathBuf::from(format!("{edits}/scenes{d}/one.json"));
+        assert!(!old.exists() && saved.exists());
+        assert_eq!(store.state_file("one").unwrap(), Some(saved));
+        assert_eq!(store.draft_file("one"), Some(state::draft_of(&old)));
+        assert!(state::draft_of(&old).exists());
+        // the move happens once: a file already in place stays as it is
+        fs::write(&old, "{\"values\": {}}").unwrap();
+        store.keep_in(Some(PathBuf::from(&*states)), Some(PathBuf::from(&*edits)));
+        assert!(old.exists());
     }
 
     #[test]

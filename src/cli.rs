@@ -319,7 +319,10 @@ fn with_saved_edits(a: &Ns, path: &str, scene: Scene) -> Result<Scene> {
         Some(here) => SceneStore::here(path, Arc::clone(&here.program), Vec::new()),
         None => one_scene_store(a, path)?,
     };
-    store.state_dir = a.state_dir.clone().or_else(state::default_dir);
+    store.keep_in(
+        a.state_dir.clone().or_else(state::default_dir),
+        a.edits_dir.clone().or_else(state::default_edits_dir),
+    );
     let Some(name) = store.names().into_iter().next() else {
         return Ok(scene);
     };
@@ -744,6 +747,7 @@ fn serve(
         my_scenes,
         uploads: a.allow_uploads,
         state_dir: a.state_dir.clone(),
+        edits_dir: a.edits_dir.clone(),
         store,
         size: Some(size),
         components,
@@ -1189,6 +1193,14 @@ struct ConsoleFlags {
         long,
         value_name = "DIR",
         help = "keep the console's saved edits in DIR \
+                (default $XDG_DATA_HOME/ghee/edits, else ~/.local/share/ghee/edits)"
+    )]
+    edits_dir: Option<std::path::PathBuf>,
+
+    #[arg(
+        long,
+        value_name = "DIR",
+        help = "keep the console's drafts, its unsaved edits, in DIR \
                 (default $XDG_STATE_HOME/ghee, else ~/.local/state/ghee)"
     )]
     state_dir: Option<std::path::PathBuf>,
@@ -1453,6 +1465,7 @@ pub struct Ns {
     host: String,
     allow_hosts: Vec<String>,
     state_dir: Option<std::path::PathBuf>,
+    edits_dir: Option<std::path::PathBuf>,
     /// Draw the scene without the edits that a console saved for it.
     original: bool,
     my_scenes: Option<std::path::PathBuf>,
@@ -1516,6 +1529,7 @@ impl RenderArgs {
             host: self.console.host,
             allow_hosts: self.console.allow_hosts,
             state_dir: self.console.state_dir,
+            edits_dir: self.console.edits_dir,
             original: self.original,
             my_scenes: None,
             allow_uploads: false,
@@ -1564,6 +1578,7 @@ impl ServeArgs {
             host: self.console.host,
             allow_hosts: self.console.allow_hosts,
             state_dir: self.console.state_dir,
+            edits_dir: self.console.edits_dir,
             original: false,
             my_scenes: self.my_scenes,
             allow_uploads: self.allow_uploads,
@@ -2391,6 +2406,8 @@ mod tests {
             "--rgb565",
             "--state-dir",
             "/srv/state",
+            "--edits-dir",
+            "/srv/edits",
             "--allow-hosts",
             "pi.tail.ts.net,pi.local",
             "--",
@@ -2402,6 +2419,7 @@ mod tests {
             (9, "0.0.0.0", Some((80, 60)))
         );
         assert_eq!(a.state_dir, Some(std::path::PathBuf::from("/srv/state")));
+        assert_eq!(a.edits_dir, Some(std::path::PathBuf::from("/srv/edits")));
         assert_eq!(a.allow_hosts, ["pi.tail.ts.net", "pi.local"]);
         assert_eq!((a.preview_fps, a.preview_max, a.stream_max), (5, 120, 320));
         assert_eq!((a.bitrate, a.rgb565), (123, true));
@@ -2485,6 +2503,7 @@ mod tests {
         let states = tmpdir("saved-state");
         let mut console = SceneStore::one(&path, Vec::new()).unwrap();
         console.state_dir = Some(std::path::PathBuf::from(&*states));
+        console.edits_dir = console.state_dir.clone();
         let defaults = console.resolve("s", (8, 8)).unwrap().to_dict();
         let mut working = defaults.clone();
         working["passes"][0]["params"]["gain"]["value"] = Value::from(0.75);
@@ -2494,7 +2513,7 @@ mod tests {
         let (opened, _) = console.open("s", None, (8, 8)).unwrap();
         assert_eq!(gain_of(&opened.working), 0.75);
         let render = |extra: &[&str]| {
-            let mut t = vec!["render", path.as_str(), "--state-dir", &states];
+            let mut t = vec!["render", path.as_str(), "--edits-dir", &states];
             t.extend(extra);
             scene_of(&ns(&t), &mut None).unwrap().0
         };

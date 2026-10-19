@@ -294,14 +294,76 @@ impl Edits {
 
 // ---------------------------------------------------------------- files
 
-/// The state directory when no other is given: `$XDG_STATE_HOME/ghee`, else
-/// `~/.local/state/ghee`. None when neither variable is set.
+/// The directory of the drafts, the unsaved edits, when no other is given:
+/// `$XDG_STATE_HOME/ghee`, else `~/.local/state/ghee`. None when neither
+/// variable is set.
 pub fn default_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_STATE_HOME")
+    xdg_dir("XDG_STATE_HOME", ".local/state").map(|d| d.join("ghee"))
+}
+
+/// The directory of the saved edits when no other is given: user data, so
+/// `$XDG_DATA_HOME/ghee/edits`, else `~/.local/share/ghee/edits`. None when
+/// neither variable is set.
+pub fn default_edits_dir() -> Option<PathBuf> {
+    xdg_dir("XDG_DATA_HOME", ".local/share").map(|d| d.join("ghee/edits"))
+}
+
+/// The XDG base directory `var`, else `under` in the home directory. A
+/// relative path in `var` counts as unset, as the XDG Base Directory spec
+/// asks.
+fn xdg_dir(var: &str, under: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
         .filter(|d| Path::new(d).is_absolute())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
-    Some(base.join("ghee"))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(under)))
+}
+
+/// Move each saved-edits file under `drafts`, the drafts' directory, to the
+/// same place under `edits`, unless one is there already. Returns the files
+/// that moved.
+pub fn move_saved(drafts: &Path, edits: &Path) -> Vec<PathBuf> {
+    let mut moved = Vec::new();
+    if drafts == edits {
+        return moved;
+    }
+    let mut dirs: Vec<PathBuf> = ["scenes", "demo"].iter().map(|d| drafts.join(d)).collect();
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                dirs.push(path);
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".json") || name.ends_with(".draft.json") {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(drafts) else {
+                continue;
+            };
+            let to = edits.join(rel);
+            if to.exists() {
+                continue;
+            }
+            let placed = to
+                .parent()
+                .map_or(Ok(()), fs::create_dir_all)
+                .and_then(|()| fs::rename(&path, &to).or_else(|_| copy_out(&path, &to)));
+            if placed.is_ok() {
+                moved.push(to);
+            }
+        }
+    }
+    moved
+}
+
+/// Copy `from` to `to`, then remove `from`: a move across file systems.
+fn copy_out(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::copy(from, to)?;
+    fs::remove_file(from)
 }
 
 /// The state file of the scene file `scene`, an absolute path, in the state

@@ -129,7 +129,9 @@ and layer key that its program sets.
 
 When your Python program serves the console, with
 `ghee.open(serve=...)`, the console locks each param and layer key that the
-program sets. That console can't switch scenes or save.
+program sets. That console changes the layers' looks and the params' values,
+and locks the shaders, the passes, the channels, the filters and new
+params. It can't switch scenes or save.
 
 ## From another computer
 

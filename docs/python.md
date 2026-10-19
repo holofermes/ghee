@@ -388,7 +388,9 @@ open `http://127.0.0.1:8090/`. ghee logs the address at INFO on the `ghee`
 logger of Python's `logging`. The console locks each param and layer key
 that your code sets. In a drawing, those are the keys that each call
 passes. Leave a key out to tune it in the console, and your value stays
-from frame to frame.
+from frame to frame. The console changes the layers' looks and the params'
+values: your program owns its passes, its shaders, its params' settings and
+its assets.
 
 ## Building a scene in Python
 

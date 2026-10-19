@@ -69,10 +69,12 @@ struct Host(Arc<Shared>);
 impl ConsoleHost for Host {
     fn stats(&self) -> ConsoleResult<Value> {
         let s = &self.0;
+        let mut locked = lock(&s.locks).to_json();
+        locked["scene"] = Value::Bool(true);
         Ok(s.hub.stats(SceneStats {
             active: Some(s.name.clone()),
             stale: false,
-            locked: lock(&s.locks).to_json(),
+            locked,
             rev: None,
         }))
     }
@@ -146,8 +148,8 @@ impl ConsoleHost for Host {
         let running = self.0.hub.scene().unwrap_or_default();
         if frame_of(&posted) != frame_of(&running) {
             return Err(ConsoleError::read_only(
-                "this console gives layers a new look and changes nothing else; its host \
-                 owns the passes, the params and the assets",
+                "this console changes layers alone: its program owns the passes, the params \
+                 and the assets",
             ));
         }
         let mut changed = state::diff(&running, &posted, true);

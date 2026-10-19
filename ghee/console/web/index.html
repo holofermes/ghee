@@ -932,6 +932,7 @@ function paintStatus(){
   $("#reset").disabled = !hasEdits();
   $("#prev").disabled = $("#next").disabled = !active;
   $("#addToggle").hidden = !active;
+  $("#addToggle").disabled = hostOwned();
   if (!active) $("#addRow").classList.remove("show");
 }
 
@@ -1796,7 +1797,7 @@ function buildTabs(){
   if (!proc && !hasCommon()) items.push(["common", addCommon]);   // one per scene
   const fnames = Object.keys(FILTERS);
   if (fnames.length) items.push(...(items.length ? [null] : []), ...fnames.map(n => ["ƒ " + n, () => addFilter(n)]));
-  t.appendChild(addMenu("+", items, "tab add", proc ? "add a filter" : "add a pass or a filter"));
+  t.appendChild(lockIf(addMenu("+", items, "tab add", proc ? "add a filter" : "add a pass or a filter"), hostOwned()));
   row.innerHTML = "";
   row.appendChild(t);
   const acts = el("span", "passacts");
@@ -1816,8 +1817,9 @@ function buildTabs(){
       "m" + (off ? " off" : ""), () => togglePass(i));
     const del = tbtn("×", `remove pass ${p.name}`, "x", () => delPass(i));
     ren.disabled = proc || !!p.filter;
-    eye.disabled = !off && shown <= 1;   // one pass at least stays visible
-    del.disabled = work.passes.length <= 1 || (proc && !p.filter);
+    eye.disabled = (!off && shown <= 1) || hostOwned();   // one pass at least stays visible
+    del.disabled = work.passes.length <= 1 || (proc && !p.filter) || hostOwned();
+    gear.disabled = hostOwned();
     acts.append(gear, ren, eye, del);
   }
   // the strip's width, and so the scroll it takes, is final once the actions are in
@@ -1922,13 +1924,14 @@ function buildChannels(){
     sel.value = ch.buffer || work.passes[0].name;
     sel.addEventListener("change", () => { ch.buffer = sel.value; postScene(); });
     const x = el("span", "x", "×");
-    x.addEventListener("click", () => { p.channels.splice(ci, 1); postScene(); buildChannels(); });
+    if (!hostOwned()) x.addEventListener("click", () => { p.channels.splice(ci, 1); postScene(); buildChannels(); });
     wrap.append(el("span", null, "iChannel" + ci), sel, x);
     box.appendChild(wrap);
   });
   const add = el("span", "addmini", "+ channel");
-  add.addEventListener("click", () => { p.channels.push({buffer: work.passes[0].name}); postScene(); buildChannels(); });
+  if (!hostOwned()) add.addEventListener("click", () => { p.channels.push({buffer: work.passes[0].name}); postScene(); buildChannels(); });
   row.append(box, add);
+  if (hostOwned()) locked(row);
   box.scrollLeft = left;
   stripFade(box);
 }
@@ -2096,8 +2099,9 @@ $("#shUndo").addEventListener("click", e => { e.stopPropagation(); shaderBack();
 function loadCode(){
   const ta = CODE.ta, p = onCommon() ? null : work.passes[curPass];
   ta.value = p ? (p.fragment || "") : commonCode(); ta.scrollTop = 0;
-  ta.readOnly = !!(p && p.filter);   // filter code is shipped/referenced, not editable here
-  CODE.box.classList.toggle("readonly", !!(p && p.filter));
+  const fixed = !!(p && p.filter) || hostOwned();   // filter code is shipped/referenced, not editable here
+  ta.readOnly = fixed;
+  CODE.box.classList.toggle("readonly", fixed);
   CODE.sync();
 }
 
@@ -2532,6 +2536,9 @@ function locked(node){
 // ---- what the scene's program set, as /stats lists it under locked: each
 // param, and each field and each effect of a layer, until the program ends ----
 const NO_LOCKS = {params: [], fields: []};
+// a program that hosts its console owns the scene but its layers' looks and
+// its params' values: /stats says so under locked.scene
+const hostOwned = () => !!LOCKS.scene;
 let LOCKS = NO_LOCKS, shownLocks = canon(NO_LOCKS);
 const locksOf = s => (s && s.active === active && s.locked) || NO_LOCKS;
 const lockedParam = (pass, name) => LOCKS.params.includes(pass == null ? name : pass + "." + name);
@@ -2739,7 +2746,8 @@ function layerCard(p, d){
     const align = KV("text_align");
     markField(align.kv.firstChild, p, d, "text_align");
     align.v.appendChild(keyed(pick(ALIGNS, d.text_align || "left", x => setKey(p, d, "text_align", x === "left" ? null : x)), "text_align"));
-    kvs.append(kv, colorKV(p, d), numKV(p, d, "font_size"), pairKV(p, d, "x", "y"), fam.kv, align.kv);
+    kvs.append(kv, colorKV(p, d), numKV(p, d, "font_size"), pairKV(p, d, "x", "y"),
+      lockIf(fam.kv, lockedField(d, "font_family")), lockIf(align.kv, lockedField(d, "text_align")));
   }
   body.appendChild(kvs);
   if (kind === "text") body.appendChild(fxBlock(p, d));   // an image or a shape layer takes no effects

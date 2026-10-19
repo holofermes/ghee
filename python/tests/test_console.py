@@ -440,6 +440,7 @@ def test_the_console_locks_what_the_host_sets_and_the_rest_still_edits():
         assert json_of(port, "/stats")["locked"] == {
             "params": ["main.gain"],
             "fields": ["text.font_size", "text.text", "title.x"],
+            "scene": True,
         }
         for path, key in [
             ("/set?pass=main&name=gain&value=1", "param 'main.gain'"),
@@ -813,8 +814,8 @@ def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():
             post_json(port, "/scene", coded)
         assert raised.value.code == 403
         assert raised.value.read().decode() == (
-            "this console gives layers a new look and changes nothing else; its host "
-            "owns the passes, the params and the assets"
+            "this console changes layers alone: its program owns the passes, the "
+            "params and the assets"
         )
 
 

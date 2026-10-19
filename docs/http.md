@@ -183,7 +183,7 @@ curl http://127.0.0.1:8090/stats
 | `text_errors` | one line for each text layer's problem |
 | `stale` | `true` when the scene's files changed since it loaded |
 | `layer_changes` | how many times the scene's program changed its layers. Read `/scene` again when it moves |
-| `locked` | what the scene's program sets: `params` and `fields` |
+| `locked` | what the scene's program sets: `params` and `fields`. In a [Python console](#from-python), `scene` is `true` too: the program owns the passes, the params' settings and the assets |
 | `gpu` | `trilinear_npot`: `false` where a `trilinear` pass needs power-of-two sides |
 
 `?usage=1` adds `rss_mib`, `gpu_mib`, `gpu_busy`, `machine_free_mib` and

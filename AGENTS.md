@@ -46,12 +46,18 @@ cargo build --release
 cargo test --release
 cargo clippy --release --all-targets -- -D warnings
 cargo fmt
+cargo clippy --release --manifest-path python/Cargo.toml -- -D warnings
+cargo fmt --manifest-path python/Cargo.toml
+uvx ruff check python
 ```
 
-Without ffmpeg, run the tests with `RUSTFLAGS="--cfg ghee_no_ffmpeg"`.
+CI (`.github/workflows/ci.yml`) runs each of these checks. Without ffmpeg,
+run the tests with `RUSTFLAGS="--cfg ghee_no_ffmpeg"`.
 
 A commit subject names the area, then takes the imperative, such as
-`console: name a broken edit once`.
+`console: name a broken edit once`. A pull request's body says what the
+change does for a user, and how you checked it: the commands that you ran,
+and for a change to the output, the renders that you compared.
 
 `build.rs` rebuilds the C engine when anything in `ghee/_engine/` changes, so
 the engine needs no build step of its own. Cross-compiling takes `GHEE_SYSROOT`.

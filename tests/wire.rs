@@ -114,7 +114,7 @@ fn render(tag: &str, body: &str) -> (Vec<Vec<u8>>, String) {
     assert!(out.status.success(), "{err}");
     let refused: Vec<&str> = err
         .lines()
-        .filter(|l| l.ends_with(", so it changes nothing"))
+        .filter(|l| l.ends_with(" changes nothing"))
         .collect();
     assert_eq!(out.stdout.len(), FRAMES * FRAME_W * FRAME_H * 4, "{err}");
     let frames = out

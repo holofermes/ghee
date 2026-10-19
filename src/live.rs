@@ -192,6 +192,7 @@ impl Index {
 
 /// A param value that the program set, which a rebuild of the scene sets
 /// again.
+#[derive(Clone)]
 struct Kept {
     pass: Option<String>,
     uniform: String,
@@ -217,6 +218,7 @@ impl Changes {
 }
 
 /// The live state of one running scene.
+#[derive(Clone)]
 pub struct Live {
     index: Arc<Index>,
     /// The value of each param, by the name that a tick gives it, as a scene
@@ -356,6 +358,20 @@ impl Live {
         Arc::clone(&self.locks)
     }
 
+    /// A copy of the state, which put_back() restores.
+    pub fn save(&self) -> (Live, Locks) {
+        (self.clone(), lock(&self.locks).clone())
+    }
+
+    /// Restore the state that save() copied. A console that holds the locks
+    /// reads the restored ones.
+    pub fn put_back(&mut self, (saved, locks): (Live, Locks)) {
+        let held = Arc::clone(&self.locks);
+        *self = saved;
+        *lock(&held) = locks;
+        self.locks = held;
+    }
+
     /// The program ended, so a console sets anything again.
     pub fn unlock(&mut self) {
         *lock(&self.locks) = Locks::default();
@@ -441,12 +457,10 @@ impl Live {
     /// and each other key that it leaves out takes the scene's own value
     /// for a layer of the scene's own. The keys of `look` lock. False when the layer had that look already.
     pub fn update_layer(&mut self, renderer: &mut dyn RenderTarget, look: &Value) -> Result<bool> {
-        let kept = self.tuned.look(look, |n| renderer.layer(n));
-        let kept = self.own_look(kept.as_ref().unwrap_or(look)).or(kept);
-        let given = kept.as_ref().unwrap_or(look);
-        let changed = renderer.update_layer(given)?;
+        let given = self.filled(&*renderer, look);
+        let changed = renderer.update_layer(&given)?;
         if changed {
-            self.took(given);
+            self.took(&given);
         }
         if let Some(name) = name_of(look) {
             lock(&self.locks).set_keys(name, look_keys(look));
@@ -484,6 +498,14 @@ impl Live {
             }
         }
         Ok(taken.left)
+    }
+
+    /// `look`, a look that the program gives a layer whole, as
+    /// update_layer() hands it to the renderer.
+    pub fn filled(&self, renderer: &dyn RenderTarget, look: &Value) -> Value {
+        let kept = self.tuned.look(look, |n| renderer.layer(n));
+        let kept = self.own_look(kept.as_ref().unwrap_or(look)).or(kept);
+        kept.unwrap_or_else(|| look.clone())
     }
 
     /// `look` with each key that it leaves out at the scene's own value, for

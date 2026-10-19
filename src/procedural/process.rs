@@ -31,7 +31,7 @@ use crate::layer::{Address, Rgb};
 use crate::live::Live;
 use crate::looper::{RenderTarget, SceneController};
 use crate::procedural::locks::Locks;
-use crate::procedural::patch::{self, Op, Place};
+use crate::procedural::patch::{self, Draft, Refusal, Step, Who};
 use crate::procedural::resolve;
 use crate::scene::{py_repr, round_half_up, ArraySize, ParamValue, Reach, Scene};
 
@@ -853,162 +853,162 @@ impl SceneProcess {
     }
 
     /// Apply the kind 6 message `text`, a JSON Patch over the scene's
-    /// layers, in its order. A run of replaced layers goes to the renderer as
-    /// one batch. The first operation that the scene refuses ends the patch,
-    /// and the operations before it stay.
+    /// layers, whole or not at all. A run of replaced layers goes to the
+    /// renderer as one batch.
     fn patch(&mut self, renderer: &mut dyn RenderTarget, text: &str) -> Result<()> {
         let ops = match patch::ops_of(text) {
             Ok(ops) => ops,
             Err(why) => {
-                self.refuse("kind 6", &why);
+                self.refuse_patch(&why);
                 return Ok(());
             }
         };
-        let mut k = 0;
-        while k < ops.len() {
-            let looks = ops[k..]
-                .iter()
-                .take_while(|o| matches!(o, Op::Replace(at, _) if at.keys.is_empty()))
-                .count();
-            let applied = match looks {
-                0 => self.apply(renderer, &ops[k])?,
-                n => self.give_looks(renderer, &ops[k..k + n])?,
-            };
-            if !applied {
+        let view = View {
+            renderer: &*renderer,
+            live: &self.live,
+        };
+        let draft = match patch::draft(&view, &ops) {
+            Ok(draft) => draft,
+            Err(refusal) => {
+                self.refuse_patch(&refusal.line(&ops));
                 return Ok(());
             }
-            k += looks.max(1);
+        };
+        // A single change that the renderer refuses changes nothing.
+        let mut undo = (draft.changes() > 1).then(|| Undo::new(self.live.save()));
+        if let Err(refusal) = self.reach(renderer, &draft, undo.as_mut())? {
+            if let Some(undo) = undo {
+                undo.run(renderer, &draft, &mut self.live)?;
+            }
+            self.refuse_patch(&refusal.line(&ops));
         }
         Ok(())
     }
 
-    /// Log `why`, a refusal of the operation at `at`, and return false.
-    fn refused(&mut self, at: &Place, why: &str) -> bool {
-        self.refuse(&at.pointer(), why);
-        false
-    }
-
-    /// refuse_or_fail() for the operation at `at`: false when the scene
-    /// refused it.
-    fn refused_or_failed(&mut self, at: &Place, e: anyhow::Error) -> Result<bool> {
-        self.refuse_or_fail(&at.pointer(), e).map(|()| false)
-    }
-
-    /// Apply `op`, any operation but the replace of a whole layer. False
-    /// when the scene refused it.
-    fn apply(&mut self, renderer: &mut dyn RenderTarget, op: &Op) -> Result<bool> {
-        match op {
-            Op::Add(at, value) if at.keys.is_empty() => {
-                let Some(names) = renderer.pass_layers(&at.pass) else {
-                    return Ok(self.refused(at, &format!("the scene has no pass '{}'", at.pass)));
-                };
-                let index = at.index.unwrap_or(names.len());
-                match self.live.add_layer(renderer, &at.pass, index, value) {
-                    Ok(()) => Ok(true),
-                    Err(e) => self.refused_or_failed(at, e),
-                }
-            }
-            Op::Add(at, value) | Op::Replace(at, value) => self.put(renderer, at, value),
-            Op::Remove(at) if at.keys.is_empty() => {
-                let name = match layer_at(renderer, at) {
-                    Ok(name) => name,
-                    Err(why) => return Ok(self.refused(at, &why)),
-                };
-                match self.live.remove_layer(renderer, &name) {
-                    Ok(()) => Ok(true),
-                    Err(e) => self.refused_or_failed(at, e),
-                }
-            }
-            Op::Remove(at) => self.put(renderer, at, &Value::Null),
-            Op::Move { from, path } if from.keys.is_empty() && path.keys.is_empty() => {
-                if from.pass != path.pass {
-                    return Ok(self.refused(path, "a layer moves within its own pass"));
-                }
-                let name = match layer_at(renderer, from) {
-                    Ok(name) => name,
-                    Err(why) => return Ok(self.refused(from, &why)),
-                };
-                let last = renderer.pass_layers(&path.pass).map_or(0, |n| n.len() - 1);
-                match self
-                    .live
-                    .move_layer(renderer, &name, path.index.unwrap_or(last))
-                {
-                    Ok(()) => Ok(true),
-                    Err(e) => self.refused_or_failed(path, e),
-                }
-            }
-            Op::Move { from, path } | Op::Copy { from, path } => {
-                let value = match read(renderer, from) {
-                    Ok(value) => value,
-                    Err(why) => return Ok(self.refused(from, &why)),
-                };
-                if let Op::Move { .. } = op {
-                    if from.keys.is_empty() {
-                        return Ok(self.refused(path, "a layer moves to a place among layers"));
-                    }
-                    if !self.apply(renderer, &Op::Remove(from.clone()))? {
-                        return Ok(false);
-                    }
-                }
-                self.apply(renderer, &Op::Add(path.clone(), value))
-            }
-            Op::Test(at, value) => match read(renderer, at) {
-                Ok(now) if patch::same(&now, value) => Ok(true),
-                Ok(now) => Ok(self.refused(at, &format!("the test found {now}"))),
-                Err(why) => Ok(self.refused(at, &why)),
-            },
+    /// Log a patch that changes nothing, once for each reason.
+    fn refuse_patch(&mut self, why: &str) {
+        if self.refused.insert(("kind 6".to_string(), why.to_string())) {
+            crate::report::warn(format!(
+                "{}: {why}, so the patch changes nothing",
+                self.name
+            ));
         }
     }
 
-    /// Set the key or the effect's field at `at` to `value`, null for its
-    /// default. False when the scene refused it.
-    fn put(&mut self, renderer: &mut dyn RenderTarget, at: &Place, value: &Value) -> Result<bool> {
-        let name = match layer_at(renderer, at) {
-            Ok(name) => name,
-            Err(why) => return Ok(self.refused(at, &why)),
-        };
-        let (effect, field) = match at.keys.as_slice() {
+    /// Bring the scene to the result of `draft`: take out the layers that
+    /// leave, make each step in its order, then add and place the layers of
+    /// each pass. `undo` keeps what each change replaces. Err holds the
+    /// first change that the scene refused.
+    fn reach(
+        &mut self,
+        renderer: &mut dyn RenderTarget,
+        draft: &Draft,
+        mut undo: Option<&mut Undo>,
+    ) -> Result<Result<(), Refusal>> {
+        for (name, by) in &draft.removed {
+            if let Some(u) = undo.as_deref_mut() {
+                u.keep(&*renderer, name);
+            }
+            if let Err(e) = self.live.remove_layer(renderer, name) {
+                return refusal(Some(*by), e);
+            }
+        }
+        let gone: HashSet<&str> = draft.removed.iter().map(|(n, _)| n.as_str()).collect();
+        let steps: Vec<&Step> = draft
+            .steps
+            .iter()
+            .filter(|s| !gone.contains(s.layer()))
+            .collect();
+        let mut k = 0;
+        while k < steps.len() {
+            let looks: Vec<(usize, &Value)> = steps[k..]
+                .iter()
+                .map_while(|s| match s {
+                    Step::Look { by, look, .. } => Some((*by, look)),
+                    Step::Key { .. } => None,
+                })
+                .collect();
+            let n = looks.len().max(1);
+            if let Some(u) = undo.as_deref_mut() {
+                for s in &steps[k..k + n] {
+                    u.keep(&*renderer, s.layer());
+                }
+            }
+            let done = match steps[k] {
+                Step::Key {
+                    by,
+                    layer,
+                    keys,
+                    value,
+                } => self.put(renderer, *by, layer, keys, value)?,
+                Step::Look { .. } => self.give_looks(renderer, &looks)?,
+            };
+            if done.is_err() {
+                return Ok(done);
+            }
+            k += n;
+        }
+        for pass in draft.passes.iter().filter(|p| !p.kept_order()) {
+            for (i, e) in pass.after.iter().enumerate() {
+                let placed = match (&e.who, e.new_look()) {
+                    (Who::New, Some(look)) => {
+                        let added = self.live.add_layer(renderer, &pass.name, i, look);
+                        if let (Ok(()), Some(u)) = (&added, undo.as_deref_mut()) {
+                            u.added
+                                .push(look["name"].as_str().unwrap_or_default().to_string());
+                        }
+                        added
+                    }
+                    (Who::Own(name), _) => match place_of(&*renderer, &pass.name, name) {
+                        Some(now) if now == i => Ok(()),
+                        _ => self.live.move_layer(renderer, name, i),
+                    },
+                    (Who::New, None) => unreachable!("a new layer holds its look"),
+                };
+                if let Err(err) = placed {
+                    return refusal(e.by, err);
+                }
+            }
+        }
+        Ok(Ok(()))
+    }
+
+    /// Set the key or the effect's field `keys` of layer `layer` to `value`,
+    /// null for its default, for the operation `by`.
+    fn put(
+        &mut self,
+        renderer: &mut dyn RenderTarget,
+        by: usize,
+        layer: &str,
+        keys: &[String],
+        value: &Value,
+    ) -> Result<Result<(), Refusal>> {
+        let (effect, field) = match keys {
             [field] => (None, field.as_str()),
             [effect, field] => (Some(effect.as_str()), field.as_str()),
             _ => unreachable!("a layer's place takes a key"),
         };
         let address = Address {
-            layer: &name,
+            layer,
             effect,
             field,
         };
         match self.live.set_layer(renderer, &address, Given::Json(value)) {
-            Ok(()) => Ok(true),
-            Err(e) => self.refused_or_failed(at, e),
+            Ok(()) => Ok(Ok(())),
+            Err(e) => refusal(Some(by), e),
         }
     }
 
-    /// Give the layers of `ops`, each the replace of a whole layer, their
-    /// looks. The looks that draw::call_of() reads go to the renderer as
-    /// calls, at once, and each call that the renderer leaves, and each
-    /// other look, takes its look as update_layer() gives it, in the order
-    /// of `ops`. A look takes the name of the layer that it replaces, and
-    /// keeps it. False when the scene refused one.
-    fn give_looks(&mut self, renderer: &mut dyn RenderTarget, ops: &[Op]) -> Result<bool> {
-        let mut looks = Vec::with_capacity(ops.len());
-        for op in ops {
-            let Op::Replace(at, look) = op else {
-                unreachable!("give_looks() takes replaces alone");
-            };
-            let name = match layer_at(renderer, at) {
-                Ok(name) => name,
-                Err(why) => return Ok(self.refused(at, &why)),
-            };
-            let mut look = look.clone();
-            match look.as_object_mut() {
-                Some(o) if o.get("name").is_none_or(|n| *n == name) => {
-                    o.insert("name".to_string(), Value::from(name));
-                }
-                Some(_) => return Ok(self.refused(at, &format!("layer '{name}' keeps its name"))),
-                None => return Ok(self.refused(at, "a layer is an object")),
-            }
-            looks.push((at, look));
-        }
+    /// Give the layers of `looks`, each a whole look with its name and the
+    /// operation that gave it, their looks. The looks that draw::call_of()
+    /// reads go to the renderer as calls, at once, and each call that the
+    /// renderer leaves, and each other look, takes its look as
+    /// update_layer() gives it, in the order of `looks`.
+    fn give_looks(
+        &mut self,
+        renderer: &mut dyn RenderTarget,
+        looks: &[(usize, &Value)],
+    ) -> Result<Result<(), Refusal>> {
         let mut calls = Vec::with_capacity(looks.len());
         let mut placed = Vec::with_capacity(looks.len());
         let mut slow = Vec::new();
@@ -1024,17 +1024,17 @@ impl SceneProcess {
         if !calls.is_empty() {
             match self.live.update_calls(renderer, &calls) {
                 Ok(left) => slow.extend(left.iter().map(|&i| placed[i])),
-                Err(e) => return self.refused_or_failed(looks[0].0, e),
+                Err(e) => return refusal(Some(looks[placed[0]].0), e),
             }
         }
         slow.sort_unstable();
         for k in slow {
-            let (at, look) = &looks[k];
+            let (by, look) = looks[k];
             if let Err(e) = self.live.update_layer(renderer, look) {
-                return self.refused_or_failed(at, e);
+                return refusal(Some(by), e);
             }
         }
-        Ok(true)
+        Ok(Ok(()))
     }
 
     /// Index the compiled scene: its params, any param added by a filter or
@@ -1389,29 +1389,104 @@ fn as_param(ty: &str, values: &[f32]) -> Option<ParamValue> {
     }
 }
 
-/// The name of the layer at `at`, or why no layer is there.
-fn layer_at(renderer: &dyn RenderTarget, at: &Place) -> Result<String, String> {
-    let names = renderer
-        .pass_layers(&at.pass)
-        .ok_or_else(|| format!("the scene has no pass '{}'", at.pass))?;
-    at.index
-        .and_then(|i| names.get(i).cloned())
-        .ok_or_else(|| format!("pass '{}' has no layer there", at.pass))
+/// The running scene, as a patch reads it.
+struct View<'a> {
+    renderer: &'a dyn RenderTarget,
+    live: &'a Live,
 }
 
-/// The value at `at`, as the scene writes it, or why none is there.
-fn read(renderer: &dyn RenderTarget, at: &Place) -> Result<Value, String> {
-    let name = layer_at(renderer, at)?;
-    let mut value = renderer
-        .layer(&name)
-        .ok_or_else(|| format!("the scene has no layer '{name}'"))?;
-    for key in &at.keys {
-        value = value
-            .get(key.as_str())
-            .cloned()
-            .ok_or_else(|| format!("layer '{name}' holds no '{key}'"))?;
+impl patch::Layers for View<'_> {
+    fn passes(&self) -> Vec<String> {
+        self.renderer.passes()
     }
-    Ok(value)
+
+    fn pass_layers(&self, pass: &str) -> Option<Vec<String>> {
+        self.renderer.pass_layers(pass)
+    }
+
+    fn layer(&self, name: &str) -> Option<Value> {
+        self.renderer.layer(name)
+    }
+
+    fn filled(&self, look: &Value) -> Value {
+        self.live.filled(self.renderer, look)
+    }
+}
+
+/// What a patch changed, to put back when the scene refuses a later
+/// change of it.
+struct Undo {
+    saved: (Live, Locks),
+    /// Each layer that the patch added, by name.
+    added: Vec<String>,
+    /// Each layer of the scene that the patch changed or took out, with its
+    /// look before.
+    looks: Vec<(String, Value)>,
+}
+
+impl Undo {
+    fn new(saved: (Live, Locks)) -> Undo {
+        Undo {
+            saved,
+            added: Vec::new(),
+            looks: Vec::new(),
+        }
+    }
+
+    /// Keep the look of layer `name` before its first change.
+    fn keep(&mut self, renderer: &dyn RenderTarget, name: &str) {
+        if self.looks.iter().any(|(n, _)| n == name) {
+            return;
+        }
+        if let Some(look) = renderer.layer(name) {
+            self.looks.push((name.to_string(), look));
+        }
+    }
+
+    /// Put the scene back as it was before the patch of `draft`.
+    fn run(self, renderer: &mut dyn RenderTarget, draft: &Draft, live: &mut Live) -> Result<()> {
+        let back = |e: anyhow::Error| e.context("a refused patch failed to put the scene back");
+        for name in &self.added {
+            renderer.remove_layer(name).map_err(back)?;
+        }
+        for (name, look) in &self.looks {
+            if renderer.layer(name).is_some() {
+                renderer.update_layer(look).map_err(back)?;
+                continue;
+            }
+            let Some(pass) = draft.passes.iter().find(|p| p.before.contains(name)) else {
+                continue;
+            };
+            let end = renderer.pass_layers(&pass.name).map_or(0, |n| n.len());
+            renderer.add_layer(&pass.name, end, look).map_err(back)?;
+        }
+        for pass in &draft.passes {
+            for (i, name) in pass.before.iter().enumerate() {
+                if place_of(&*renderer, &pass.name, name) != Some(i) {
+                    renderer.move_layer(name, i).map_err(back)?;
+                }
+            }
+        }
+        live.put_back(self.saved);
+        Ok(())
+    }
+}
+
+/// The place of layer `name` among the layers of pass `pass`.
+fn place_of(renderer: &dyn RenderTarget, pass: &str, name: &str) -> Option<usize> {
+    renderer.pass_layers(pass)?.iter().position(|n| n == name)
+}
+
+/// The refusal of the operation `by` when the scene refused it with `e`,
+/// and any other failure as it is.
+fn refusal(by: Option<usize>, e: anyhow::Error) -> Result<Result<(), Refusal>> {
+    match e.downcast_ref::<Refused>() {
+        Some(refused) => Ok(Err(Refusal {
+            by,
+            why: refused.0.clone(),
+        })),
+        None => Err(e),
+    }
 }
 
 /// Poll until the condition holds or the patience runs out.
@@ -1847,8 +1922,14 @@ sleep 60
             Ok(true)
         }
 
+        /// `now` for its name, and a look of the name alone for each other
+        /// layer of `main`.
         fn layer(&self, name: &str) -> Option<Value> {
-            (self.now["name"] == name).then(|| self.now.clone())
+            if self.now["name"] == name {
+                return Some(self.now.clone());
+            }
+            let held = self.main.borrow().iter().any(|n| n == name);
+            held.then(|| serde_json::json!({ "name": name }))
         }
 
         fn pass_layers(&self, pass: &str) -> Option<Vec<String>> {
@@ -2432,6 +2513,12 @@ while IFS= read -r line; do :; done
     }
 
     /// The names of the refused messages logged so far, sorted, each once.
+    fn refused_whys(f: &SceneProcess) -> Vec<String> {
+        let whys: std::collections::BTreeSet<&str> =
+            f.refused.iter().map(|(_, why)| why.as_str()).collect();
+        whys.into_iter().map(str::to_string).collect()
+    }
+
     fn refused_names(f: &SceneProcess) -> Vec<String> {
         let names: std::collections::BTreeSet<&str> =
             f.refused.iter().map(|(name, _)| name.as_str()).collect();
@@ -3161,7 +3248,9 @@ while IFS= read -r line; do :; done
                 "set scope.points Numbers([0.0, 1.0, 2.0, 3.0])".to_string(),
             ]
         );
-        assert_eq!(refused_names(&f), ["/main/0", "kind 6"]);
+        assert_eq!(refused_names(&f), ["kind 6"]);
+        assert!(refused_whys(&f)
+            .contains(&"kind 6 operation 0 at '/main/0': a layer the scene refuses".to_string()));
         // the console's words for the added layer reach the process, and
         // the process's own words stay with it
         let at = Address {
@@ -3215,16 +3304,20 @@ while IFS= read -r line; do :; done
                 "set bar.x Numbers([1.0])".to_string(),
             ]
         );
-        assert_eq!(refused_names(&f), ["/main/3"]);
+        assert_eq!(
+            refused_whys(&f),
+            ["kind 6 operation 0 at '/main/3': pass 'main' has no place 3"]
+        );
         // the words of the layer that left go out with no tick
         assert!(!f.live.tick_params().contains_key("title.text"));
     }
 
-    /// RFC 6902: add and replace set a key, null puts it back to its
-    /// default, as remove does, copy and move read the value at `from`, and
-    /// a test that fails ends the patch.
+    /// RFC 6902: add sets a key, replace and remove need the key, null
+    /// puts a key back to its default, as remove does, copy and move read
+    /// the value at `from`, and a test that fails leaves the whole patch
+    /// out.
     #[test]
-    fn a_patch_sets_keys_and_its_first_refusal_ends_it() {
+    fn a_patch_sets_keys_whole_or_not_at_all() {
         let d = tmpdir("keys");
         let doc = serde_json::json!({
             "version": 1,
@@ -3232,19 +3325,23 @@ while IFS= read -r line; do :; done
                         "layers": [{"name": "title", "text": "hi", "x": 3},
                                    {"name": "bar", "shape": "rect"}]}],
         });
-        let ops = serde_json::json!([
-            {"op": "replace", "path": "/main/0/opacity", "value": 0.5},
-            {"op": "remove", "path": "/main/0/y"},
-            {"op": "add", "path": "/main/0/glow/strength", "value": 0.25},
-            {"op": "replace", "path": "/main/1/width", "value": null},
-            {"op": "copy", "from": "/main/0/x", "path": "/main/1/x"},
-            {"op": "test", "path": "/main/0/text", "value": "hi"},
+        let failed = serde_json::json!([
+            {"op": "add", "path": "/main/0/opacity", "value": 0.5},
             {"op": "test", "path": "/main/0/text", "value": "ho"},
-            {"op": "replace", "path": "/main/1/height", "value": 9},
+        ]);
+        let ops = serde_json::json!([
+            {"op": "add", "path": "/main/0/opacity", "value": 0.5},
+            {"op": "remove", "path": "/main/0/x"},
+            {"op": "add", "path": "/main/0/glow", "value": {}},
+            {"op": "add", "path": "/main/0/glow/strength", "value": 0.25},
+            {"op": "add", "path": "/main/1/width", "value": null},
+            {"op": "copy", "from": "/main/0/opacity", "path": "/main/1/opacity"},
+            {"op": "test", "path": "/main/0/text", "value": "hi"},
         ]);
         let body = [
             "#!/bin/sh\n".to_string(),
             format!("printf '%s\\n' '{doc}'\n"),
+            patch(&failed),
             patch(&ops),
             numbers("bar.y", &[1.0]),
             "while IFS= read -r line; do :; done\n".to_string(),
@@ -3265,15 +3362,77 @@ while IFS= read -r line; do :; done
         assert_eq!(
             *stub.log.borrow(),
             [
-                "set title.opacity Json(Number(0.5))".to_string(),
-                "set title.y Json(Null)".to_string(),
-                "set title.glow.strength Json(Number(0.25))".to_string(),
-                "set bar.width Json(Null)".to_string(),
-                "set bar.x Json(Number(3))".to_string(),
-                "set bar.y Numbers([1.0])".to_string(),
+                "set title.opacity Json(Number(0.5))",
+                "set title.x Json(Null)",
+                "set title.glow Json(Object {})",
+                "set title.glow.strength Json(Number(0.25))",
+                "set bar.width Json(Null)",
+                "set bar.opacity Json(Number(0.5))",
+                "set bar.y Numbers([1.0])",
             ]
         );
-        assert_eq!(refused_names(&f), ["/main/0/text"]);
+        assert_eq!(
+            refused_whys(&f),
+            [r#"kind 6 operation 1 at '/main/0/text': the test found "hi""#]
+        );
+    }
+
+    /// A patch whose change the scene refuses part way leaves the scene,
+    /// and what the program locks, as they were before it.
+    #[test]
+    fn a_patch_that_the_scene_refuses_part_way_is_put_back() {
+        let d = tmpdir("back");
+        let doc = serde_json::json!({
+            "version": 1,
+            "passes": [{"name": "main", "fragment": "void main(){}",
+                        "layers": [{"name": "title", "text": "hi"},
+                                   {"name": "bar", "shape": "rect"}]}],
+        });
+        let ops = serde_json::json!([
+            {"op": "remove", "path": "/main/1"},
+            {"op": "add", "path": "/main/0/y", "value": 4},
+            {"op": "add", "path": "/main/-", "value": {"name": "refused", "shape": "rect"}},
+        ]);
+        let body = [
+            "#!/bin/sh\n".to_string(),
+            format!("printf '%s\\n' '{doc}'\n"),
+            patch(&ops),
+            numbers("title.x", &[1.0]),
+            "while IFS= read -r line; do :; done\n".to_string(),
+        ]
+        .concat();
+        let path = script(&d, "back", &body);
+        let (scene, mut f) = start_scene(&path, &no_args()).unwrap();
+        f.bind(&scene);
+        let locks = f.locks();
+        until(|| {
+            f.drain();
+            f.incoming.iter().any(|(n, _)| n == "title.x")
+        });
+        let mut stub = Stub {
+            now: serde_json::json!({"name": "title", "text": "hi"}),
+            ..stub(&["title", "bar"])
+        };
+        f.update(&mut stub, 0, 0.0).unwrap();
+        assert_eq!(
+            *stub.log.borrow(),
+            [
+                "remove bar",
+                "set title.y Json(Number(4))",
+                r#"add main 1 {"name":"bar"}"#,
+                r#"look {"name":"title","text":"hi"}"#,
+                "set title.x Numbers([1.0])",
+            ]
+        );
+        assert_eq!(*stub.main.borrow(), ["title", "bar"]);
+        assert_eq!(
+            refused_whys(&f),
+            ["kind 6 operation 2 at '/main/-': a layer the scene refuses"]
+        );
+        assert_eq!(
+            lock(&locks).to_json()["fields"],
+            serde_json::json!(["title.x"])
+        );
     }
 
     #[test]

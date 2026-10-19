@@ -86,6 +86,11 @@ pub trait RenderTarget {
         None
     }
 
+    /// The names of the passes of the running scene, in their order.
+    fn passes(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The names of the layers of pass `pass` of the running scene, in the
     /// order that they draw. None when the target draws no pass of that
     /// name.
@@ -199,6 +204,11 @@ impl RenderTarget for Renderer {
 
     fn layer(&self, name: &str) -> Option<Value> {
         self.with_layer(name, |_, l| l.to_dict())
+    }
+
+    fn passes(&self) -> Vec<String> {
+        self.with_scene(|scene| scene.passes.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default()
     }
 
     fn pass_layers(&self, pass: &str) -> Option<Vec<String>> {

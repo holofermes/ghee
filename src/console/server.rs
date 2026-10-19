@@ -874,6 +874,10 @@ impl RenderTarget for SharedRenderer {
         RenderTarget::layer(&*self.renderer.borrow(), name)
     }
 
+    fn passes(&self) -> Vec<String> {
+        RenderTarget::passes(&*self.renderer.borrow())
+    }
+
     fn pass_layers(&self, pass: &str) -> Option<Vec<String>> {
         RenderTarget::pass_layers(&*self.renderer.borrow(), pass)
     }

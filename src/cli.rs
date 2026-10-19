@@ -266,6 +266,9 @@ fn scene_of(a: &Ns, card: &mut Option<Card>) -> Result<(Scene, Option<SceneProce
     report::detail("scene", &path);
     let program = a.here.as_ref().map(|h| Arc::clone(&h.program));
     let exe = process::executable(&path).filter(|_| program.is_none());
+    if let Some(exe) = &exe {
+        report::detail("program", exe);
+    }
     let (mut scene, mut process) = if program.is_some() || exe.is_some() {
         let turned = a.rotate == 90 || a.rotate == 270;
         let (w, h) = prospective_size(a, card)?;

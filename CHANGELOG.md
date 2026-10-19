@@ -169,6 +169,7 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - The console answers HEAD as it answers GET, and a 405 names the methods
   that the path takes in `Allow`.
 - Every error line that `ghee` prints starts with `ghee: `.
+- `ghee render -v` names the program that runs in place of a scene file.
 
 ### Fixed
 

@@ -291,23 +291,23 @@ impl SceneStore {
         Ok(Some(state::file_of(dir, &file, self.demo.then_some(name))))
     }
 
-    /// Point the store at its drafts' and its saved edits' directories, and
-    /// move the saved edits that the drafts' directory still holds into
-    /// their own, logging each.
+    /// Point the store at its drafts' and its saved edits' directories.
     pub fn keep_in(&mut self, state_dir: Option<PathBuf>, edits_dir: Option<PathBuf>) {
         self.state_dir = state_dir;
         self.edits_dir = edits_dir;
-        if let (Some(drafts), Some(edits)) = (&self.state_dir, &self.edits_dir) {
-            for to in state::move_saved(drafts, edits) {
-                eprintln!("ghee: saved edits moved to {}", to.display());
-            }
-        }
     }
 
-    /// The edits that the scene's state file holds. An unreadable file holds
-    /// none: it moves aside before a save can replace it, and logs one line.
+    /// The edits that the scene's state file holds. A state file that the
+    /// drafts' directory still holds moves to the saved edits' first, and
+    /// logs one line. An unreadable file holds none: it moves aside before a
+    /// save can replace it, and logs one line.
     pub fn read_state(&self, name: &str) -> Option<Edits> {
         let path = self.state_file(name).ok().flatten()?;
+        if let Some(old) = self.file_in(self.state_dir.as_deref(), name).ok().flatten() {
+            if state::move_saved(&old, &path) {
+                eprintln!("ghee: saved edits moved to {}", path.display());
+            }
+        }
         match state::read(&path) {
             Ok(edits) => edits,
             Err(e) => {
@@ -1562,26 +1562,32 @@ mod tests {
     }
 
     /// XDG Base Directory: saved edits are user data, drafts are state. A
-    /// saved-edits file left among the drafts moves to the edits once, and
-    /// a draft stays.
+    /// saved-edits file left among the drafts moves to the edits when ghee
+    /// opens its scene, once, and the draft and every other scene's file
+    /// stay.
     #[test]
     fn saved_edits_live_in_the_edits_dir_and_drafts_in_the_state_dir() {
         let (d, mut store) = scenes("split");
         let states = tmpdir("split-state");
         let edits = tmpdir("split-edits");
         let old = PathBuf::from(format!("{states}/scenes{d}/one.json"));
+        let other = PathBuf::from(format!("{states}/scenes{d}/two.json"));
         fs::create_dir_all(old.parent().unwrap()).unwrap();
-        fs::write(&old, "{}").unwrap();
+        for f in [&old, &other] {
+            fs::write(f, r#"{"version": 1}"#).unwrap();
+        }
         fs::write(state::draft_of(&old), "{}").unwrap();
         store.keep_in(Some(PathBuf::from(&*states)), Some(PathBuf::from(&*edits)));
+        assert!(old.exists() && other.exists());
+        store.read_state("one");
         let saved = PathBuf::from(format!("{edits}/scenes{d}/one.json"));
-        assert!(!old.exists() && saved.exists());
+        assert!(!old.exists() && saved.exists() && other.exists());
         assert_eq!(store.state_file("one").unwrap(), Some(saved));
         assert_eq!(store.draft_file("one"), Some(state::draft_of(&old)));
         assert!(state::draft_of(&old).exists());
         // the move happens once: a file already in place stays as it is
         fs::write(&old, "{\"values\": {}}").unwrap();
-        store.keep_in(Some(PathBuf::from(&*states)), Some(PathBuf::from(&*edits)));
+        store.read_state("one");
         assert!(old.exists());
     }
 

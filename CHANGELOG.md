@@ -28,8 +28,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Install on CPython 3.10 or newer.
 - Find the edits that the console saved in `$XDG_DATA_HOME/ghee/edits`
   instead of `$XDG_STATE_HOME/ghee`, and pass `--edits-dir` instead of
-  `--state-dir` to move them. Drafts stay in `$XDG_STATE_HOME/ghee`. ghee
-  moves the saved edits that it finds among the drafts once.
+  `--state-dir` to move them. Drafts stay in `$XDG_STATE_HOME/ghee`. When
+  ghee opens a scene whose saved edits it finds among the drafts, it moves
+  them, once.
 - Catch OSError instead of RuntimeError where a GPU or a display won't
   open. A device node that refuses its open raises the subclass of its
   errno, such as PermissionError.

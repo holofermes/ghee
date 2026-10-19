@@ -318,46 +318,16 @@ fn xdg_dir(var: &str, under: &str) -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(under)))
 }
 
-/// Move each saved-edits file under `drafts`, the drafts' directory, to the
-/// same place under `edits`, unless one is there already. Returns the files
-/// that moved.
-pub fn move_saved(drafts: &Path, edits: &Path) -> Vec<PathBuf> {
-    let mut moved = Vec::new();
-    if drafts == edits {
-        return moved;
+/// Move the saved-edits file `from`, in the drafts' directory, to `to`,
+/// unless `to` is there already. True when it moved.
+pub fn move_saved(from: &Path, to: &Path) -> bool {
+    if from == to || !from.is_file() || to.exists() {
+        return false;
     }
-    let mut dirs: Vec<PathBuf> = ["scenes", "demo"].iter().map(|d| drafts.join(d)).collect();
-    while let Some(dir) = dirs.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                dirs.push(path);
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".json") || name.ends_with(".draft.json") {
-                continue;
-            }
-            let Ok(rel) = path.strip_prefix(drafts) else {
-                continue;
-            };
-            let to = edits.join(rel);
-            if to.exists() {
-                continue;
-            }
-            let placed = to
-                .parent()
-                .map_or(Ok(()), fs::create_dir_all)
-                .and_then(|()| fs::rename(&path, &to).or_else(|_| copy_out(&path, &to)));
-            if placed.is_ok() {
-                moved.push(to);
-            }
-        }
-    }
-    moved
+    to.parent()
+        .map_or(Ok(()), fs::create_dir_all)
+        .and_then(|()| fs::rename(from, to).or_else(|_| copy_out(from, to)))
+        .is_ok()
 }
 
 /// Copy `from` to `to`, then remove `from`: a move across file systems.

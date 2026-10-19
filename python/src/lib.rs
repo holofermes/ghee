@@ -565,7 +565,7 @@ impl Handle {
         let (mode, divide) = match (session.components(), session.alpha()) {
             (3, _) => ("RGB", false),
             (_, None) => ("RGBA", false),
-            (_, Some(form)) if form.image_premultiplied() => ("RGBa", false),
+            (_, Some(AlphaForm::Premultiplied)) => ("RGBa", false),
             _ => ("RGBA", true),
         };
         let bytes = PyBytes::new_with(py, data.len(), |buf| {
@@ -648,7 +648,8 @@ impl Handle {
 /// `timestep` pins time to frame*S, so a render repeats bit for bit.
 /// `alpha` keeps the output pass's alpha, opaque without it. True keeps
 /// pixels() premultiplied, as drawn, and image() and save() unpremultiplied;
-/// "premultiplied" or "unpremultiplied" holds for all three.
+/// "premultiplied" or "unpremultiplied" holds for pixels() and image(), and
+/// save() refuses "premultiplied", since a PNG holds alpha unpremultiplied.
 /// `base_dir` is where a scene given as a dict, as JSON text or as a
 /// ghee.Scene finds its files, the working directory when None.
 /// `drop` lets the display skip to the newest frame each time it frees:

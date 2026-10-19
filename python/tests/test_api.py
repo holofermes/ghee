@@ -517,7 +517,9 @@ def test_image_is_the_last_frame_as_a_pillow_image_with_unpremultiplied_colour()
 def test_alpha_names_one_form_for_every_output(tmp_path):
     """HALF is orange at half alpha: (0.25, 0.5, 0) premultiplied, (0.5, 1, 0)
     unpremultiplied. True keeps each output's own form, and a form's name
-    holds for raw frames, Pillow images, PNG files and `ghee render -o -`."""
+    holds for raw frames, Pillow images and `ghee render -o -`. A PNG holds
+    alpha unpremultiplied, so a save under "premultiplied" is refused, and
+    so is `ghee render --alpha premultiplied` into a PNG."""
     image = pillow()
     pre, unpre = (0.25, 0.5, 0.0, 0.5), (0.5, 1.0, 0.0, 0.5)
     forms = {
@@ -538,6 +540,10 @@ def test_alpha_names_one_form_for_every_output(tmp_path):
             got = h.image().getpixel((0, 0))
             if raw == picture:
                 assert got == pixel(h), (alpha, got, pixel(h))
+            if alpha == "premultiplied":
+                with pytest.raises(ValueError, match="unpremultiplied"):
+                    h.save(png)
+                continue
             h.save(png)
         saved = image.open(png).getpixel((0, 0))
         assert close(saved, picture), alpha
@@ -559,6 +565,16 @@ def test_alpha_names_one_form_for_every_output(tmp_path):
             timeout=60,
         )
         assert close(ran.stdout[:4], raw), (alpha, tuple(ran.stdout[:4]))
+    ran = subprocess.run(
+        [str(pathlib.Path(sys.executable).parent / "ghee"), "render", scene]
+        + ["-o", str(tmp_path / "f.png"), "--alpha", "premultiplied"],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=60,
+    )
+    assert ran.returncode == 1, ran.stderr
+    assert "holds alpha unpremultiplied" in ran.stderr
     with pytest.raises(ValueError):
         ghee.open(HALF, width=8, height=4, alpha="linear")
 

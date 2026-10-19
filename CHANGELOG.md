@@ -97,8 +97,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `{"name": "frc", "calm": 8}` in a scene's `filters`, or with
   `--filters frc=calm=8` ([Changing a filter's
   settings](docs/filters.md#changing-a-filters-settings)).
-- Keep transparency in the output with `--alpha`, premultiplied or
-  unpremultiplied.
+- Keep transparency in the output with `--alpha`. Raw frames take colour
+  premultiplied or unpremultiplied, and a PNG takes it unpremultiplied.
 - Move ghee's cache with `$GHEE_CACHE`.
 - Add, change, move and remove layers from a scene program with message
   kinds 6 to 10.

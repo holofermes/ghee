@@ -18,7 +18,7 @@ use ghee::filters::apply_filters;
 use ghee::layer::{is_image_file, Address, Layer};
 use ghee::live::Live;
 use ghee::looper::{Clock, Frame, Moment, RenderTarget};
-use ghee::output::{encode_jpeg, encode_png_as, expand_pattern, pacer, AlphaForm, Sinks};
+use ghee::output::{encode_jpeg, encode_png, expand_pattern, pacer, AlphaForm, Sinks};
 use ghee::procedural::{load_scene, process, resolve, scene_name};
 use ghee::scene::{coerce, truthy, ArraySize, Scene};
 use ghee::stats::{monotonic, DEST_KMS};
@@ -679,6 +679,12 @@ impl Session {
     /// no alpha. A run of `#` or a printf field in `path` takes the tick of
     /// that frame, as `ghee render -o` numbers its files.
     pub fn save(&self, path: &str) -> Outcome<()> {
+        if self.alpha == Some(AlphaForm::Premultiplied) {
+            return Err(Fault::scene(
+                "save() writes an image file, which holds alpha unpremultiplied; \
+                 with alpha=\"premultiplied\", read the frame with pixels() or image()",
+            ));
+        }
         let data = self.pixels()?;
         let index = self.drawn.unwrap_or_default() as i64;
         let path = expand_pattern(path, index).map_err(scene_fault)?;
@@ -686,15 +692,12 @@ impl Session {
         let components = self.renderer.components;
         let lower = path.to_ascii_lowercase();
         let bytes = if lower.ends_with(".png") {
-            encode_png_as(
-                Frame {
-                    data,
-                    width,
-                    height,
-                    components,
-                },
-                self.alpha.is_some_and(AlphaForm::image_premultiplied),
-            )
+            encode_png(Frame {
+                data,
+                width,
+                height,
+                components,
+            })
         } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
             encode_jpeg(
                 Frame {

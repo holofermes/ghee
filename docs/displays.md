@@ -59,8 +59,8 @@ lossless and stored uncompressed. For smaller files, use `.jpg` with
 `--save-opts quality=90`.
 
 Image files are opaque. To keep the scene's transparency, add `--alpha`. A
-PNG then holds unpremultiplied colours, or premultiplied ones with `--alpha
-premultiplied`. A JPEG holds no transparency.
+PNG then holds unpremultiplied colours, as PNG's alpha is. A JPEG holds no
+transparency.
 
 ## Raw frames
 

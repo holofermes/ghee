@@ -425,12 +425,18 @@ fn file_sink(a: &Ns) -> Result<FileSink> {
         )?),
         false => None,
     };
+    if a.alpha == Some(AlphaForm::Premultiplied) {
+        return Err(exit(format!(
+            "{}: --alpha premultiplied writes raw frames, -o -; an image file holds \
+             alpha unpremultiplied",
+            a.cmd
+        )));
+    }
     Ok(FileSink::Images(ImageSequence::with_opts(
         pattern,
         0,
         save_opts,
         usize::try_from(a.write_buffer).unwrap_or(0),
-        a.alpha.unwrap_or_default(),
     )))
 }
 
@@ -1279,7 +1285,8 @@ struct RenderArgs {
         value_parser = ["premultiplied", "unpremultiplied"],
         help = "keep the output pass's alpha in RGBA frames, which are opaque \
                 without it. Bare, raw frames hold colour premultiplied and \
-                PNGs unpremultiplied; a FORM holds for both"
+                PNGs unpremultiplied; a FORM names the form of raw frames, \
+                and a PNG takes unpremultiplied alone"
     )]
     alpha: Option<Option<String>>,
 

@@ -14,9 +14,9 @@
 // the GL context as an EGL_LINUX_DMA_BUF_EXT image. Pi 1 through Pi 3 have no
 // separate v3d node and take the same path.
 //
-// This file is the only V4L2 user in the engine, and boards without a hardware
-// encoder (Pi 5, desktops) fail ghee_encoder_create cleanly at open() and the
-// caller falls back to a software encoder.
+// This file is the only V4L2 user in the engine. On boards without a hardware
+// encoder (Pi 5, desktops) ghee_encoder_create fails at open(), and the caller
+// falls back to a software encoder.
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>

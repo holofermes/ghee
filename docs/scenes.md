@@ -393,7 +393,6 @@ with a letter or a digit, with no `__` anywhere, and no `gl_` or `ghee` at the
 start. A name also can't be one of ghee's [built-in names](#built-in-names),
 or a GLSL name that ghee makes from another of your names, such as
 `levels_at` from an array `levels` or `title_size` from a text layer `title`.
-The error names both.
 
 ## Procedural scenes
 

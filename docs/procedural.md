@@ -95,8 +95,8 @@ bars.sh: choose one`. `ghee serve` shows the program in the
 ghee starts the program in the program's own folder, so a relative path is
 relative to the program.
 
-If the program can't start, or exits before it writes its scene, ghee stops
-with the reason, and shows what the program wrote on stderr.
+If the program can't start, or exits before it writes its scene, ghee stops,
+and shows what the program wrote on stderr.
 
 ## Arguments
 

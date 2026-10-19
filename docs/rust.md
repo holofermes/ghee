@@ -124,10 +124,9 @@ first.
 
 `Card::open(None)` opens the first card with a connected display, and the
 render takes the display's mode as its size. To pick a card, pass its node,
-such as `Some("/dev/dri/card1")`. Its error says why no display opened: the
-node's own error, no connected display, or GL that runs in software, which
-ghee refuses. Leave `display` at None to render with no display, at `size`
-or 320x240.
+such as `Some("/dev/dri/card1")`. It fails on a node that won't open, with
+no connected display, and with GL that runs in software. Leave `display` at
+None to render with no display, at `size` or 320x240.
 
 An `ArraySource` gives the data of one array from the array's size and the
 frame number, in a `Feed` as `render`'s closure does. An array with no

@@ -40,14 +40,14 @@ curl -G -X POST http://127.0.0.1:8090/set --data-urlencode layer=title \
   --data-urlencode field=color --data-urlencode 'value={"from":"red","to":"yellow","angle":90}'
 ```
 
-Errors follow one pattern: a status, and one line of text that says why:
+An error is a status and one line of text, such as:
 ```
 bad /set: param 'nope' is not a param this scene declares (main.tile, tile, main.berry, berry, ...)
 ```
 
 | Status | When |
 | --- | --- |
-| 400 | a bad query or value. The text names what's wrong, and lists the names that work |
+| 400 | a bad query or value |
 | 403 | a param or a layer key that the scene's program sets ([Locked](#locked)), a change that a [Python console](#from-python) refuses, a `Host` header other than `localhost`, a `127.x.x.x` address, `[::1]` or a name passed to `--allow-hosts`, with or without a port ([From another computer](console.md#from-another-computer)), or a POST from another site's web page |
 | 404 | an unknown path, scene or item |
 | 405 | a GET to a path that changes something, which takes POST alone, or a method other than GET, HEAD and POST. `Allow` names the methods that the path takes |
@@ -245,7 +245,7 @@ the payload:
 | 2 | a delta frame, in AVCC |
 | 3 | the reason that the stream ends, as UTF-8 text |
 
-When no encoder can start, `/h264` answers 503 with the reason.
+When no encoder can start, `/h264` answers 503.
 
 ## From Python
 

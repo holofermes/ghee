@@ -338,7 +338,7 @@ double ghee_jit_start(const double *draw, int ndraw, const double *busy, int nbu
 
 // Zero-copy hardware H264 (encoder.c): the final pass is blitted into a linear
 // dmabuf and fed to the V4L2 M2M encoder (bcm2835-codec), with no CPU pixel copy.
-// create fails cleanly (NULL + err) on boards without /dev/video11.
+// create returns NULL and sets err on boards without /dev/video11.
 typedef struct GheeEncoder GheeEncoder;
 GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrate, char **err);
 // Encode the frame left by the last ghee_mp_render/ghee_mp_present (display

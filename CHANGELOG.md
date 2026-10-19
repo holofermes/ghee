@@ -19,8 +19,7 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Read an array's length as `<name>_count` instead of `<name>_size`.
 - Name the pass in `/set` with `pass=<name>` instead of its index.
 - Remove unknown keys from a scene, and keep its names inside the [naming
-  rules](docs/scenes.md#names). A scene that breaks either fails to load,
-  and the error names the key.
+  rules](docs/scenes.md#names). A scene that breaks either fails to load.
 - Pass `in_pass=` to `set_param` instead of `pass_=`.
 - Read the time as `tick.time`. `frame()` and `skip()` return a `ghee.Tick`
   instead of a dict.

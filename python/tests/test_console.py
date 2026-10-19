@@ -6,6 +6,7 @@ import copy
 import inspect
 import io
 import json
+import logging
 import os
 import shutil
 import socket
@@ -519,8 +520,8 @@ ghee.run()
 @contextlib.contextmanager
 def drawn(host, tmp_path, size=(32, 16)):
     """A program that makes call() each frame, run by `host`: ghee.open with
-    serve=, or `ghee serve` as a scene of its own, with what it prints in
-    tmp_path/"stdout". Gives the console's port, and a step that lets the
+    serve=, or `ghee serve` as a scene of its own, with what it prints on
+    stderr in tmp_path/"stderr". Gives the console's port, and a step that lets the
     program draw on."""
     port = free_port()
     width, height = size
@@ -548,14 +549,13 @@ def drawn(host, tmp_path, size=(32, 16)):
     served = subprocess.Popen(
         [cli, "serve", str(scene), "--port", str(port), "--size", f"{width}x{height}"],
         env=env,
-        stdout=(tmp_path / "stdout").open("w"),
-        stderr=subprocess.PIPE,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=(tmp_path / "stderr").open("w"),
     )
 
     def alive():
         if served.poll() is not None:
-            pytest.fail(served.stderr.read())
+            pytest.fail((tmp_path / "stderr").read_text())
         time.sleep(0.01)
 
     # ghee serve draws frames while someone watches
@@ -571,8 +571,7 @@ def drawn(host, tmp_path, size=(32, 16)):
         yield port, alive
     finally:
         served.terminate()
-        _, err = served.communicate(timeout=10)
-        print(err, file=sys.stderr)
+        served.wait(timeout=10)
 
 
 def until(done, step, limit=10.0):
@@ -652,9 +651,10 @@ def first_jpeg(port):
 
 
 @pytest.mark.parametrize("host", ["open", "serve"])
-def test_either_host_prints_its_address_and_serves_the_same_stats_and_preview(
-    host, tmp_path, capfd
+def test_either_host_gives_its_address_and_serves_the_same_stats_and_preview(
+    host, tmp_path, caplog
 ):
+    caplog.set_level(logging.INFO, logger="ghee")
     with drawn(host, tmp_path, size=(640, 320)) as (port, step):
         until(lambda: json_of(port, "/stats")["frames"] > 0, step)
         assert sorted(json_of(port, "/stats")) == sorted(
@@ -666,10 +666,11 @@ def test_either_host_prints_its_address_and_serves_the_same_stats_and_preview(
             480,
             240,
         )
-    printed = capfd.readouterr().out
+    printed = caplog.text
     if host == "serve":
-        printed = (tmp_path / "stdout").read_text()
-    line = next(x for x in printed.splitlines() if x.startswith("ghee console:"))
+        printed = (tmp_path / "stderr").read_text()
+    line = next(x for x in printed.splitlines() if "ghee console:" in x)
+    line = line[line.index("ghee console:") :]
     assert line.startswith(f"ghee console: http://127.0.0.1:{port}/ 1 scene ['"), line
     assert line.endswith("preview 640x320 rgba)"), line
 

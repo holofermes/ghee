@@ -29,7 +29,7 @@ use crate::console::server;
 use crate::console::state;
 use crate::console::store::{self, SceneStore};
 use crate::console::{examples_dir, is_examples_dir};
-use crate::control::{self, Control, SIGTERM};
+use crate::control::{self, Control};
 use crate::engine::{probe_display, Card, Feed, Renderer, DEFAULT_SIZE};
 use crate::feeds::demo_feed;
 use crate::filters::{self, apply_filters, Filter};
@@ -684,7 +684,7 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
         closed = closed.and(s.close());
     }
     r.close();
-    if a.control.signal() == Some(SIGTERM) {
+    if a.control.signal().is_some() {
         return Ok(());
     }
     ran?;
@@ -766,8 +766,8 @@ fn serve(
         ..Default::default()
     });
     match a.control.signal() {
-        Some(SIGTERM) => Ok(()),
-        _ => ran,
+        Some(_) => Ok(()),
+        None => ran,
     }
 }
 
@@ -1031,6 +1031,7 @@ fn cmd_displays() -> Result<()> {
 #[command(
     name = "ghee",
     version,
+    arg_required_else_help = true,
     disable_help_subcommand = true,
     disable_version_flag = true
 )]
@@ -1665,30 +1666,32 @@ pub fn main(argv: Vec<String>) -> i32 {
     if let Some(code) = extras(&argv) {
         return code;
     }
-    // A bare `ghee` and `ghee --version` greet, everything else works.
-    if argv.is_empty() || argv == ["--version"] || argv == ["-V"] {
-        eprint!("{}", report::splash(env!("CARGO_PKG_VERSION")));
-        return 0;
-    }
     let (own, scene_args) = split_scene_args(&argv);
     let cli = match Cli::try_parse_from(std::iter::once("ghee".to_string()).chain(own)) {
         Ok(cli) => cli,
         Err(e) => return clap_status(&e),
     };
     let control = Control::new();
-    if let Err(e) = control::catch(&control) {
-        eprintln!("ghee: {e}");
-        return 1;
-    }
+    let held = match control::catch(&control) {
+        Ok(held) => held,
+        Err(e) => {
+            eprintln!("ghee: {e}");
+            return 1;
+        }
+    };
     let (cmd, ran) = dispatch(cli, scene_args, &control);
+    control::release(&control, held);
     status(&control, cmd, ran)
 }
 
 /// The exit status of command `cmd` that ended with `ran` under `control`:
-/// 143 after a SIGTERM, else 1 for an error, which this prints.
+/// 1 for an error, which this prints. After SIGINT or SIGTERM this sends the
+/// signal again, and the process ends by it; 128 plus the signal's number is
+/// the status when a handler of the caller's takes it instead.
 fn status(control: &Control, cmd: &str, ran: Result<()>) -> i32 {
-    if control.signal() == Some(SIGTERM) {
-        return 143;
+    if let Some(sig) = control.signal() {
+        control::reraise(sig);
+        return 128 + sig;
     }
     match ran {
         Ok(()) => 0,
@@ -1843,7 +1846,9 @@ fn clap_line(e: &clap::Error) -> String {
 /// Render `here` as `ghee render` renders a scene, with `flags`, flags of
 /// DIRECT_FLAGS alone, and `card` open already for the display. Returns the
 /// exit status of `ghee render`, or the failure, which say_failure() prints
-/// as `ghee render` prints it, each line starting with `prog`.
+/// as `ghee render` prints it, each line starting with `prog`. A SIGINT or
+/// SIGTERM that stops the render goes again, after the render's cleanup, to
+/// the handler that held it before the render.
 pub fn direct(prog: &str, flags: &[String], here: Here, card: Option<Card>) -> Result<i32> {
     let a = match direct_ns(prog, flags, Some(here)) {
         Ok(a) => a,
@@ -1855,8 +1860,9 @@ pub fn direct(prog: &str, flags: &[String], here: Here, card: Option<Card>) -> R
     let held = control::catch(&a.control)?;
     let ran = render(&a, card);
     control::release(&a.control, held);
-    if a.control.signal() == Some(SIGTERM) {
-        return Ok(143);
+    if let Some(sig) = a.control.signal() {
+        control::reraise(sig);
+        return Ok(0);
     }
     ran.map(|()| 0)
 }

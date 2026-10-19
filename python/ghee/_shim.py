@@ -1195,6 +1195,8 @@ def run(
     Ctrl-C reaches every process in the terminal's group, so ghee takes it
     too and is already stopping. The scene ends where it stands, quietly: a
     traceback here would say a scene crashed, and it did what it was told.
+    A run of its own then ends the process by SIGINT, as POSIX asks of a
+    program that stops on one.
     """
     global _PARAMS, _FILTERS, _SCENE, _LIVE, _DRAWN, _TICK
     scene = _document(scene)
@@ -1204,15 +1206,22 @@ def run(
     ]
     _SCENE = scene
     _DRAWN = None
+    wired = bool(os.environ.get(WIRE))
+    interrupted = False
     try:
-        if os.environ.get(WIRE):
+        if wired:
             _wire(scene)
         else:
             _direct(scene)
     except KeyboardInterrupt:
-        pass
+        interrupted = not wired
     finally:
         _PARAMS, _FILTERS, _SCENE, _LIVE, _TICK = None, [], None, None, None
+    if interrupted:
+        import signal
+
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.raise_signal(signal.SIGINT)
 
 
 def _document(scene) -> dict:
@@ -1296,7 +1305,8 @@ def _direct(scene: dict) -> None:
     for the answer to each tick, as it asks a process on the wire.
 
     Raises what a hook or a feed raises, and SystemExit with the status of
-    `ghee render` when that is not 0.
+    `ghee render` when that is not 0. A SIGINT or SIGTERM that stops the
+    render goes, after it, to the handler that held it before.
     """
     from ghee import _ext
 

@@ -190,29 +190,6 @@ pub fn frames_done() {
     progress_done();
 }
 
-/// The greeting on a bare `ghee` and on `--version`, and nowhere else: a
-/// render prints frames, not a logo. Colour only where a terminal reads it.
-pub fn splash(version: &str) -> String {
-    let art = [
-        r"  ____ _   _ _____ _____ ",
-        r" / ___| | | | ____| ____|",
-        r"| |  _| |_| |  _| |  _|  ",
-        r"| |_| |  _  | |___| |___ ",
-        r" \____|_| |_|_____|_____|",
-    ];
-    let (dim, off) = match stderr().is_terminal() {
-        true => ("\x1b[2m", "\x1b[0m"),
-        false => ("", ""),
-    };
-    let mut out = String::new();
-    for line in art {
-        out.push_str(&format!("{dim}{line}{off}\n"));
-    }
-    out.push_str(&format!("\n {version}\n"));
-    out.push_str(" ghee --help\n");
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

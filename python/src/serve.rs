@@ -26,6 +26,7 @@ use ghee::engine::Renderer;
 use ghee::live::{Index, Live};
 use ghee::procedural::locks::Locks;
 use ghee::scene::{coerce, ParamValue, Scene};
+use pyo3::prelude::*;
 use serde_json::Value;
 use tiny_http::Server;
 
@@ -193,7 +194,8 @@ pub struct Console {
 }
 
 impl Console {
-    /// Serve the console on `host` and `port`, and print its address.
+    /// Serve the console on `host` and `port`, and log its address on the
+    /// `ghee` logger.
     pub fn start(host: &str, port: u16, serving: Serving<'_>) -> Result<Console> {
         let mut hub = Hub::new();
         (hub.w, hub.h) = serving.size;
@@ -220,10 +222,13 @@ impl Console {
         let mut threads = spawn_encoders(&shared);
         threads.push(serve(Arc::new(server), Arc::clone(&shared), Arc::new(api)));
         let names = [serving.name.to_string()];
-        println!(
-            "{}",
-            banner(&address, &names, "", serving.size, serving.format)
-        );
+        let line = banner(&address, &names, "", serving.size, serving.format);
+        Python::attach(|py| {
+            py.import("logging")?
+                .call_method1("getLogger", ("ghee",))?
+                .call_method1("info", (line,))
+                .map(drop)
+        })?;
         Ok(Console { shared, threads })
     }
 

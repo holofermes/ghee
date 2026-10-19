@@ -2137,7 +2137,7 @@ pub fn run(opts: Options) -> Result<()> {
                     from.push_str(&format!(", my scenes={m}"));
                 }
             }
-            println!("{}", banner(&address, &names, &from, size, format));
+            eprintln!("{}", banner(&address, &names, &from, size, format));
             let r = Rc::new(RefCell::new(r));
             render_loop(&console, r, sinks, arrays, pacer, on_stats);
         }

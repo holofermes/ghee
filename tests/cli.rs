@@ -460,7 +460,7 @@ extern "C" {
 #[test]
 #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
 fn a_burst_of_ctrl_c_and_sigterm_ends_the_console() {
-    use std::io::{BufRead, BufReader, Read};
+    use std::io::{BufRead, BufReader};
     use std::time::{Duration, Instant};
     let dir = Dir::new("signals");
     let scene = dir.join("s.scene.json");
@@ -481,20 +481,16 @@ fn a_burst_of_ctrl_c_and_sigterm_ends_the_console() {
             .env("GHEE_ASSETS", "")
             .env("XDG_CACHE_HOME", &dir.0)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::null())
             .stderr(Stdio::piped()),
     );
-    let mut out = BufReader::new(ghee.stdout.take().unwrap());
+    let mut err = BufReader::new(ghee.stderr.take().unwrap());
     let mut line = String::new();
-    out.read_line(&mut line).unwrap();
-    if !line.starts_with("ghee console: ") {
-        let mut err = String::new();
-        ghee.stderr
-            .take()
-            .unwrap()
-            .read_to_string(&mut err)
-            .unwrap();
-        panic!("{line:?} {err}");
+    while !line.starts_with("ghee console: ") {
+        line.clear();
+        if err.read_line(&mut line).unwrap() == 0 {
+            panic!("ghee serve ended before its address");
+        }
     }
     // each signal lands while the other one's handler runs
     for _ in 0..1000 {
@@ -515,5 +511,26 @@ fn a_burst_of_ctrl_c_and_sigterm_ends_the_console() {
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    assert!(matches!(status.code(), Some(0 | 143)), "{status:?}");
+    use std::os::unix::process::ExitStatusExt;
+    assert!(
+        matches!(status.signal(), Some(SIGINT | SIGTERM)),
+        "{status:?}"
+    );
+}
+
+#[test]
+fn version_prints_one_line_on_stdout_and_a_bare_ghee_prints_its_usage() {
+    let version = output(Command::new(env!("CARGO_BIN_EXE_ghee")).arg("--version"));
+    assert_eq!(version.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap(),
+        format!("ghee {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(version.stderr.is_empty());
+    let bare = output(&mut Command::new(env!("CARGO_BIN_EXE_ghee")));
+    assert_eq!(bare.status.code(), Some(2));
+    assert!(bare.stdout.is_empty());
+    assert!(String::from_utf8(bare.stderr)
+        .unwrap()
+        .contains("Usage: ghee"));
 }

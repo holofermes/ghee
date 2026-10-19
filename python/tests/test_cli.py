@@ -38,7 +38,7 @@ def test_the_command_imports_nothing_past_the_native_module():
     shim's imports and the signal module took 230 ms on a Pi Zero 2 W."""
 
     def modules(code, *argv):
-        probe = f"import sys; {code}print(*sys.modules)"
+        probe = f"import sys; {code}print(*sys.modules, file=sys.stderr)"
         ran = subprocess.run(
             [sys.executable, "-c", probe, *argv],
             capture_output=True,
@@ -46,7 +46,7 @@ def test_the_command_imports_nothing_past_the_native_module():
             check=True,
             timeout=60,
         )
-        return set(ran.stdout.split())
+        return set(ran.stderr.split())
 
     bare = modules("")
     ran = modules("import ghee._cli; ghee._cli.main(); ", "--version")

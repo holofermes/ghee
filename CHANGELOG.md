@@ -133,8 +133,15 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   scene file's 2.7 gives 3 instead of 2.
 - A Python scene file that you run yourself renders as `ghee render` renders
   it. Its flags take `ghee render`'s checks and help, `--stats` prints the
-  same lines, a SIGTERM ends it with status 143, and `--serve` gives the
-  console of `ghee render --serve`, which saves your edits.
+  same lines, and `--serve` gives the console of `ghee render --serve`,
+  which saves your edits.
+- A SIGTERM or a Ctrl-C ends `ghee` and a Python scene file that you run
+  yourself by that signal, after ghee closes the display, so systemd counts
+  the stop as clean.
+- `ghee --version` prints one line, such as `ghee 0.5.0`, on stdout. A bare
+  `ghee` prints its usage on stderr and exits with status 2.
+- The console prints its address on stderr. `ghee.open(serve=...)` logs it
+  at INFO on the `ghee` logger of Python's `logging`.
 
 ### Fixed
 

@@ -106,6 +106,7 @@ extern "C" {
     fn signal(sig: c_int, handler: usize) -> usize;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn __errno_location() -> *mut c_int;
+    fn raise(sig: c_int) -> c_int;
 }
 
 /// The socket that on_signal() writes the signal to, -1 until the first
@@ -168,6 +169,16 @@ pub(crate) fn catch(control: &Control) -> io::Result<[usize; 2]> {
     lock(&CAUGHT).push(control.clone());
     let handler = on_signal as extern "C" fn(c_int) as usize;
     unsafe { Ok([signal(SIGINT, handler), signal(SIGTERM, handler)]) }
+}
+
+/// Send `sig` to this process again, to the handler that release() put back,
+/// with stdout and stderr flushed. Under the default handler the process
+/// ends by the signal, as POSIX asks of a program that cleans up after one.
+pub(crate) fn reraise(sig: c_int) {
+    use std::io::Write;
+    let _ = io::stdout().flush();
+    let _ = io::stderr().flush();
+    unsafe { raise(sig) };
 }
 
 /// Put back the handlers of SIGINT and SIGTERM that catch() replaced, and

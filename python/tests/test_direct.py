@@ -337,10 +337,10 @@ def test_an_exception_of_the_script_keeps_its_traceback(tmp_path, monkeypatch, c
 )
 def test_a_run_takes_the_frame_count_of_ghee_render(argv, drawn, tmp_path, monkeypatch):
     """One frame for an image, and an endless run, the console's too, runs
-    until a signal, here a SIGTERM in the tick of the fourth frame, which
-    ends the run with 143. The console takes the signal on a thread of its
-    own, so it may draw a frame more. The handlers that the run replaced
-    come back."""
+    until a signal, here a SIGTERM in the tick of the fourth frame. The
+    console takes the signal on a thread of its own, so it may draw a frame
+    more. The handlers that the run replaced come back, and the SIGTERM goes
+    to the one that held it before the run."""
     if argv == ["--serve"]:
         argv = [*argv, "--port", str(free_port())]
     shim = host(monkeypatch, ["-o", str(tmp_path / "f.####.png"), *argv])
@@ -350,18 +350,59 @@ def test_a_run_takes_the_frame_count_of_ghee_render(argv, drawn, tmp_path, monke
         if t.frame == 3:
             signal.raise_signal(signal.SIGTERM)
 
-    held = signal.getsignal(signal.SIGTERM)
-    if drawn in (4, None):
-        with pytest.raises(SystemExit) as stopped:
-            shim.run(scene_of(shim))
-        assert stopped.value.code == 143
-    else:
+    got = []
+
+    def held(sig, _frame):
+        got.append(sig)
+
+    before = signal.signal(signal.SIGTERM, held)
+    try:
         shim.run(scene_of(shim))
+        assert signal.getsignal(signal.SIGTERM) is held
+    finally:
+        signal.signal(signal.SIGTERM, before)
     if drawn is None:
         assert len(frames(tmp_path)) in (4, 5)
     else:
         assert len(frames(tmp_path)) == drawn
-    assert signal.getsignal(signal.SIGTERM) is held
+    assert got == ([signal.SIGTERM] if drawn in (4, None) else [])
+
+
+SIGNALLED = """#!/usr/bin/env python3
+import os
+import signal
+
+import ghee
+
+
+@ghee.tick
+def hook(t):
+    if t.frame == 2:
+        os.kill(os.getpid(), signal.{name})
+
+
+ghee.run(ghee.Scene(passes=[ghee.Pass("main", "void main(){{ gl_FragColor = vec4(1.0); }}")]))
+"""
+
+
+@pytest.mark.parametrize("name", ["SIGTERM", "SIGINT"])
+def test_a_signal_ends_a_scene_that_runs_itself_by_that_signal(name, tmp_path):
+    """systemd counts a death by SIGTERM or SIGINT as a clean stop. The
+    frames drawn before the signal are written first."""
+    path = tmp_path / "signalled.py"
+    path.write_text(SIGNALLED.format(name=name))
+    ran = subprocess.run(
+        [sys.executable, str(path), "-o", str(tmp_path / "f.####.png")]
+        + ["--size", "8x8", "--frames", "0"],
+        # pytest-xdist's workers ignore SIGINT, and a child keeps that
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=120,
+    )
+    assert ran.returncode == -getattr(signal, name), ran.stderr
+    assert len(frames(tmp_path)) in (3, 4)
 
 
 SCENE = '''#!/usr/bin/env python3

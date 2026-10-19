@@ -415,7 +415,7 @@ scene = ghee.Scene(
     passes=[
         ghee.Pass(
             "main",
-            "void main() { gl_FragColor = vec4(ink * (1.0 - uv.y), 1.0); }",
+            "void main() { gl_FragColor = vec4(ink * uv.y, 1.0); }",
             layers=[ghee.Layer("title", text="hello", text_shadow={})],
         )
     ],

@@ -294,7 +294,8 @@ words itself, hide the layer with `"visible": false` so they draw once:
 ```glsl
 void main() {
   float px = 48.0;
-  vec2 p = (uv * iResolution.xy - 0.5 * (iResolution.xy - title_size * px)) / px;
+  vec2 at = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y);
+  vec2 p = (at - 0.5 * (iResolution.xy - title_size * px)) / px;
   gl_FragColor = vec4(vec3(title_cover(p, px)), 1.0);
 }
 ```
@@ -302,14 +303,17 @@ void main() {
 ![hello drawn by the shader, white on black](../media/layers/text-in-shader.png)
 
 Use `p` to place and size the words: dividing the pixel position by 48 makes
-one em 48 pixels. Pass the same 48 as `_cover`'s second
+one em 48 pixels. `_cover` takes `p` y down, as a layer counts, so `at` counts
+the pixel from the top left. Pass the same 48 as `_cover`'s second
 argument, and each edge stays one pixel soft.
 
 ### Images in a shader
 
 To read an image asset in a shader, use the two GLSL names that it gives
 every pass: `<name>_tex`, a `sampler2D`, and `<name>_size`, its width and
-height in pixels. This pass tiles the `wifi` picture across the frame:
+height in pixels. The texture holds the image the right way up, so
+`texture2D(wifi_tex, uv)` stretches it over the pass. This pass tiles the
+`wifi` picture across the frame:
 
 ```json
 "assets": { "wifi": { "file": "wifi.png" } },
@@ -318,7 +322,7 @@ height in pixels. This pass tiles the `wifi` picture across the frame:
 
 ```glsl
 void main() {
-  gl_FragColor = texture2D(wifi_tex, fract(uv * iResolution.xy / wifi_size));
+  gl_FragColor = texture2D(wifi_tex, fract(gl_FragCoord.xy / wifi_size));
 }
 ```
 

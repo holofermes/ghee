@@ -28,7 +28,7 @@ import sys
 FRAGMENT = """
 void main() {
   float x = uv.x * 16.0;
-  float bar = step(1.0 - uv.y, levels_at(int(x))) * step(0.2, fract(x));
+  float bar = step(uv.y, levels_at(int(x))) * step(0.2, fract(x));
   gl_FragColor = vec4(vec3(bar), 1.0);
 }
 """

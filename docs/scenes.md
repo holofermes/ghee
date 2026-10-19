@@ -8,7 +8,7 @@ pass's picture, and values that change at runtime.
 
 For example, this scene, `uv.scene.json`, holds one pass, which colours each
 pixel by `uv`. `uv` runs from 0 to 1 across the picture, so red grows to the
-right, and green grows down:
+right, and green grows up:
 
 ```json
 {
@@ -28,7 +28,7 @@ three times their size:
 ghee render uv.scene.json -o uv.png --size 128x64
 ```
 
-![blue at the top left, pink at the top right, green at the bottom left and pale yellow at the bottom right](../media/scenes/uv.png)
+![blue at the bottom left, pink at the bottom right, green at the top left and pale yellow at the top right](../media/scenes/uv.png)
 
 Without `--size`, ghee renders at a default size, or at the display's size with
 `--display`. You can also render more frames, draw on a display, or watch and
@@ -65,8 +65,8 @@ You can use these GLSL names in every pass:
 
 | GLSL name | What it holds |
 | --- | --- |
-| `vec2 uv` | the pixel's centre in the buffer, from (0, 0) at its top left corner to (1, 1) at its bottom right |
-| `vec4 gl_FragCoord` | the pixel's centre in pixels, (0.5, 0.5, 0, 1) for the top left pixel |
+| `vec2 uv` | the pixel's centre in the buffer, from (0, 0) at its bottom left corner to (1, 1) at its top right |
+| `vec4 gl_FragCoord` | the pixel's centre in pixels, (0.5, 0.5) for the bottom left pixel |
 | `float iTime` | seconds since the first frame, or the frame's number times S under `--timestep S` |
 | `float iTimeDelta` | seconds since the frame before |
 | `int iFrame` | the frame's number, 0 first. It starts again at 0 after 1048576 frames |
@@ -78,7 +78,7 @@ You can use these GLSL names in every pass:
 | `float ghee_noise(p)` | smooth noise from 0 to 1 for a `vec2` or `vec3` `p`, built on `ghee_hash` |
 
 `uv` and `gl_FragCoord` sit on the exact centre of the pixel on every GPU.
-Both run y down, with y = 0 at the top.
+Both run y up, with y = 0 at the bottom, as in GL.
 
 ## The scene file
 
@@ -158,7 +158,7 @@ void main() {
 ```glsl
 void main() {
   float disc = texture2D(iChannel0, uv).r;
-  float shadow = texture2D(iChannel0, uv - vec2(6.0) / iResolution.xy).r;
+  float shadow = texture2D(iChannel0, uv + vec2(-6.0, 6.0) / iResolution.xy).r;
   vec3 color = mix(vec3(0.85), vec3(0.35), shadow);
   gl_FragColor = vec4(mix(color, vec3(1.0, 0.55, 0.1), disc), 1.0);
 }
@@ -257,13 +257,8 @@ To run a Shadertoy shader, put each of its passes in a pass of its own,
 its Common tab in the scene's `common`, and the inputs of each pass in its
 `channels`, in the order of `iChannel0` and up. Start each pass with
 `#version 300 es`, and keep its `mainImage`. ghee calls `mainImage` with
-`fragCoord` y up, (0.5, 0.5) at the bottom left pixel, and `texture`,
-`textureLod`, `textureGrad` and `texelFetch` read with y up. A GLSL ES 1.00
-pass with `mainImage` gets the same `fragCoord` and `texture`.
-
-`uv` and `gl_FragCoord` still run y down in that pass. A buffer reads the
-same from either kind of pass, so a Shadertoy pass and a pass with `main`
-read each other's buffers in one scene.
+`gl_FragCoord.xy` as `fragCoord`. In a GLSL ES 1.00 pass with `mainImage`,
+`texture` reads as `texture2D`.
 
 ## Params
 
@@ -333,8 +328,9 @@ and 2 high, fed as one list of 32 numbers, the top row first.
 In GLSL, read a list called `levels` with `levels_count`, how many numbers it
 holds, `levels_at(i)`, number `i` from 0, and `levels_sample(t)`, the numbers
 blended at `t`, from 0 to 1 along the list. Read a grid with
-`levels_sample2(p)`, the numbers blended at `p`, from 0 to 1 across the grid,
-so `levels_sample2(uv)` spreads the grid over the buffer.
+`levels_sample2(p)`, the numbers blended at `p`, from 0 to 1 across the grid
+and y up, so `levels_sample2(uv)` spreads the grid over the buffer with its
+top row at the top.
 
 This pass declares a list of 16 numbers, and draws a bar for each:
 
@@ -348,7 +344,7 @@ This pass declares a list of 16 numbers, and draws a bar for each:
 void main() {
   float x = uv.x * float(levels_count);
   float level = levels_at(int(x));
-  float bar = step(1.0 - uv.y, level) * step(0.2, fract(x));
+  float bar = step(uv.y, level) * step(0.2, fract(x));
   gl_FragColor = vec4(vec3(bar), 1.0);
 }
 ```

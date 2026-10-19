@@ -11,6 +11,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `uv` instead of `v_texCoord`. `iResolution` is a `vec3`.
 - Compute the aspect as `iResolution.x / iResolution.y`. ghee no longer
   sets a param named `aspect`.
+- Count `uv` and `gl_FragCoord` y up from the bottom, as GL does. A shader
+  that counted y from the top reads `1.0 - uv.y`, or `iResolution.y -
+  gl_FragCoord.y` in pixels.
 - Put the GLSL of a pass, of `common` and of a filter in `fragment`, as text
   or as `{"file": ...}`. `code` and `shader` are gone.
 - Read an array's length as `<name>_count` instead of `<name>_size`.
@@ -65,7 +68,7 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Write a pass in GLSL ES 3.00 by starting it with `#version 300 es`, on
   every GPU with OpenGL ES 3 ([Passes](docs/scenes.md#passes)).
 - Run a Shadertoy pass as it is: start it with `#version 300 es`, and ghee
-  calls its `mainImage` with y-up coordinates ([From
+  calls its `mainImage` with `gl_FragCoord.xy` ([From
   Shadertoy](docs/scenes.md#from-shadertoy)).
 - Use `ghee_hash` and `ghee_noise` to get the same random values on every
   GPU.

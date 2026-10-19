@@ -511,9 +511,8 @@ pub trait ConsoleHost {
         Err(keeps_no_scene())
     }
 
-    /// Rename scene `name`, one of the console's own, to `to`. The page
-    /// `vid` asked.
-    fn rename_scene(&self, _name: &str, _to: &str, _vid: &str) -> ConsoleResult<()> {
+    /// Rename scene `name`, one of the console's own, to `to`.
+    fn rename_scene(&self, _name: &str, _to: &str) -> ConsoleResult<()> {
         Err(keeps_no_scene())
     }
 
@@ -647,28 +646,41 @@ pub trait ConsoleHost {
     /// does. No scene edits the active one. A host whose switch() queues the
     /// switch holds one lock over its switch and over this check and the
     /// edit, so an edit queued behind a switch never lands on the scene that
-    /// the switch brought. A host that keeps revisions refuses an edit whose
-    /// revision another client's change made stale.
+    /// the switch brought. A host that keeps revisions refuses an edit that
+    /// `at` doesn't let land on the scene's revision, and returns the
+    /// revision that the edit makes.
     fn edit_scene(
         &self,
         at: &Edit,
         edit: &mut dyn FnMut() -> ConsoleResult<()>,
-    ) -> ConsoleResult<()> {
+    ) -> ConsoleResult<Option<u64>> {
         if let Some(scene) = at.scene {
             other_scene(scene, self.active_name()?.as_deref())?;
         }
-        edit()
+        edit()?;
+        Ok(None)
     }
 }
 
 /// What a request that changes a scene says of itself: the scene that it is
-/// for, the revision of that scene that its page last read, and the page's
-/// id, the one that its streams use.
+/// for, and its `If-Match` header.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Edit<'a> {
     pub scene: Option<&'a str>,
-    pub rev: Option<u64>,
-    pub vid: &'a str,
+    pub if_match: Option<&'a str>,
+}
+
+impl Edit<'_> {
+    /// True when the edit may land on revision `rev`, whose ETag is
+    /// `"rev"`: with no `If-Match`, with `*`, or with that ETag in its list.
+    /// A weak tag never matches (RFC 9110, section 13.1.1).
+    pub fn matches(&self, rev: u64) -> bool {
+        let Some(tags) = self.if_match.map(str::trim) else {
+            return true;
+        };
+        let want = format!("\"{rev}\"");
+        tags == "*" || tags.split(',').any(|t| t.trim() == want)
+    }
 }
 
 /// An item set aside, as POST /aside names it.
@@ -1005,17 +1017,8 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
     ) -> ConsoleResult<Response> {
         let h = &self.host;
         let name = query.get("name").map(String::as_str);
-        let rev = match query.get("rev") {
-            None => None,
-            Some(r) => Some(r.parse::<u64>().map_err(|_| {
-                ConsoleError::bad_request(format!(
-                    "bad {path}: rev needs a revision number, got {}",
-                    py_repr(&Value::from(r.as_str()))
-                ))
-            })?),
-        };
-        let vid = query.get("vid").map_or("", String::as_str);
-        let at = |scene| Edit { scene, rev, vid };
+        let if_match = headers.get("If-Match");
+        let at = |scene| Edit { scene, if_match };
         if path == "/set" {
             let mut set = || {
                 let set = parse_set(h, query)?
@@ -1025,14 +1028,14 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                     Set::Layer(set) => h.set_layer(set),
                 }
             };
-            h.edit_scene(&at(query.get("scene").map(String::as_str)), &mut set)?;
-            return Ok(Response::text(200, "ok"));
+            let rev = h.edit_scene(&at(query.get("scene").map(String::as_str)), &mut set)?;
+            return Ok(tagged(Response::text(200, "ok"), rev));
         }
         if path == "/next" || path == "/prev" {
             return Ok(Response::json(&active_json(h.step(&path[1..])?)));
         }
         if path == "/switch" {
-            let reload = at(rev.and(name));
+            let reload = at(if_match.and(name));
             let active = h.switch_by(name, &reload)?;
             return Ok(Response::json(&active_json(active)));
         }
@@ -1047,22 +1050,22 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                 doc = scene.to_dict();
                 h.apply_scene(scene)
             };
-            h.edit_scene(&at(name), &mut apply)?;
-            return Ok(Response::json(&doc));
+            let rev = h.edit_scene(&at(name), &mut apply)?;
+            return Ok(tagged(Response::json(&doc), rev));
         }
         if path == "/save" {
-            h.edit_scene(&at(name), &mut || h.save(name))?;
-            return Ok(Response::text(200, "ok"));
+            let rev = h.edit_scene(&at(name), &mut || h.save(name))?;
+            return Ok(tagged(Response::text(200, "ok"), rev));
         }
         if path == "/reset" {
-            h.edit_scene(&at(name), &mut || h.reset(name))?;
-            return Ok(Response::text(200, "ok"));
+            let rev = h.edit_scene(&at(name), &mut || h.reset(name))?;
+            return Ok(tagged(Response::text(200, "ok"), rev));
         }
         if path == "/aside" {
             let (aside, keep) = parse_aside(query)
                 .map_err(|e| ConsoleError::bad_request(format!("bad /aside: {e}")))?;
-            h.edit_scene(&at(name), &mut || h.answer(name, &aside, keep))?;
-            return Ok(Response::text(200, "ok"));
+            let rev = h.edit_scene(&at(name), &mut || h.answer(name, &aside, keep))?;
+            return Ok(tagged(Response::text(200, "ok"), rev));
         }
         if path == "/draft" {
             let restore = match query.get("answer").map(String::as_str) {
@@ -1080,8 +1083,8 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                     ))
                 }
             };
-            h.edit_scene(&at(name), &mut || h.draft(name, restore))?;
-            return Ok(Response::text(200, "ok"));
+            let rev = h.edit_scene(&at(name), &mut || h.draft(name, restore))?;
+            return Ok(tagged(Response::text(200, "ok"), rev));
         }
         if path == "/upload" {
             return Ok(self.upload(query, &mut &body[..]));
@@ -1098,7 +1101,7 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
         }
         if path == "/rename" {
             let to = named("to")?;
-            h.rename_scene(named("name")?, to, vid)?;
+            h.rename_scene(named("name")?, to)?;
             return Ok(Response::json(&serde_json::json!({ "name": to })));
         }
         if path == "/delete" {
@@ -1123,6 +1126,14 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             headers: Vec::new(),
         }
     }
+}
+
+/// `r` with the ETag of revision `rev`, the revision that an edit made.
+fn tagged(mut r: Response, rev: Option<u64>) -> Response {
+    if let Some(rev) = rev {
+        r.headers.push(("ETag".to_string(), format!("\"{rev}\"")));
+    }
+    r
 }
 
 /// A 405 for `why`, its `Allow` header naming the methods that the path takes.
@@ -1390,10 +1401,7 @@ pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String>
     let live = match layer.live(at.effect, at.field) {
         Ok(live) => live,
         Err(e) => {
-            let value = match raw.trim() {
-                "none" => Value::Null,
-                _ => Given::Text(raw).to_json(),
-            };
+            let value = Given::Text(raw).to_json();
             let Some(look) = crate::layer::rebuilt_look(d, at, value.clone()) else {
                 return Err(e.to_string());
             };
@@ -1421,15 +1429,15 @@ pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String>
 /// `raw`, a /set value, as the live field `live` takes it: a number, true or
 /// false, a colour as a CSS hex colour, a CSS colour name, three
 /// comma-separated floats or a gradient object in JSON, the name of an image asset, a text
-/// layer's words, a line's points as a JSON list, or `none` for the default
-/// of a field that takes none.
+/// layer's words, a line's points as a JSON list, or `null` for the default
+/// of a field that takes one.
 fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
     let what = &live.what;
     let s = raw.trim();
     let got = py_repr(&Value::from(raw));
-    let or_none = |none: bool| if none { " or none" } else { "" };
+    let or_none = |none: bool| if none { " or null" } else { "" };
     match live.form {
-        Form::Number { none: true } | Form::Colour { none: true, .. } if s == "none" => {
+        Form::Number { none: true } | Form::Colour { none: true, .. } if s == "null" => {
             Ok(Value::Null)
         }
         Form::Number { none } => py_float(raw)
@@ -1455,10 +1463,10 @@ fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
             let forms = match (gradient, none) {
                 (true, true) => {
                     "a hex colour, a CSS colour name, three comma-separated numbers, a gradient \
-                     object or none"
+                     object or null"
                 }
                 (false, true) => {
-                    "a hex colour, a CSS colour name, three comma-separated numbers or none"
+                    "a hex colour, a CSS colour name, three comma-separated numbers or null"
                 }
                 _ => "a hex colour, a CSS colour name or three comma-separated numbers",
             };
@@ -2104,7 +2112,7 @@ mod tests {
         let gradient = r##"{"from": "#ff0000", "to": "#0000ff", "angle": 90}"##;
         for (layer, effect, field, raw, want) in [
             ("words", None, "x", "10", serde_json::json!(10.0)),
-            ("words", None, "y", "none", Value::Null),
+            ("words", None, "y", "null", Value::Null),
             ("words", None, "opacity", "0.5", serde_json::json!(0.5)),
             ("words", None, "visible", "false", Value::from(false)),
             ("words", None, "color", " #FF0000 ", Value::from("#FF0000")),
@@ -2136,7 +2144,7 @@ mod tests {
                 gradient,
                 serde_json::from_str(gradient).unwrap(),
             ),
-            ("words", None, "color", "none", Value::Null),
+            ("words", None, "color", "null", Value::Null),
             (
                 "words",
                 Some("karaoke"),
@@ -2145,7 +2153,7 @@ mod tests {
                 serde_json::json!(2.5),
             ),
             ("words", Some("karaoke"), "visible", "0", Value::from(false)),
-            ("icon", None, "color", "none", Value::Null),
+            ("icon", None, "color", "null", Value::Null),
             ("icon", None, "image", "pic", Value::from("pic")),
             (
                 "scope",
@@ -2155,7 +2163,7 @@ mod tests {
                 serde_json::json!([[0, 16], [8, 4.5]]),
             ),
             ("frame", Some("border"), "color", "Red", Value::from("Red")),
-            ("frame", None, "width", "none", Value::Null),
+            ("frame", None, "width", "null", Value::Null),
             ("words", None, "text", " la la ", Value::from(" la la ")),
             // a key that changes with a rebuild: JSON, else text
             ("words", None, "font_size", "20", serde_json::json!(20)),
@@ -2166,7 +2174,7 @@ mod tests {
                 "Pixel Operator 8",
                 Value::from("Pixel Operator 8"),
             ),
-            ("words", None, "font_size", "none", Value::Null),
+            ("words", None, "font_size", "null", Value::Null),
         ] {
             let api = api();
             let r = post(&api, "/set", &layer_query(layer, effect, field, raw));
@@ -2201,11 +2209,11 @@ mod tests {
             ),
             (
                 q("words", None, "x", "left"),
-                "layer 'words' x needs a number or none, got 'left'".to_string(),
+                "layer 'words' x needs a number or null, got 'left'".to_string(),
             ),
             (
-                q("words", None, "opacity", "none"),
-                "layer 'words' opacity needs a number, got 'none'".to_string(),
+                q("words", None, "opacity", "null"),
+                "layer 'words' opacity needs a number, got 'null'".to_string(),
             ),
             (
                 q("words", None, "visible", "yes"),
@@ -2214,19 +2222,19 @@ mod tests {
             (
                 q("words", None, "color", "1,0"),
                 "layer 'words' color needs a hex colour, a CSS colour name, three comma-separated \
-                 numbers, a gradient object or none, got '1,0'"
+                 numbers, a gradient object or null, got '1,0'"
                     .to_string(),
             ),
             (
                 q("icon", None, "color", r#"{"from": [1, 0, 0]}"#),
                 "layer 'icon' color needs a hex colour, a CSS colour name, three comma-separated \
-                 numbers or none, got '{\"from\": [1, 0, 0]}'"
+                 numbers or null, got '{\"from\": [1, 0, 0]}'"
                     .to_string(),
             ),
             (
-                q("words", some, "color", "none"),
+                q("words", some, "color", "null"),
                 "layer 'words' karaoke color needs a hex colour, a CSS colour name or three \
-                 comma-separated numbers, got 'none'"
+                 comma-separated numbers, got 'null'"
                     .to_string(),
             ),
             (
@@ -2360,21 +2368,6 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, Call::SetParam(..))));
         }
-    }
-
-    #[test]
-    fn an_edit_whose_rev_is_no_number_is_400() {
-        let api = api();
-        let r = post(
-            &api,
-            "/set",
-            &[("name", "tint"), ("value", "1"), ("rev", "x")],
-        );
-        assert_eq!(
-            (r.status, body(&r).as_str()),
-            (400, "bad /set: rev needs a revision number, got 'x'")
-        );
-        assert!(api.host.calls.borrow().is_empty());
     }
 
     #[test]

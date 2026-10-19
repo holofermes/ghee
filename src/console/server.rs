@@ -79,9 +79,8 @@ pub fn set_item(scope: Scope, name: &str, value: Value) -> Command {
 
 /// What the render thread drains off the command queue.
 pub enum Command {
-    /// A scene to load, with the number of the switch that asked for it and
-    /// the vid of the page that asked.
-    Switch(String, u64, String),
+    /// A scene to load, with the number of the switch that asked for it.
+    Switch(String, u64),
     Param(i64, String, Value),
     SceneParam(String, Value),
     Layer(LayerSet),
@@ -175,10 +174,6 @@ struct WorkingCopy {
     defaults_doc: Value,
     /// The scene's revision: every change applied through the API counts.
     rev: u64,
-    /// The page that made the last change, by its vid, and the revision of
-    /// the last change that another client made.
-    by: String,
-    before: u64,
     /// The changes to the working copy that the render thread compiles anew:
     /// a load, an apply, a reset, a kept item. A procedural scene's running
     /// document carries this working copy once it carries this count.
@@ -191,29 +186,13 @@ impl WorkingCopy {
             defaults_doc: opened.defaults.to_dict(),
             opened,
             rev,
-            by: String::new(),
-            before: 0,
             generation,
         }
     }
 
-    /// Count a change made by the page `vid`.
-    fn bump(&mut self, vid: &str) {
-        if self.by != vid {
-            self.before = self.rev;
-            self.by = vid.to_string();
-        }
+    /// Count a change.
+    fn bump(&mut self) {
         self.rev += 1;
-    }
-
-    /// Whether another client changed the scene after revision `rev`, which
-    /// the page `vid` last read. A page's own changes never make its `rev`
-    /// stale, so a slider's sets, sent before the last one answers, all land.
-    fn stale(&self, rev: u64, vid: &str) -> bool {
-        match self.by == vid {
-            true => self.before > rev,
-            false => self.rev > rev,
-        }
     }
 
     fn working_doc(&self) -> Value {
@@ -475,27 +454,25 @@ impl Console {
             rev,
         })
     }
-    /// Hold `opened` as the working copy of scene `name`, loaded for the page
-    /// `vid`, with the next revision and generation, and return that
-    /// generation.
-    fn install(&self, name: &str, opened: Opened, vid: &str) -> u64 {
+    /// Hold `opened` as the working copy of scene `name`, with the next
+    /// revision and generation, and return that generation.
+    fn install(&self, name: &str, opened: Opened) -> u64 {
         let mut copies = lock(&self.copies);
         let mut copy = WorkingCopy::new(opened, 0, 0);
         if let Some(old) = copies.get(name) {
-            (copy.rev, copy.by, copy.before) = (old.rev, old.by.clone(), old.before);
+            copy.rev = old.rev;
             copy.generation = old.generation;
         }
-        self.bump(name, &mut copy, vid);
+        self.bump(name, &mut copy);
         copy.generation += 1;
         let generation = copy.generation;
         copies.insert(name.to_string(), copy);
         generation
     }
 
-    /// Count a change to `copy`, the working copy of scene `name`, made by
-    /// the page `vid`.
-    fn bump(&self, name: &str, copy: &mut WorkingCopy, vid: &str) {
-        copy.bump(vid);
+    /// Count a change to `copy`, the working copy of scene `name`.
+    fn bump(&self, name: &str, copy: &mut WorkingCopy) {
+        copy.bump();
         lock(&self.revs).insert(name.to_string(), copy.rev);
         lock(&self.drafts).insert(name.to_string(), Instant::now());
     }
@@ -980,7 +957,6 @@ fn load(
     ctrl: &ControllerSlot,
     name: &str,
     switch: u64,
-    vid: &str,
 ) {
     *ctrl.borrow_mut() = None;
     *lock(&console.locks) = None;
@@ -994,7 +970,7 @@ fn load(
         Ok((opened, mut process)) => {
             let snap = console.snapshot(read);
             let working = opened.working.clone();
-            let generation = console.install(name, opened, vid);
+            let generation = console.install(name, opened);
             let err = set_scene(
                 console,
                 renderer,
@@ -1070,8 +1046,8 @@ fn drain(
             held.name == held.loaded
         };
         match item {
-            Command::Switch(name, switch, vid) => {
-                load(console, renderer, st, ctrl, &name, switch, &vid);
+            Command::Switch(name, switch) => {
+                load(console, renderer, st, ctrl, &name, switch);
             }
             Command::Param(..) | Command::SceneParam(..) | Command::Layer(_) if !drawn => {}
             Command::Param(pi, name, value) => {
@@ -1397,7 +1373,7 @@ pub fn render_loop(
             active.name.clone().map(|name| (name, active.asked))
         };
         match first {
-            Some((name, switch)) => load(console, &renderer, &st, &ctrl, &name, switch, ""),
+            Some((name, switch)) => load(console, &renderer, &st, &ctrl, &name, switch),
             None => clear(console, &renderer, &st, &ctrl),
         }
         if let Err(e) = render.run() {
@@ -1495,7 +1471,7 @@ impl ConsoleHost for RenderLoopHost {
 
     /// The working copy goes with its scene, and a rename of the active
     /// scene loads it from its new place.
-    fn rename_scene(&self, name: &str, to: &str, vid: &str) -> ConsoleResult<()> {
+    fn rename_scene(&self, name: &str, to: &str) -> ConsoleResult<()> {
         let console = &self.console;
         let _editing = lock(&console.editing);
         console.store.rename(name, to)?;
@@ -1513,7 +1489,7 @@ impl ConsoleHost for RenderLoopHost {
         }
         if lock(&console.active).name.as_deref() == Some(name) {
             let switch = console.ask(to);
-            console.command(Command::Switch(to.to_string(), switch, vid.to_string()));
+            console.command(Command::Switch(to.to_string(), switch));
         }
         Ok(())
     }
@@ -1532,7 +1508,7 @@ impl ConsoleHost for RenderLoopHost {
         match console.store.names().into_iter().next() {
             Some(next) => {
                 let switch = console.ask(&next);
-                console.command(Command::Switch(next, switch, String::new()));
+                console.command(Command::Switch(next, switch));
             }
             None => {
                 let mut active = lock(&console.active);
@@ -1660,11 +1636,8 @@ impl ConsoleHost for RenderLoopHost {
             return Err(ConsoleError::not_found("no scene"));
         }
         let switch = self.console.ask(name);
-        self.console.command(Command::Switch(
-            name.to_string(),
-            switch,
-            by.vid.to_string(),
-        ));
+        self.console
+            .command(Command::Switch(name.to_string(), switch));
         Ok(name.to_string())
     }
 
@@ -1673,7 +1646,7 @@ impl ConsoleHost for RenderLoopHost {
         &self,
         at: &Edit,
         edit: &mut dyn FnMut() -> ConsoleResult<()>,
-    ) -> ConsoleResult<()> {
+    ) -> ConsoleResult<Option<u64>> {
         let _editing = lock(&self.console.editing);
         if let Some(scene) = at.scene {
             other_scene(scene, self.active_name()?.as_deref())?;
@@ -1681,18 +1654,17 @@ impl ConsoleHost for RenderLoopHost {
         let name = lock(&self.console.active).editable()?;
         let stale = lock(&self.console.copies)
             .get(&name)
-            .zip(at.rev)
-            .is_some_and(|(copy, rev)| copy.stale(rev, at.vid));
+            .is_some_and(|copy| !at.matches(copy.rev));
         if stale {
             return Err(ConsoleError::stale(
                 "this scene changed since you loaded it",
             ));
         }
         edit()?;
-        if let Some(copy) = lock(&self.console.copies).get_mut(&name) {
-            self.console.bump(&name, copy, at.vid);
-        }
-        Ok(())
+        Ok(lock(&self.console.copies).get_mut(&name).map(|copy| {
+            self.console.bump(&name, copy);
+            copy.rev
+        }))
     }
 
     fn apply_scene(&self, mut scene: Scene) -> ConsoleResult<()> {
@@ -2198,7 +2170,7 @@ mod tests {
     /// ends.
     fn ready(console: &Console, name: &str, opened: Opened) {
         let switch = console.ask(name);
-        console.install(name, opened, "");
+        console.install(name, opened);
         lock(&console.active).loaded = switch;
     }
 
@@ -2237,7 +2209,23 @@ mod tests {
         q: &str,
         body: &str,
     ) -> (u16, String, Option<String>) {
-        let headers = Headers::from([("Content-Type", "application/json"), ("Host", "localhost")]);
+        ask_if(api, method, path, q, body, None)
+    }
+
+    /// ask(), with `if_match` as the request's If-Match header.
+    fn ask_if(
+        api: &ConsoleAPI<RenderLoopHost>,
+        method: &str,
+        path: &str,
+        q: &str,
+        body: &str,
+        if_match: Option<&str>,
+    ) -> (u16, String, Option<String>) {
+        let mut headers =
+            Headers::from([("Content-Type", "application/json"), ("Host", "localhost")]);
+        if let Some(tags) = if_match {
+            headers.insert("If-Match", tags);
+        }
         let r = api.dispatch(
             method,
             path,
@@ -2685,27 +2673,30 @@ mod tests {
         etag.trim_matches('"').parse().unwrap()
     }
 
+    /// RFC 9110, section 13.1.1: an edit lands when its If-Match names the
+    /// scene's ETag, and each edit answers the ETag that it makes.
     #[test]
-    fn an_edit_that_another_client_made_stale_answers_412_and_a_pages_own_never_do() {
+    fn an_edit_whose_if_match_names_an_older_etag_answers_412() {
         let (_d, _states, console) = clocks("stale");
         let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
         ready(&console, "clocks", opened);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
-        let read = rev_of(&api);
-        assert_eq!(console.stats()["rev"], read);
-        let set = |name: &str, value: u32, rev: Option<u64>, vid: &str| {
-            let mut q = format!("scene=clocks&pass=main&name={name}&value={value}&vid={vid}");
-            if let Some(rev) = rev {
-                q.push_str(&format!("&rev={rev}"));
-            }
-            ask(&api, "POST", "/set", &q, "")
+        let read = format!("\"{}\"", rev_of(&api));
+        assert_eq!(console.stats()["rev"], rev_of(&api));
+        let set = |name: &str, value: u32, tags: Option<&str>| {
+            let q = format!("scene=clocks&pass=main&name={name}&value={value}");
+            ask_if(&api, "POST", "/set", &q, "", tags)
         };
-        // page a's sets, each sent before the last one answers
-        for value in [1, 2] {
-            assert_eq!(set("cols", value, Some(read), "a").0, 200);
-        }
+        // a page's edits in turn, each with the ETag of the answer before
+        let first = set("cols", 1, Some(&read));
+        assert_eq!(first.0, 200);
+        let first = first.2.unwrap();
+        let second = set("cols", 2, Some(&first));
+        assert_eq!(second.0, 200);
+        let second = second.2.unwrap();
+        // another client's edit, with the ETag that it read
         assert_eq!(
-            set("rows", 4, Some(read), "b"),
+            set("rows", 4, Some(&read)),
             (
                 412,
                 "this scene changed since you loaded it".to_string(),
@@ -2717,10 +2708,15 @@ mod tests {
                 .clone()
         };
         assert_eq!(rows(&api), 13);
-        // an edit with no rev, as curl sends it
-        assert_eq!(set("rows", 5, None, "").0, 200);
-        assert_eq!(set("cols", 3, Some(read), "a").0, 412);
+        assert_eq!(set("rows", 4, Some(&format!("W/{second}"))).0, 412);
+        let listed = set("rows", 4, Some(&format!("{read}, {second}")));
+        assert_eq!(listed.0, 200);
+        assert_eq!(set("rows", 5, Some("*")).0, 200);
+        // an edit with no If-Match, as curl sends it
+        assert_eq!(set("rows", 6, None).0, 200);
+        assert_eq!(set("cols", 3, Some(&listed.2.unwrap())).0, 412);
         assert_eq!(console.stats()["rev"], rev_of(&api));
+        assert_eq!(rows(&api), 6);
     }
 
     #[test]
@@ -2729,7 +2725,7 @@ mod tests {
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         api.host.switch(Some("good")).unwrap();
         assert_eq!(
-            ask(&api, "POST", "/switch", "name=bad&rev=1&vid=a", ""),
+            ask_if(&api, "POST", "/switch", "name=bad", "", Some("\"1\"")),
             (
                 409,
                 "the console is on scene 'good', and this reload is for scene 'bad'".to_string(),
@@ -2738,7 +2734,7 @@ mod tests {
         );
         assert_eq!(console.stats()["active"], "good");
         assert_eq!(
-            ask(&api, "POST", "/switch", "name=good&rev=1&vid=a", "").0,
+            ask_if(&api, "POST", "/switch", "name=good", "", Some("\"1\"")).0,
             200
         );
         assert_eq!(ask(&api, "POST", "/switch", "name=bad", "").0, 200);
@@ -3031,7 +3027,7 @@ mod tests {
         let host = RenderLoopHost::new(Arc::clone(&console));
         assert_eq!(host.switch(Some("one")), Ok("one".to_string()));
         match console.q.take() {
-            Some(Command::Switch(name, _, _)) => assert_eq!(name, "one"),
+            Some(Command::Switch(name, _)) => assert_eq!(name, "one"),
             _ => panic!("no switch was queued"),
         }
     }
@@ -3428,7 +3424,7 @@ mod tests {
         let (at8, at20) = (built(8.0), built(20.0));
         {
             let _spawn = crate::testing::SCRIPTS.read().unwrap();
-            load(&console, &renderer, &st, &ctrl, "proc", 0, "");
+            load(&console, &renderer, &st, &ctrl, "proc", 0);
         }
         assert!(frame() == at8, "the saved x places the layer");
         // The loop's tick and update, until the process answers.

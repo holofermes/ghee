@@ -52,7 +52,7 @@ bad /set: param 'nope' is not a param this scene declares (main.tile, tile, main
 | 404 | an unknown path, scene or item |
 | 405 | a GET to a path that changes something, which takes POST alone, or a method other than GET, HEAD and POST. `Allow` names the methods that the path takes |
 | 409 | an edit for a scene other than the open one, or a scene name that's taken |
-| 412 | the scene changed since the revision that you passed ([Revisions](#revisions)) |
+| 412 | the scene changed since the `ETag` in your `If-Match` ([Revisions](#revisions)) |
 | 413 | a body over 1 MiB, or an upload over 32 MiB |
 | 503 | the scene is still loading ([Scenes](#scenes)) |
 
@@ -105,11 +105,11 @@ runtime](layers.md#changing-a-layer-at-runtime)), take these values:
 | `points` | JSON, `[[x, y], ...]` |
 
 To put `x`, `y`, `color`, a rect's `width` or `height`, or a circle's
-`radius` back to its default, pass `value=none`.
+`radius` back to its default, pass `value=null`.
 
 Any other key takes a `/set` too, such as `font_size` or a whole effect, and
 ghee builds the layer again. Its `value` is JSON, such as `14` or
-`{"strength":0.5}`, or else text, such as `Pixel Operator 8`. `none` puts
+`{"strength":0.5}`, or else text, such as `Pixel Operator 8`. `null` puts
 the key back to its default.
 
 ### Locked
@@ -121,15 +121,14 @@ program, sets a param or a layer key, a `/set` of it answers 403, and `GET
 ## Revisions
 
 If your program shows the scene and edits it, as the console page does,
-send each edit with `rev=`, the revision that it last read, and `vid=`, an
-id of your own. ghee then refuses an edit with 412 when another client
-changed the scene after that revision, so your program never overwrites a
-change that it hasn't seen. Your own edits never make your `rev` out of
-date. Read `rev` in `GET /stats`, or in the `ETag` header of `GET /scene`,
-and pass the number alone: an ETag of `"5"` is `rev=5`.
+send each edit with an `If-Match` header that holds the `ETag` of the
+scene that it last read, from `GET /scene`. ghee then refuses an edit with
+412 when the scene changed since, so your program never overwrites a change
+that it hasn't seen. Each edit answers the scene's new `ETag`: send your
+next edit with that one.
 
 ```shell
-curl -X POST 'http://127.0.0.1:8090/set?name=tile&value=3&rev=5&vid=myprog'
+curl -X POST -H 'If-Match: "5"' 'http://127.0.0.1:8090/set?name=tile&value=3'
 ```
 
 `/set`, `POST /scene`, `/save`, `/reset`, `/aside` and `/draft` edit the

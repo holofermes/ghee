@@ -150,6 +150,11 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `ghee` prints its usage on stderr and exits with status 2.
 - The console prints its address on stderr. `ghee.open(serve=...)` logs it
   at INFO on the `ghee` logger of Python's `logging`.
+- Put a layer's key back to its default with `value=null` in `/set`
+  instead of `value=none`.
+- Send each edit to the console with an `If-Match` header that holds the
+  scene's `ETag` instead of `rev=` and `vid=`. Each edit answers the new
+  `ETag`.
 - The console answers HEAD as it answers GET, and a 405 names the methods
   that the path takes in `Allow`.
 

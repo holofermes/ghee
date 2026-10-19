@@ -911,15 +911,11 @@ const has = (o, k) => isObj(o) && Object.prototype.hasOwnProperty.call(o, k);
 // nothing and saves nothing.
 const NO_EDITS = {rev: null, values: {}, items: [], unsaved: false, aside: [], broken: [], draft: false};
 let E = NO_EDITS, D = null;
-// rev is the revision of the scene this page last read, which every edit
-// carries. ghee counts each edit that it takes, so known, the revision that
-// this page accounts for, is rev plus this page's edits taken since. A /stats
-// rev that differs from known means another client changed the scene. An
-// edit counts in known only when no read was taken while it was out, since
-// that read may hold it already: a known behind ghee's rev costs one more
-// read, and one ahead misses another client's edit. reads counts the reads
-// taken.
-let rev = null, known = null, reads = 0;
+// rev is the ETag of the scene that this page last read, or that its last
+// edit answered, and every edit of the scene carries it in If-Match. known
+// is the same revision: a /stats rev that differs from it means another
+// client changed the scene.
+let rev = null, known = null;
 const layerEdit = n => ((E.values || {}).layers || {})[n];
 const passEdit = n => ((E.values || {}).passes || {})[n];
 const defPass = n => (D && (D.passes || []).find(p => p.name === n)) || null;
@@ -938,21 +934,33 @@ function paintStatus(){
   if (!active) $("#addRow").classList.remove("show");
 }
 
-// An edit of scene `scene`. It carries the revision this page last read and
-// the page's vid, so ghee refuses one that another client made stale. Its
-// answer, or null when the request failed, comes back, and every edit brings
-// the marks up to date.
-let inflight = 0;
-async function edit(path, scene, q, body){
+// An edit of scene `scene`. Edits go out one at a time, each with the ETag
+// that the answer before it gave, so ghee refuses only an edit that another
+// client made stale. A /set that waits to go gives way to a newer /set of the
+// same field, and both callers get its answer. The answer, or null when the
+// request failed, comes back, and every edit brings the marks up to date.
+let inflight = 0, edits = Promise.resolve();
+const queuedSets = new Map();
+function edit(path, scene, q, body){
   if ((path === "/set" || path === "/scene") && scene === active) remember();
-  let u = `${path}?${q}&vid=${VID}`;
-  if (rev != null && scene === active) u += `&rev=${rev}`;
-  const o = body == null ? {method: "POST"} : {method: "POST", headers: {"Content-Type": "application/json"}, body};
+  const key = path === "/set" ? scene + "\n" + q.replace(/(^|&)value=[^&]*/, "") : null;
+  const queued = key == null ? null : queuedSets.get(key);
+  if (queued){ queued.q = q; return queued.answer; }
+  const job = {q};
+  if (key != null) queuedSets.set(key, job);
   inflight++;
-  const seen = reads;
+  job.answer = edits = edits.then(() => sendEdit(path, scene, job, key, body));
+  return job.answer;
+}
+async function sendEdit(path, scene, job, key, body){
+  if (key != null) queuedSets.delete(key);
+  const headers = body == null ? {} : {"Content-Type": "application/json"};
+  if (rev != null && scene === active) headers["If-Match"] = `"${rev}"`;
   try {
-    const r = await fetch(u, o);
-    if (r.ok && scene === active && known != null && seen === reads) known++;
+    const r = await fetch(`${path}?${job.q}`, {method: "POST", headers, body});
+    // a proxy that compresses the answer marks the tag weak, W/"7"
+    const tag = (r.headers.get("ETag") || "").match(/\d+/);
+    if (r.ok && tag && scene === active) rev = known = Math.max(rev ?? 0, parseInt(tag[0], 10));
     if (r.status === 409) sceneMoved(scene);
     else if (r.status === 412) popUp($("#behind"));
     return r;
@@ -1404,7 +1412,7 @@ async function openScene(name){
 async function renameScene(){
   const old = active, n = await askName(`Rename scene ${old}`, old, sceneNameError);
   if (n == null || n === old || old !== active) return;
-  const r = await fetch(`/rename?name=${enc(old)}&to=${enc(n)}&vid=${VID}`, {method: "POST"}).catch(() => null);
+  const r = await fetch(`/rename?name=${enc(old)}&to=${enc(n)}`, {method: "POST"}).catch(() => null);
   if (!r || !r.ok){ if (r){ postErr = await r.text(); showErrors(); } return; }
   await readScenes();
   await loadScene(n);
@@ -1512,7 +1520,6 @@ function take(got){
   work = got.scene; D = got.defaults; E = got.edits;
   base = got.base || clone(got.scene);
   rev = known = got.rev;
-  reads++;
 }
 
 // `own`, a load that this page asked for, hides the moved notice, which a
@@ -2134,7 +2141,7 @@ function sendLive(q, scene = active){
   });
 }
 function rebuildSoon(){ clearTimeout(compileTimer); compileTimer = setTimeout(() => { compileTimer = null; postScene(); }, 350); }
-const liveColor = c => c == null ? "none" : isGrad(c) ? JSON.stringify(c) : Array.isArray(c) ? c.join(",") : c;
+const liveColor = c => c == null ? "null" : isGrad(c) ? JSON.stringify(c) : Array.isArray(c) ? c.join(",") : c;
 const toHex = c => Array.isArray(c) || typeof c === "string" ? rgbToHex(c) : c;
 
 // Layer d's own key. null leaves the key out, for ghee's default. An empty
@@ -2148,7 +2155,7 @@ function setKey(p, d, key, v){
 function liveWire(d, key, v){
   const empty = emptyOf(d, key);
   return String(key === "opacity" ? (v == null ? 1 : v) : key === "visible" ? (v !== false) : key === "color" ? liveColor(v)
-    : key === "points" ? JSON.stringify(v) : v != null ? v : typeof empty === "number" ? empty : "none");
+    : key === "points" ? JSON.stringify(v) : v != null ? v : typeof empty === "number" ? empty : "null");
 }
 // The words, live through the layer's text field.
 function wordsTo(p, d){

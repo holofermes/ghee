@@ -1587,6 +1587,12 @@ impl ConsoleHost for RenderLoopHost {
                 revs.insert(to.to_string(), rev);
             }
         }
+        {
+            let mut drafts = lock(&console.drafts);
+            if let Some(at) = drafts.remove(name) {
+                drafts.insert(to.to_string(), at);
+            }
+        }
         if lock(&console.active).name.as_deref() == Some(name) {
             let switch = console.ask(to);
             console.command(Command::Switch(to.to_string(), switch));
@@ -1602,6 +1608,7 @@ impl ConsoleHost for RenderLoopHost {
         console.store.delete(name)?;
         lock(&console.copies).remove(name);
         lock(&console.revs).remove(name);
+        lock(&console.drafts).remove(name);
         if lock(&console.active).name.as_deref() != Some(name) {
             return Ok(());
         }
@@ -1842,11 +1849,11 @@ impl ConsoleHost for RenderLoopHost {
                 copy.defaults_doc = copy.opened.defaults.to_dict();
                 copy.opened.saved = None;
                 *lock(&console.sources) = Some(console.snapshot(read));
-                return Ok(());
+            } else {
+                let edits = console.with_locks(name, |locks| copy.to_save(locks));
+                console.store.save(name, &edits)?;
+                copy.opened.saved = (!edits.is_empty()).then_some(edits);
             }
-            let edits = console.with_locks(name, |locks| copy.to_save(locks));
-            console.store.save(name, &edits)?;
-            copy.opened.saved = (!edits.is_empty()).then_some(edits);
             if copy.opened.draft.is_none() {
                 console
                     .store
@@ -2634,6 +2641,49 @@ mod tests {
         );
         assert_eq!(console.store.state_file("copy").unwrap(), None);
         assert_eq!(console.stats()["stale"], false);
+    }
+
+    #[test]
+    fn an_own_scene_keeps_its_unsaved_edits_in_a_draft_until_a_save() {
+        let (d, states, _) = clocks("own-draft");
+        let m = crate::testing::TempDir::new("console-own-draft-mine");
+        let again = || {
+            let mut store = SceneStore::with_mine(&d, Some(&m), Vec::new());
+            store.keep_in(Some(std::path::PathBuf::from(&*states)), None);
+            let console = Arc::new(Console::new(store));
+            let name = match console.store.is_mine("art") {
+                true => "art",
+                false => "clocks",
+            };
+            let (opened, _) = console.store.open(name, None, (32, 24)).unwrap();
+            ready(&console, name, opened);
+            ConsoleAPI::new(RenderLoopHost::new(console))
+        };
+        let api = again();
+        assert_eq!(ask(&api, "POST", "/new", "name=art&from=clocks", "").0, 200);
+        let api = again();
+        let q = "scene=art&pass=main&name=cols&value=3";
+        assert_eq!(ask(&api, "POST", "/set", q, "").0, 200);
+        api.host.console.write_drafts(true);
+        let draft = api.host.console.store.draft_file("art").unwrap();
+        assert!(draft.is_file());
+        let api = again();
+        let cols = |api: &ConsoleAPI<RenderLoopHost>| {
+            json_of(&ask(api, "GET", "/scene", "", "").1)["passes"][0]["params"]["cols"]["value"]
+                .clone()
+        };
+        assert_eq!(
+            json_of(&ask(&api, "GET", "/edits", "", "").1)["draft"],
+            true
+        );
+        assert_eq!(cols(&api), 7);
+        let q = "name=art&answer=restore";
+        assert_eq!(ask(&api, "POST", "/draft", q, "").0, 200);
+        assert_eq!(cols(&api), 3);
+        assert_eq!(ask(&api, "POST", "/save", "name=art", "").0, 200);
+        assert!(!draft.exists());
+        let written = json_of(&fs::read_to_string(m.join("art/art.scene.json")).unwrap());
+        assert_eq!(written["passes"][0]["params"]["cols"]["value"], 3);
     }
 
     #[test]

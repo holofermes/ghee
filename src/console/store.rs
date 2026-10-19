@@ -324,13 +324,13 @@ impl SceneStore {
         }
     }
 
-    /// The scene's draft, or None when the store keeps none.
+    /// The scene's draft, or None when the store keeps none. A scene of the
+    /// console's own keeps one too.
     pub fn draft_file(&self, name: &str) -> Option<PathBuf> {
-        let path = self
-            .file_in(self.state_dir.as_deref(), name)
-            .ok()
-            .flatten()?;
-        Some(state::draft_of(&path))
+        let dir = self.state_dir.as_deref()?;
+        let file = self.file(name).ok()?;
+        let demo = (self.demo && !self.in_mine(&file)).then_some(name);
+        Some(state::draft_of(&state::file_of(dir, &file, demo)))
     }
 
     /// The edits of the scene's draft, when they differ from `saved`, the
@@ -506,6 +506,7 @@ impl SceneStore {
             return Err(ConsoleError::bad_request(why));
         }
         let dest = self.free(to)?;
+        let draft = self.draft_file(name).filter(|d| d.is_file());
         let (was, now) = (
             format!("{dir}/{name}{SCENE_SUFFIX}"),
             format!("{dir}/{to}{SCENE_SUFFIX}"),
@@ -516,13 +517,25 @@ impl SceneStore {
             return Err(ConsoleError::server_error(format!("{dest}: {e}")));
         }
         self.rescan();
+        if let (Some(from), Some(dest)) = (draft, self.draft_file(to)) {
+            if !state::move_saved(&from, &dest) {
+                crate::report::error(format!(
+                    "{to}: its unsaved edits stayed in {}",
+                    from.display()
+                ));
+            }
+        }
         Ok(())
     }
 
     /// Remove scene `name`, one of the console's own, with its directory.
     pub fn delete(&self, name: &str) -> ConsoleResult<()> {
         let dir = self.own_dir(name)?;
+        let draft = self.draft_file(name);
         fs::remove_dir_all(&dir).map_err(|e| ConsoleError::server_error(format!("{dir}: {e}")))?;
+        if let Some(Err(e)) = draft.map(|d| state::remove(&d)) {
+            crate::report::error(format!("{name}: {e}"));
+        }
         self.rescan();
         Ok(())
     }

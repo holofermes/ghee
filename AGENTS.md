@@ -333,8 +333,10 @@ each one for a reader who has never seen ghee.
 
 - Where CSS has a word for a setting, use it: `color`, `opacity`,
   `font_size`, `font_family`, `text_align`, `text_shadow`, `text_stroke`,
-  `border`, `border_radius`, `stroke_width`, `blend`. An underscore stands for
-  CSS's hyphen, so Python takes the name as a keyword.
+  `border`, `border_radius`, `stroke_width`. An underscore stands for CSS's
+  hyphen, so Python takes the name as a keyword.
+- `blend` and its values `normal`, `add`, `multiply` and `screen` are an
+  image editor's words. CSS's `mix-blend-mode` has no `add`.
 - Where CSS has a word for a value, use it too: a colour takes CSS's colour
   names, such as `navy` and `transparent`, in any case, and CSS's hex
   colours, beside three numbers.

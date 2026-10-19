@@ -65,10 +65,11 @@ steadily, set `coarse` to 1 for every second grey, or 2 for every fourth.
 
 ### frc16
 
-To show about 256 greys on a 16-level panel, such as the SSD1322, add
-`frc16`. It needs the
-panel's full rate, about 200 frames a second on the SSD1322. On a Pi 5,
-`frc16` takes an SSD1322 from 206 to 200 frames a second.
+To show greys between the levels of a 16-level panel, such as the SSD1322,
+add `frc16`. Each pixel blinks between two neighbouring levels, and the 16
+levels become 241 greys. It needs the panel's full rate, about 200 frames a
+second on the SSD1322. On a Pi 5, `frc16` takes an SSD1322 from 206 to 200
+frames a second.
 
 | No filter, 16 levels | `frc16`, as the eye sees it |
 | --- | --- |

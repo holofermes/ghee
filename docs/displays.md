@@ -233,8 +233,8 @@ and thin text breaks up. Careful: on a 1-bit panel, set text to `"render":
 "mono"` ([Render](layers.md#render)), or bring grey back with a filter
 ([Filters](filters.md)). To show grey as a pattern of dots, add `dither`.
 To get more greys on a panel that takes over 100 frames a second, such as
-an SSD1306 on I2C at 1 MHz, add `frc`. To show
-about 256 greys on a 16-level panel, add `frc16`.
+an SSD1306 on I2C at 1 MHz, add `frc`. To show 241 greys on a 16-level
+panel, add `frc16`.
 
 ## The console
 

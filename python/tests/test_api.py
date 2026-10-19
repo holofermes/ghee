@@ -726,7 +726,8 @@ def test_a_handle_sets_a_layer_field_by_attribute_or_by_key():
 
 def test_a_handle_reads_a_layer_field_as_its_value():
     """Python's data model: an attribute that takes a value gives it back,
-    and a missing layer raises KeyError by key, AttributeError by name."""
+    an int as an int, and a missing layer raises KeyError by key,
+    AttributeError by name."""
     scene = {
         "version": 1,
         "passes": [
@@ -734,11 +735,13 @@ def test_a_handle_reads_a_layer_field_as_its_value():
         ],
     }
     with ghee.open(scene, width=16, height=16) as h:
-        assert (h.layers.t.text, h.layers.t.x, h.layers.t.y) == ("I", 3.0, None)
+        assert (h.layers.t.text, h.layers.t.x, h.layers.t.y) == ("I", 3, None)
+        assert type(h.layers.t.x) is int
         assert h.layers.t.glow.strength is None
         h.layers.t.x = 5
         h.layers.t.glow.strength = 0.5
-        assert (h.layers["t"]["x"], h.layers.t.glow.strength) == (5.0, 0.5)
+        assert (h.layers["t"]["x"], h.layers.t.glow.strength) == (5, 0.5)
+        assert type(h.layers.t.x) is int
         h.layers.t.x = None
         assert h.layers.t.x is None
         with pytest.raises(AttributeError):

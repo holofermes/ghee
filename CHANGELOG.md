@@ -226,6 +226,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   line to add, instead of the GPU's errors.
 - `--display kms` on an SPI or I2C panel no longer prints `MESA-LOADER:
   failed to retrieve device information`.
+- `screen.layers` and `ghee.layers` read a whole number back as an int,
+  instead of a float.
 
 ## 0.4.0 - 2026-08-06
 

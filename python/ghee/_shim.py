@@ -452,6 +452,16 @@ def _effects() -> frozenset:
 _EFFECTS: frozenset | None = None
 
 
+def _whole(value):
+    """`value`, a layer's JSON, with each number that holds a whole value
+    outside a list as an int, as a program writes a pixel position."""
+    if isinstance(value, dict):
+        return {k: _whole(v) for k, v in value.items()}
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
 class _LiveLayer:
     """One layer of Layers: a read of a key gives its value, a set of a key
     sets it, and an effect's name gives the fields of that effect."""
@@ -465,7 +475,7 @@ class _LiveLayer:
 
     def _doc(self) -> dict:
         text = self._get(self._name)
-        return {} if text is None else json.loads(text)
+        return {} if text is None else _whole(json.loads(text))
 
     def _read(self, key: str):
         if key in _effects():

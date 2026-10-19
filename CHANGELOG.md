@@ -53,7 +53,16 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   and give an `ArraySource`'s data as a `Feed`. Stop a console through the
   `Control` in its `Options.control` instead of `server::stop()`. List a
   `Scene`'s filters and those of `Options.filters` as
-  `ghee::filters::Filter`s instead of names.
+  `ghee::filters::Filter`s instead of names. Open a `Renderer` with
+  `Renderer::builder(width, height)` instead of `Renderer::new` and
+  `Renderer::on_card`, with sizes in `u32`. Take `Ok(())` from `setup`, and
+  a `SetupError` instead of the error text. Match the `CardError` of
+  `Card::open` and the `SceneError` of `Scene::load`. Set `Options`'s
+  folders and `dri_device` as `PathBuf`s, its `size` and `components` in
+  `u32`, its `rotate` as a `Rotation`, and its frame rate cap in `fps`
+  instead of `pacer`. `Card::size` gives `u32`. When `run` returns, SIGINT
+  and SIGTERM go back to their handlers from before `stop_on_signals`, and a
+  sink turns on before its first frame instead of after it.
 
 ### Added
 

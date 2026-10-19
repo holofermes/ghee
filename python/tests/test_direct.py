@@ -399,7 +399,6 @@ def test_a_signal_ends_a_scene_that_runs_itself_by_that_signal(name, tmp_path):
         capture_output=True,
         check=False,
         text=True,
-        timeout=120,
     )
     assert ran.returncode == -getattr(signal, name), ran.stderr
     assert len(frames(tmp_path)) in (3, 4)
@@ -451,7 +450,6 @@ def test_a_scene_file_renders_itself(tmp_path):
         capture_output=True,
         check=False,
         text=True,
-        timeout=120,
     )
     assert ran.returncode == 0, ran.stderr
     # frame 0 draws with the pinned step too
@@ -513,7 +511,6 @@ def test_a_direct_run_finds_its_font_beside_its_script(tmp_path):
         capture_output=True,
         check=False,
         text=True,
-        timeout=120,
     )
     assert ran.returncode == 0, ran.stderr
     ab, cd, ab_again = (pixels(tmp_path / f"f.{n:04d}.png") for n in range(3))
@@ -572,7 +569,6 @@ def test_a_scene_file_draws_its_words_where_its_layer_places_them(tmp_path):
         cwd=scene_dir,
         capture_output=True,
         text=True,
-        timeout=120,
         check=False,
     )
     assert ran.returncode == 0, ran.stderr

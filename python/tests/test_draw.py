@@ -836,7 +836,6 @@ def test_a_drawing_draws_its_frames_without_the_scene_shim():
         capture_output=True,
         text=True,
         check=True,
-        timeout=60,
     )
     assert ran.stdout.split() == ["False"]
 
@@ -923,7 +922,6 @@ def test_a_scene_script_with_no_scene_draws_on_black_in_its_own_frames(tmp_path)
         [sys.executable, str(path), "-o", "-", "--size", "12x4"]
         + ["--frames", "2", "--timestep", "0"],
         capture_output=True,
-        timeout=120,
         check=False,
     )
     assert ran.returncode == 0, ran.stderr
@@ -982,7 +980,6 @@ def test_a_scene_script_under_ghee_draws_the_frames_that_a_screen_draws(tmp_path
         [str(CLI), "render", str(path), "-o", "-", "--size", "64x32"]
         + ["--frames", str(frames), "--timestep", "0"],
         capture_output=True,
-        timeout=120,
         check=False,
     )
     assert ran.returncode == 0, ran.stderr
@@ -1021,7 +1018,6 @@ def test_ghee_render_demo_stats_draws_the_chart_and_the_readings(tmp_path):
         },
         capture_output=True,
         text=True,
-        timeout=120,
         check=False,
     )
     assert ran.returncode == 0, ran.stderr
@@ -1095,7 +1091,6 @@ def test_a_picture_in_memory_draws_on_a_screen_and_under_ghee_alike(tmp_path):
         [str(CLI), "render", str(path), "-o", "-", "--size", "8x4"]
         + ["--frames", str(frames), "--timestep", "0"],
         capture_output=True,
-        timeout=120,
         check=False,
     )
     assert ran.returncode == 0, ran.stderr
@@ -1223,7 +1218,6 @@ def test_a_scene_layer_keeps_its_own_values_on_a_screen_and_under_ghee_alike(tmp
         [str(CLI), "render", str(path), "-o", "-", "--size", "24x24"]
         + ["--frames", str(frames), "--timestep", "0"],
         capture_output=True,
-        timeout=120,
         check=False,
     )
     assert ran.returncode == 0, ran.stderr

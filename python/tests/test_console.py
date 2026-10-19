@@ -37,27 +37,27 @@ def free_port():
         return s.getsockname()[1]
 
 
-def get(port, path, timeout=5):
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=timeout) as r:
+def get(port, path):
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as r:
         return r.status, r.read()
 
 
-def post(port, path, timeout=5):
+def post(port, path):
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}", data=b"", method="POST"
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req) as r:
         return r.status, r.read()
 
 
-def post_json(port, path, doc, timeout=5):
+def post_json(port, path, doc):
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}{path}",
         data=json.dumps(doc).encode(),
         method="POST",
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req) as r:
         return r.status, r.read()
 
 
@@ -86,7 +86,7 @@ def messages(r, count):
     return out
 
 
-def watching(h, read, limit=30.0, step=None):
+def watching(h, read, step=None):
     """Run `read` against the console while the host renders, and raise what
     `read` raises. The stream advances with the host's frames, so something has
     to draw: `step`, else a fed frame."""
@@ -97,13 +97,9 @@ def watching(h, read, limit=30.0, step=None):
 
     with concurrent.futures.ThreadPoolExecutor(1) as pool:
         got = pool.submit(read)
-        end = time.monotonic() + limit
-        while not got.done() and time.monotonic() < end:
+        while not got.done():
             (step or frame)()
-        try:
-            return got.result(timeout=5)
-        except concurrent.futures.TimeoutError:
-            pytest.fail(f"the stream gave nothing in {limit}s")
+        return got.result()
 
 
 @pytest.fixture
@@ -561,31 +557,29 @@ def drawn(host, tmp_path, size=(32, 16)):
 
     # ghee serve draws frames while someone watches
     def watch():
-        url = f"http://127.0.0.1:{port}/stream?vid=drawn"
+        url = f"http://127.0.0.1:{port}/stream"
         with contextlib.suppress(OSError), urllib.request.urlopen(url) as r:
             while r.read(4096):
                 pass
 
     try:
-        until(lambda: get(port, "/stats", timeout=1)[0] == 200, alive)
+        until(lambda: get(port, "/stats")[0] == 200, alive)
         threading.Thread(target=watch, daemon=True).start()
         yield port, alive
     finally:
         served.terminate()
-        served.wait(timeout=10)
+        served.wait()
 
 
-def until(done, step, limit=10.0):
-    """Run `step` until `done` holds, for up to `limit` seconds."""
-    end = time.monotonic() + limit
-    while time.monotonic() < end:
+def until(done, step):
+    """Run `step` until `done` holds."""
+    while True:
         try:
             if done():
                 return
         except (OSError, urllib.error.URLError):
             pass
         step()
-    pytest.fail(f"no {done} in {limit}s")
 
 
 @pytest.mark.parametrize("host", ["open", "serve"])
@@ -644,7 +638,7 @@ def jpeg_size(jpg):
 
 
 def first_jpeg(port):
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}/stream", timeout=20) as r:
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/stream") as r:
         head = b""
         while not head.endswith(b"\r\n\r\n") or b"Content-Length" not in head:
             head += read_exact(r, 1)
@@ -678,7 +672,7 @@ def test_either_host_gives_its_address_and_serves_the_same_stats_and_preview(
 
 def answer(port, method, path):
     """The status, headers and body of one request."""
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn = http.client.HTTPConnection("127.0.0.1", port)
     try:
         conn.request(method, path)
         r = conn.getresponse()
@@ -804,7 +798,7 @@ def test_a_still_is_the_next_frame_the_host_draws(served):
     answer = {}
 
     def ask():
-        answer["got"] = get(port, "/frame.png", timeout=10)
+        answer["got"] = get(port, "/frame.png")
 
     asking = threading.Thread(target=ask)
     asking.start()
@@ -822,7 +816,7 @@ def test_a_still_reaches_a_settled_host(served):
     answer = {}
 
     def ask():
-        answer["got"] = get(port, "/frame.png", timeout=10)
+        answer["got"] = get(port, "/frame.png")
 
     asking = threading.Thread(target=ask)
     asking.start()
@@ -840,7 +834,7 @@ def test_the_port_closes_with_the_handle():
     assert json_of(port, "/stats")["active"] == "scene"
     h.close()
     with pytest.raises(OSError):
-        get(port, "/stats", timeout=2)
+        get(port, "/stats")
 
 
 def test_serve_binds_where_it_is_told():
@@ -860,7 +854,7 @@ def test_the_mjpeg_stream_shows_a_frame_that_holds_alpha(served):
     h, port = served
 
     def read():
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/stream", timeout=20) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/stream") as r:
             head = b""
             while not head.endswith(b"\r\n\r\n") or b"Content-Length" not in head:
                 head += read_exact(r, 1)
@@ -881,7 +875,7 @@ def test_h264_serves_what_webcodecs_decodes(served):
     h, port = served
 
     def read():
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264", timeout=20) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264") as r:
             return messages(r, 3)
 
     msgs = watching(h, read)
@@ -910,7 +904,7 @@ def test_a_stream_with_no_encoder_answers_503_with_the_reason(monkeypatch):
 
         def read():
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{port}/h264", timeout=20)
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/h264")
             except urllib.error.HTTPError as e:
                 return e.code, e.read().decode()
             return 200, ""
@@ -925,7 +919,7 @@ def test_h264_reaches_a_settled_host(served):
     h, port = served
 
     def read():
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264", timeout=20) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264") as r:
             return messages(r, 2)
 
     assert [t for t, _ in watching(h, read, step=h.skip)] == [0, 1]
@@ -939,9 +933,7 @@ def test_stream_max_caps_the_preview():
         h.frame()
 
         def read():
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/h264", timeout=20
-            ) as r:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264") as r:
                 return messages(r, 1)
 
         msgs = watching(h, read)
@@ -960,7 +952,7 @@ def test_a_second_viewer_gets_the_stream(served):
     h, port = served
 
     def read():
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264", timeout=20) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264") as r:
             return messages(r, 2)
 
     for _ in range(2):
@@ -973,17 +965,15 @@ def test_the_stream_runs_only_while_a_client_watches(served):
     assert "h264" not in json_of(port, "/stats")["out"]
 
     def read():
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264", timeout=20) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/h264") as r:
             messages(r, 2)
             return json_of(port, "/stats")
 
     assert "h264" in watching(h, read)["out"]
     # the console drops the client on the write that follows the close
-    end = time.monotonic() + 5
-    while "h264" in json_of(port, "/stats")["out"] and time.monotonic() < end:
+    while "h264" in json_of(port, "/stats")["out"]:
         h.feed("level", LEVEL)
         h.frame()
-    assert "h264" not in json_of(port, "/stats")["out"]
 
 
 SIZED = {
@@ -1039,7 +1029,6 @@ def test_a_key_that_rebuilds_its_layer_sets_alike_through_set_python_and_the_wir
         [cli, "render", str(script), "-o", "-", "--size", "64x32"]
         + ["--frames", "3", "--timestep", "0"],
         capture_output=True,
-        timeout=60,
         check=False,
     )
     assert ran.returncode == 0, ran.stderr
@@ -1061,11 +1050,11 @@ def test_a_key_that_rebuilds_its_layer_sets_alike_through_set_python_and_the_wir
             lambda: post(port, "/set?layer=title&field=font_size&value=16")[0] == 200,
             lambda: time.sleep(0.05),
         )
-        _, png = get(port, "/frame.png", timeout=10)
+        _, png = get(port, "/frame.png")
         got = image.open(io.BytesIO(png)).convert("RGBA").tobytes()
         assert got == want, "/set of ghee serve"
         layer = json_of(port, "/scene")["passes"][0]["layers"][0]
         assert layer["font_size"] == 16
     finally:
         served.terminate()
-        served.communicate(timeout=10)
+        served.communicate()

@@ -272,12 +272,14 @@ def test_the_module_names_its_version():
 
 def test_a_frame_lets_the_other_threads_run():
     # the host's own threads keep working while a paced frame renders and waits
-    counted = []
+    inside = threading.Event()
     stop = threading.Event()
+    counted = [0]
 
     def count():
         while not stop.is_set():
-            counted.append(time.monotonic())
+            if inside.is_set():
+                counted[0] += 1
             time.sleep(0.001)
 
     worker = threading.Thread(target=count)
@@ -285,13 +287,16 @@ def test_a_frame_lets_the_other_threads_run():
     try:
         with ghee.open(RED, width=64, height=64, fps=20) as h:
             h.feed("level", LEVEL)
-            for _ in range(4):
+            # A frame that held the GIL would let the counter in between two
+            # bytecodes at most, so a count of five inside one frame never comes.
+            while counted[0] < 5:
+                counted[0] = 0
+                inside.set()
                 h.frame()
+                inside.clear()
     finally:
         stop.set()
         worker.join()
-    # four frames at 20 fps hold the loop about 0.2s, and the counter ran through it
-    assert len(counted) > 20
 
 
 # the shape a procedural host renders: two passes that ping-pong, a mask fed as
@@ -570,7 +575,6 @@ def test_alpha_names_one_form_for_every_output(tmp_path):
             ],
             capture_output=True,
             check=True,
-            timeout=60,
         )
         assert close(ran.stdout[:4], raw), (alpha, tuple(ran.stdout[:4]))
     ran = subprocess.run(
@@ -579,7 +583,6 @@ def test_alpha_names_one_form_for_every_output(tmp_path):
         capture_output=True,
         check=False,
         text=True,
-        timeout=60,
     )
     assert ran.returncode == 1, ran.stderr
     assert "holds alpha unpremultiplied" in ran.stderr

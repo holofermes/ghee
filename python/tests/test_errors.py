@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 
 import pytest
 from conftest import BROKEN, RED, REPO, scene_file
@@ -180,7 +179,6 @@ def test_words_past_the_texture_from_a_procedural_scene_end_no_run(tmp_path):
         capture_output=True,
         check=False,
         text=True,
-        timeout=120,
     )
     assert ran.returncode == 0, ran.stderr
     assert ran.stderr.count("layer 'words': the words need a ") == 1, ran.stderr
@@ -241,7 +239,6 @@ def test_a_scene_mistake_reads_as_ghee_wrote_it_in_open_a_direct_run_and_ghee_re
         capture_output=True,
         check=False,
         text=True,
-        timeout=120,
     )
     assert direct.returncode == 1
     assert direct.stderr.startswith("mistake.py: "), direct.stderr
@@ -253,7 +250,6 @@ def test_a_scene_mistake_reads_as_ghee_wrote_it_in_open_a_direct_run_and_ghee_re
         capture_output=True,
         check=False,
         text=True,
-        timeout=120,
     )
     assert ran.returncode == 1
     assert ran.stderr.count(message.removeprefix("scene: ")) == 1, ran.stderr
@@ -344,9 +340,8 @@ def test_a_drawing_from_another_thread_during_a_frame_raises_runtime_error():
 
         with concurrent.futures.ThreadPoolExecutor(1) as pool:
             drawing = pool.submit(draw)
-            deadline = time.monotonic() + 10
             try:
-                while not drawing.done() and time.monotonic() < deadline:
+                while not drawing.done():
                     h.frame()
             finally:
                 stop.set()

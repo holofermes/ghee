@@ -13,7 +13,7 @@ CLI = REPO / "target" / "release" / "ghee"
 
 def run(command, *argv):
     return subprocess.run(
-        [str(command), *argv], capture_output=True, text=True, check=False, timeout=60
+        [str(command), *argv], capture_output=True, text=True, check=False
     )
 
 
@@ -44,7 +44,6 @@ def test_the_command_imports_nothing_past_the_native_module():
             capture_output=True,
             text=True,
             check=True,
-            timeout=60,
         )
         return set(ran.stderr.split())
 

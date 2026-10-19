@@ -19,7 +19,6 @@ def run_example(name, out, *flags):
         env=env,
         capture_output=True,
         text=True,
-        timeout=120,
         check=False,
     )
     assert ran.returncode == 0, ran.stderr

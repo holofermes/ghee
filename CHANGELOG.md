@@ -171,6 +171,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Every error line that `ghee` prints starts with `ghee: `.
 - `ghee render -o -` and `ghee displays` end by SIGPIPE when the reader of
   stdout goes away, instead of exiting with status 0.
+- When a scene's program ends early, ghee names its exit status or the
+  signal that ended it, as in `did not complete the handshake (exit status
+  3)`. ghee logs a line when it sends the program SIGTERM or SIGKILL.
 - `ghee render -v` names the program that runs in place of a scene file.
 
 ### Fixed

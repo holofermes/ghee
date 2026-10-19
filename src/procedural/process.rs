@@ -90,6 +90,26 @@ const SIGTERM: c_int = 15;
 
 extern "C" {
     fn kill(pid: c_int, sig: c_int) -> c_int;
+    fn strsignal(sig: c_int) -> *const std::ffi::c_char;
+}
+
+/// How a process ended: `exit status 3`, or `signal 9: Killed`, the
+/// signal named as strsignal() names it.
+fn ending(status: std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(code), _) => format!("exit status {code}"),
+        (None, Some(sig)) => {
+            let name = unsafe { strsignal(sig) };
+            match name.is_null() {
+                true => format!("signal {sig}"),
+                false => format!("signal {sig}: {}", unsafe {
+                    std::ffi::CStr::from_ptr(name).to_string_lossy()
+                }),
+            }
+        }
+        (None, None) => status.to_string(),
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1061,6 +1081,14 @@ impl SceneProcess {
             wait_until(EPITAPH_WAIT, || t.is_finished());
             self.threads.push(t);
         }
+        let ended = match &mut self.peer {
+            Peer::Child(child) => child.try_wait().ok().flatten().map(ending),
+            Peer::Here(_) => None,
+        };
+        let why = match ended {
+            Some(ended) => format!("{why} ({ended})"),
+            None => why.to_string(),
+        };
         SceneFailure {
             why: format!("{}: {why}", self.name),
             stderr: lock(&self.stderr).trim_end().to_string(),
@@ -1137,9 +1165,18 @@ impl SceneProcess {
         if let Peer::Child(child) = &mut self.peer {
             if !reaped(child, self.term_after) {
                 unsafe { kill(child.id() as c_int, SIGTERM) };
-                if !reaped(child, self.kill_after) {
+                if reaped(child, self.kill_after) {
+                    crate::report::warn(format!(
+                        "{} kept running after its stdin closed, so ghee sent it SIGTERM",
+                        self.name
+                    ));
+                } else {
                     let _ = child.kill();
                     let _ = child.wait();
+                    crate::report::warn(format!(
+                        "{} kept running after SIGTERM, so ghee sent it SIGKILL",
+                        self.name
+                    ));
                 }
             }
         }
@@ -2011,7 +2048,10 @@ sleep 60
         );
         let e = failure(start_scene(&path, &no_args()));
         let shown = e.to_string();
-        assert!(shown.contains("did not complete the handshake"), "{shown}");
+        assert!(
+            shown.ends_with("did not complete the handshake (exit status 3)"),
+            "{shown}"
+        );
         assert!(!shown.contains("boom in the process"), "{shown}");
         let full = with_stderr(&e);
         assert_eq!(full, format!("{shown}\nboom in the process"));
@@ -2557,7 +2597,10 @@ done
         };
         let e = last.unwrap_err();
         let shown = e.to_string();
-        assert!(shown.contains("the scene process exited"), "{shown}");
+        assert!(
+            shown.ends_with("the scene process exited (exit status 1)"),
+            "{shown}"
+        );
         // the terminal already holds the stderr, so the message repeats none
         assert!(!shown.contains("the process gave up"), "{shown}");
         assert!(with_stderr(&e).contains("the process gave up"), "{e}");
@@ -2630,6 +2673,14 @@ done
         );
         let e = f.tick(7, 3.0, 0.5).unwrap_err();
         assert_eq!(e.to_string(), "/tmp/count.py: gave up");
+    }
+
+    #[test]
+    fn a_process_ends_by_its_status_or_by_a_signal_named_as_a_shell_names_it() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+        assert_eq!(ending(ExitStatus::from_raw(3 << 8)), "exit status 3");
+        assert_eq!(ending(ExitStatus::from_raw(9)), "signal 9: Killed");
     }
 
     #[test]

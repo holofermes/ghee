@@ -912,9 +912,10 @@ const has = (o, k) => isObj(o) && Object.prototype.hasOwnProperty.call(o, k);
 const NO_EDITS = {rev: null, values: {}, items: [], unsaved: false, aside: [], broken: [], draft: false};
 let E = NO_EDITS, D = null;
 // rev is the ETag of the scene that this page last read, or that its last
-// edit answered, and every edit of the scene carries it in If-Match. known
-// is the same revision: a /stats rev that differs from it means another
-// client changed the scene.
+// edit answered, and every edit of a scene file carries it in If-Match. A
+// program changes its scene at any time, and the console keeps what it set,
+// so an edit of a program's scene goes without. known is the same revision:
+// a /stats rev that differs from it means another client changed the scene.
 let rev = null, known = null;
 const layerEdit = n => ((E.values || {}).layers || {})[n];
 const passEdit = n => ((E.values || {}).passes || {})[n];
@@ -955,7 +956,7 @@ function edit(path, scene, q, body){
 async function sendEdit(path, scene, job, key, body){
   if (key != null) queuedSets.delete(key);
   const headers = body == null ? {} : {"Content-Type": "application/json"};
-  if (rev != null && scene === active) headers["If-Match"] = `"${rev}"`;
+  if (rev != null && scene === active && !isProcedural()) headers["If-Match"] = `"${rev}"`;
   try {
     const r = await fetch(`${path}?${job.q}`, {method: "POST", headers, body});
     // a proxy that compresses the answer marks the tag weak, W/"7"
@@ -2769,8 +2770,11 @@ async function followScene(){
   following = true;
   const name = active;
   try {
-    const fresh = await jget("/scene?name=" + encodeURIComponent(name));
+    const r = await fetch("/scene?name=" + encodeURIComponent(name));
+    const fresh = await r.json();
     if (name === active && work && work.passes) takeLayers(fresh);
+    const tag = (r.headers.get("ETag") || "").match(/\d+/);
+    if (tag && name === active && settled()) rev = known = parseInt(tag[0], 10);
   } catch (_) {
     layerChanges = null;   // read again at the next poll
   } finally { following = false; }
@@ -3490,13 +3494,15 @@ async function poll(){
     if (unread && s.active === unread && s.rev != null) loadScene(unread, false);
     if (!active && s.active) readScenes().then(() => { if (!active) loadScene(s.active); });
     else if (active && !s.active && !unread && settled()) readScenes().then(r => { if (!r.active) showEmpty(); });
+    let followed = false;
     if (s.layer_changes !== layerChanges){
       layerChanges = s.layer_changes;
-      if (isProcedural()) followScene();
+      followed = isProcedural();
+      if (followed) followScene();
     } else if (letGo()) followScene();
     LOCKS = locksOf(s);
     if (canon(LOCKS) !== shownLocks && !inUse() && !busyLayers().length) paintLocks();
-    if (s.rev != null && known != null && s.rev !== known && s.active === active && settled() && $("#behind").hidden) refresh();
+    if (!followed && s.rev != null && known != null && s.rev !== known && s.active === active && settled() && $("#behind").hidden) refresh();
     refreshInfo(); applyRotation(); showErrors();
   }catch(_){ pollFails++; }
   finally {

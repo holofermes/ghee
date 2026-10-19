@@ -125,11 +125,14 @@ send each edit with an `If-Match` header that holds the `ETag` of the
 scene that it last read, from `GET /scene`. ghee then refuses an edit with
 412 when the scene changed since, so your program never overwrites a change
 that it hasn't seen. Each edit answers the scene's new `ETag`: send your
-next edit with that one.
+next edit with that one. A change that the scene's program makes gives the
+scene a new `ETag` too.
 
 ```shell
 curl -X POST -H 'If-Match: "5"' 'http://127.0.0.1:8090/set?name=tile&value=3'
 ```
+
+`GET /scene` answers the scene with every edit that answered before it.
 
 `/set`, `POST /scene`, `/save`, `/reset`, `/aside` and `/draft` edit the
 open scene. To name it, pass `scene=` to `/set`, or `name=` to the others: a

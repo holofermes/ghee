@@ -15,6 +15,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -100,33 +101,81 @@ pub enum Command {
 /// The command queue the render loop drains.
 #[derive(Default)]
 pub struct Commands {
-    items: Mutex<VecDeque<Command>>,
+    items: Mutex<Queue>,
     ready: Condvar,
+    /// The count of commands that the render loop applied and published.
+    applied: Mutex<u64>,
+    settled: Condvar,
+}
+
+/// The queued commands, and the count of commands put and taken since the
+/// console started.
+#[derive(Default)]
+struct Queue {
+    items: VecDeque<Command>,
+    put: u64,
+    taken: u64,
 }
 
 impl Commands {
     fn put(&self, item: Command) {
-        lock(&self.items).push_back(item);
+        let mut q = lock(&self.items);
+        q.items.push_back(item);
+        q.put += 1;
         self.ready.notify_all();
     }
 
     fn take(&self) -> Option<Command> {
-        lock(&self.items).pop_front()
+        let mut q = lock(&self.items);
+        let item = q.items.pop_front();
+        q.taken += u64::from(item.is_some());
+        item
     }
 
     fn is_empty(&self) -> bool {
-        lock(&self.items).is_empty()
+        lock(&self.items).items.is_empty()
     }
 
     /// Sleep until a command arrives. The command stays on the queue.
     fn wait(&self) {
-        let mut items = lock(&self.items);
-        while items.is_empty() {
-            items = self
+        let mut q = lock(&self.items);
+        while q.items.is_empty() {
+            q = self
                 .ready
-                .wait(items)
+                .wait(q)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+    }
+
+    fn sent(&self) -> u64 {
+        lock(&self.items).put
+    }
+
+    /// The render loop applied each command that it took, and published
+    /// the document that they made.
+    fn settle(&self) {
+        let taken = lock(&self.items).taken;
+        *lock(&self.applied) = taken;
+        self.settled.notify_all();
+    }
+
+    /// Wait until the render loop applied the first `count` commands, until
+    /// `deadline`, or until `stopping` says the console stops. False when
+    /// it gave up.
+    fn wait_applied(&self, count: u64, deadline: Instant, stopping: impl Fn() -> bool) -> bool {
+        let mut applied = lock(&self.applied);
+        while *applied < count {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || stopping() {
+                return false;
+            }
+            applied = self
+                .settled
+                .wait_timeout(applied, left.min(Duration::from_millis(250)))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        true
     }
 }
 
@@ -399,6 +448,8 @@ pub struct Console {
     /// on.
     sources: Mutex<Option<Snapshot>>,
     q: Commands,
+    /// A render loop drains `q`.
+    draining: AtomicBool,
 }
 
 impl Console {
@@ -430,6 +481,7 @@ impl Console {
             scene_size: Mutex::new(None),
             sources: Mutex::new(None),
             q: Commands::default(),
+            draining: AtomicBool::new(false),
         }
     }
 
@@ -1105,6 +1157,9 @@ fn drain(
     if edited {
         publish(console, renderer, st, ctrl, true);
     }
+    if force {
+        console.q.settle();
+    }
     force
 }
 
@@ -1140,7 +1195,8 @@ fn live_of(ctrl: &ControllerSlot) -> Option<RefMut<'_, Live>> {
 
 /// Publish the running document, the renderer's scene: whole with `whole`,
 /// else what the scene's own code changed in it. A change by that code, or
-/// an apply that kept layers that the code added, counts for /stats.
+/// an apply that kept layers that the code added, counts for /stats and
+/// gives the scene a new revision.
 fn publish(
     console: &Console,
     renderer: &RefCell<Renderer>,
@@ -1151,7 +1207,10 @@ fn publish(
     let kept = std::mem::take(&mut st.borrow_mut().changed);
     let held = st.borrow();
     let mut live = live_of(ctrl);
-    console.hub.publish_live(
+    // A reader takes the revision and the document under this lock, so one
+    // revision names one document.
+    let mut copies = lock(&console.copies);
+    let counted = console.hub.publish_live(
         &renderer.borrow(),
         live.as_deref_mut(),
         whole || kept,
@@ -1159,6 +1218,14 @@ fn publish(
         held.name.as_deref(),
         held.generation,
     );
+    let copy = held
+        .name
+        .as_deref()
+        .and_then(|n| Some((n, copies.get_mut(n)?)));
+    if let (true, Some((name, copy))) = (counted, copy) {
+        copy.bump();
+        lock(&console.revs).insert(name.to_string(), copy.rev);
+    }
 }
 
 /// True when the scene's own code changed the running document since the
@@ -1287,6 +1354,7 @@ pub fn render_loop(
     };
     *lock(&console.scene_size) = Some(renderer.borrow().scene_size());
     console.hub.set_gpu(gpu_caps(&renderer.borrow()));
+    console.draining.store(true, Ordering::SeqCst);
     let st = Rc::new(RefCell::new(Running::default()));
     // what feeds the running scene, when the scene brings something
     let ctrl: ControllerSlot = RefCell::new(None);
@@ -1329,6 +1397,11 @@ pub fn render_loop(
         render.controller = Some(&ctrl);
         render.poll = Some(Box::new(|| drain(console, &renderer, &st, &ctrl)));
         render.idle_hook = Some(Box::new(|period| {
+            // a change that waited for publish_every goes out before the
+            // loop rests, so the document never lags behind the last frame
+            if changed(&st, &ctrl) {
+                publish(console, &renderer, &st, &ctrl, true);
+            }
             let hub = &console.hub;
             hub.skipped();
             let interval = skip_interval(
@@ -1401,6 +1474,7 @@ pub fn render_loop(
         report(&times.borrow(), elapsed, &out);
     }
     // The loop ended, so nothing renders to serve.
+    console.draining.store(false, Ordering::SeqCst);
     console.stop();
 }
 
@@ -1541,9 +1615,23 @@ impl ConsoleHost for RenderLoopHost {
         self.scene_doc(name, false).map(|(doc, _)| doc)
     }
 
+    /// The read waits until the render loop applied every edit that
+    /// answered before it, and holds off the edits that come meanwhile, so
+    /// the document is the one that its revision names.
     fn scene_doc(&self, name: Option<&str>, defaults: bool) -> ConsoleResult<(Value, Option<u64>)> {
-        let hub = &self.console.hub;
-        self.console.with_copy(name, |name, copy| {
+        let console = &self.console;
+        let hub = &console.hub;
+        let _editing = lock(&console.editing);
+        let sent = console.q.sent();
+        let deadline = Instant::now() + LOAD_TIMEOUT;
+        if console.draining.load(Ordering::SeqCst)
+            && !console
+                .q
+                .wait_applied(sent, deadline, || console.stopping())
+        {
+            return Err(ConsoleError::unavailable("the scene is still taking edits"));
+        }
+        console.with_copy(name, |name, copy| {
             let doc = match defaults {
                 true => copy.defaults_doc.clone(),
                 false => copy.live_doc(name, hub),
@@ -3752,6 +3840,106 @@ mod tests {
         api.host.switch(Some("proc")).unwrap();
         frame();
         assert_eq!(locked(), none, "a new process");
+    }
+
+    /// RFC 9110, section 8.8.3: a strong ETag names one document. A change
+    /// by the scene's process gives the scene a new revision, and the
+    /// document that GET /scene answers under it holds the change.
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_change_by_the_scene_process_moves_the_etag_and_shows_in_the_scene() {
+        let d = crate::testing::TempDir::new("console-rev");
+        crate::testing::script(&d, "proc", &sets_later_script());
+        let mut console = Console::new(SceneStore::new(&d, Vec::new()));
+        console.hub.publish_every = 0.0;
+        let console = Arc::new(console);
+        let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
+        let renderer = Rc::new(RefCell::new(gpu(16, 8)));
+        let st = Rc::new(RefCell::new(Running::default()));
+        let ctrl: ControllerSlot = RefCell::new(None);
+        let frame = || {
+            let _spawn = crate::testing::SCRIPTS.read().unwrap();
+            let mut shared = SharedRenderer {
+                renderer: Rc::clone(&renderer),
+            };
+            let mut lp = Loop::new(&mut shared, vec![]);
+            lp.frames = 1;
+            lp.controller = Some(&ctrl);
+            lp.poll = Some(Box::new(|| drain(&console, &renderer, &st, &ctrl)));
+            lp.run().unwrap();
+            drop(lp);
+            publish(&console, &renderer, &st, &ctrl, false);
+        };
+        let read = || {
+            let (_, body, etag) = ask(&api, "GET", "/scene", "name=proc", "");
+            (json_of(&body), etag.unwrap())
+        };
+        let has_dot = |doc: &Value| {
+            doc["passes"][0]["layers"]
+                .as_array()
+                .is_some_and(|l| l.iter().any(|l| l["name"] == "dot"))
+        };
+        api.host.switch(Some("proc")).unwrap();
+        frame();
+        let (before, old) = read();
+        assert!(!has_dot(&before));
+        until(|| {
+            frame();
+            has_dot(&read().0)
+        });
+        let (after, new) = read();
+        assert_ne!(new, old, "{after}");
+        let set = ask_if(
+            &api,
+            "POST",
+            "/set",
+            "name=main.amt&value=0.5",
+            "",
+            Some(&old),
+        );
+        assert_eq!(set.0, 412);
+    }
+
+    /// A GET /scene after a /set reads the set, once the render loop that
+    /// runs on another thread applied it.
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_read_after_a_set_holds_the_set_under_the_etag_that_the_set_answered() {
+        let d = crate::testing::TempDir::new("console-read");
+        crate::testing::script(&d, "proc", &sets_later_script());
+        let console = Arc::new(Console::new(SceneStore::new(&d, Vec::new())));
+        let api = Arc::new(ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console))));
+        let renderer = Rc::new(RefCell::new(gpu(16, 8)));
+        let st = Rc::new(RefCell::new(Running::default()));
+        let ctrl: ControllerSlot = RefCell::new(None);
+        api.host.switch(Some("proc")).unwrap();
+        {
+            let _spawn = crate::testing::SCRIPTS.read().unwrap();
+            drain(&console, &renderer, &st, &ctrl);
+        }
+        console.draining.store(true, Ordering::SeqCst);
+        let client = {
+            let api = Arc::clone(&api);
+            thread::spawn(move || {
+                (1..=5)
+                    .map(|i| {
+                        let value = f64::from(i) / 10.0;
+                        let q = format!("name=main.amt&value={value}");
+                        let set = ask(&api, "POST", "/set", &q, "");
+                        let (_, body, etag) = ask(&api, "GET", "/scene", "name=proc", "");
+                        let read = json_of(&body)["passes"][0]["params"]["amt"]["value"].clone();
+                        (set.2, etag, (read.as_f64().unwrap() - value).abs() < 1e-6)
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        while !client.is_finished() {
+            drain(&console, &renderer, &st, &ctrl);
+            thread::sleep(Duration::from_millis(2));
+        }
+        for (set, read, holds) in client.join().unwrap() {
+            assert!(holds && set == read, "set {set:?}, read {read:?}");
+        }
     }
 
     #[test]

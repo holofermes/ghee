@@ -535,7 +535,8 @@ impl Hub {
     /// that the program changed goes, laid over the document. Without
     /// `whole`, the program's changes wait in `live` until `publish_every`
     /// passed since they last went. A change by the program, or `by_host`,
-    /// counts in /stats, so a page reads the scene again.
+    /// counts in /stats, so a page reads the scene again. True when one
+    /// counted.
     pub fn publish_live(
         &self,
         renderer: &Renderer,
@@ -544,12 +545,12 @@ impl Hub {
         by_host: bool,
         name: Option<&str>,
         generation: u64,
-    ) {
+    ) -> bool {
         if !whole && live.as_deref().is_some_and(Live::changed) {
             let now = monotonic();
             let mut last = lock(&self.changes_published);
             if now - *last < self.publish_every {
-                return;
+                return false;
             }
             *last = now;
         }
@@ -569,6 +570,7 @@ impl Hub {
         if changed || by_host {
             self.layer_changes.fetch_add(1, Ordering::SeqCst);
         }
+        changed || by_host
     }
 
     /// Lay the layers named `changed`, whole, and the values of the params of

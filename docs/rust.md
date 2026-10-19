@@ -18,8 +18,8 @@ serde_json = "1"
 To pin a release, add `tag = "vX.Y.Z"` with a version from the [releases
 page](https://github.com/holofermes/ghee/releases). The build needs the
 GLES and DRM headers that [Building](building.md) lists. To build for a Pi
-from another computer, see [For a Pi, from another
-computer](building.md#for-a-pi-from-another-computer).
+from another computer, see [Cross compile for the
+Pi](building.md#cross-compile-for-the-pi).
 
 To read the documentation of every type and function, run `cargo doc -p
 ghee --open` in your project.

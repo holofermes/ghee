@@ -57,17 +57,7 @@ show it fullscreen.
 
 To take back your last change, click the undo arrow beside the scene list,
 or press Ctrl+Z (⌘Z on a Mac). To bring it back, click the redo arrow, or
-press Ctrl+Shift+Z or Ctrl+Y. Hover over an arrow to see which change it
-takes. In a text field or the shader editor, Ctrl+Z undoes your typing
-there instead.
-
-A slider's drag is one step, and so is a run of typing in the shader. Back
-to defaults is one step too, so its undo brings your changes back.
-
-Each page keeps its own history for each scene, until you reload the page.
-An undo takes back only that page's changes. When another page, in another
-tab or on another device, changed the same setting since, the console
-refuses the undo and says so.
+press Ctrl+Shift+Z or Ctrl+Y.
 
 ## Your scenes
 
@@ -84,40 +74,34 @@ of your scenes, upload it from its layer: a `.png`, `.jpg`, `.ttf` or
 
 To render one of your scenes without the console, pass its folder to `ghee
 render` ([Where ghee finds a scene](scenes.md#where-ghee-finds-a-scene)). A
-[program](procedural.md) in a scene's folder runs in the console as `ghee
-render` runs it. After you change a scene's files, reload the page to take
-them.
+[program](procedural.md) in a scene's folder behaves the same in the console
+as in `ghee render`. To see changes to a scene's files, reload the page for
+them to take effect.
 
 ## Saving
 
 What Save does depends on whose scene it is.
 
 Your own scene: Save writes your changes into its files, like any editor.
-The scene file keeps its layout and changes only where you changed a value,
-and each shader goes back into the file that the scene names for it.
 
 Any other scene, such as a bundled example or a scene in a folder that you
 serve: ghee never touches its files. Save keeps only your changes, as
-overrides in a file of their own, in `$XDG_DATA_HOME/ghee/edits`, by
-default `~/.local/share/ghee/edits`. To keep them elsewhere, pass
-`--edits-dir DIR`. Each time ghee opens that scene, in a console or in
-`ghee render`, it lays your overrides on top. To draw the scene as its
-files hold it, pass `--original` to `ghee render`.
+overrides in a sidecar file, in `$XDG_DATA_HOME/ghee/edits`, by default
+`~/.local/share/ghee/edits`. You can change this with `--edits-dir DIR`.
+Overrides take over the scene's defaults, but with `ghee render` you can
+choose to render a scene without overrides with `--original`.
 
 If the scene's files change later, your overrides still apply. The console
 asks only where the two clash: keep yours, or take the files'.
 
-If a saved change stops building, such as a layer whose image is gone, the
-console asks whether to keep it or drop it:
+If a saved change no longer fits the scene, the console asks whether to
+keep it or drop it:
 
 ![a dialog that says the saved "assets" edits do not build, names the missing image, and offers drop them or keep them](../media/console/broken-edits.png)
 
-If ghee stops before you save, at a restart, a reboot or a crash, the scene
-comes back as you last saved it. Your unsaved changes wait in a draft, in
-`$XDG_STATE_HOME/ghee`, by default `~/.local/state/ghee`, or in `--state-dir
-DIR`. The first console that opens the scene asks whether to restore or drop
-them. A restore is one undo step. ghee writes the draft a second after your
-last change. Your own scenes keep no draft, so save them before ghee stops.
+ghee keeps your unsaved changes in a draft file, in `~/.local/state/ghee`
+(`--state-dir` to change it). After a restart, reboot or crash, the console
+asks whether to restore them or drop them.
 
 ![a dialog that asks whether to restore the unsaved "neon" edits, with drop and restore](../media/console/restore-edits.png)
 
@@ -128,14 +112,7 @@ out with `..`, fails to load there, even though `ghee render` loads it.
 ## What a program locks
 
 When a [procedural scene](procedural.md) runs, the console locks each param
-and layer key that its program sets. A key stays locked until the program
-ends, after the program puts it back to its default too.
-
-When your Python program serves the console, with
-`ghee.open(serve=...)`, the console locks each param and layer key that the
-program sets. That console changes the layers' looks and the params' values,
-and locks the shaders, the passes, the channels, the filters and new
-params. It can't switch scenes or save.
+and layer key set by the procedural scene's program, until the program ends.
 
 ## From another computer
 
@@ -150,25 +127,22 @@ ssh -L 8090:localhost:8090 pi@raspberrypi.local
 Then open `http://localhost:8090/` on your computer.
 
 To open it to your network instead, pass `--host 0.0.0.0`, and open one of
-the addresses that the console prints when it starts. Over plain `http`
-from another computer, the browser shows the MJPEG stream: the H264 video
-needs `https` or `localhost`.
+the addresses that the console prints when it starts. Note that over plain
+`http` from another computer, the browser shows the MJPEG stream. To use the
+H264 video, you must use `https` or `localhost`.
 
 Careful: the console has no password, and anyone who reaches it can change
 your scenes and run any shader. Open it only on a network you trust.
 Uploads stay off on a network until you pass `--allow-uploads`.
 
 To reach a console that listens on loopback through a proxy on the same
-machine, such as `tailscale serve`, pass the names that the proxy sends as
-the `Host` to `--allow-hosts`, comma-separated. For a Pi that `tailscale
-serve` publishes as `raspberrypi.example.ts.net`, run:
+machine, such as `tailscale serve`, pass the `Host` names passed by the
+proxy to `--allow-hosts`. For example, if `tailscale serve` publishes the Pi
+as `raspberrypi.example.ts.net`, run:
 
 ```shell
 ghee serve --allow-hosts raspberrypi.example.ts.net
 ```
-
-The console still listens on loopback alone. It refuses a `Host` other than
-`localhost`, `127.0.0.1`, `[::1]` and the names that you pass.
 
 To set the H264 video's and the MJPEG stream's size and frame rate, see
 `ghee serve --help`. To drive the console from a program, see [HTTP

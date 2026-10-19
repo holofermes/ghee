@@ -122,8 +122,7 @@ Use `name=` to name the layer of a call, as the console shows it. Without it,
 ghee names a new layer after its call, `text`, then `text2`, and so on. Two
 calls with the same name in a frame raise ValueError.
 
-To draw a layer of the scene, pass its name. A key that the call leaves out
-then keeps the value you gave it in the console, else the scene's.
+To draw a layer defined in a scene, pass its name.
 
 Use `screen.measure("HOT", font_size=12)` to get the width and height of words
 in pixels before you draw them, as for HOT above. Leave out `font_size` to
@@ -156,8 +155,8 @@ screen.save("ramp.png")
 `feed` takes a list of floats, or a buffer such as a numpy array. Bytes, from
 `bytes` or a numpy `uint8` array, become 0 to 1: each byte is divided by 255.
 On a Pi Zero to Pi 3, an array stores only bytes, so floats outside 0 to 1
-clamp. On a Pi 4 or Pi 5, or a desktop, an array stores true floats, with no
-clamping.
+clamp. On a Pi 4 or Pi 5, or a desktop, an array stores true floats, so
+there's no clamping.
 
 Use `set_param` to set a param of the scene, and `in_pass="blur"` to set the
 param of its [pass](scenes.md#passes) `blur`.
@@ -240,8 +239,8 @@ To close the screen, call `screen.close()`, or open it in a
 
 ## Running as a service
 
-To keep a program running for months, such as a status screen, start it
-from a systemd user unit. Save this as
+To keep a program running for long periods of time, start it from a
+systemd user unit. Save this as
 `~/.config/systemd/user/status.service`:
 
 ```ini
@@ -266,20 +265,6 @@ Start it now and at every boot, also before you log in:
 systemctl --user enable --now status
 sudo loginctl enable-linger $USER
 ```
-
-`systemctl --user stop status` sends SIGTERM. Python's default for SIGTERM
-ends the program without running its `finally` blocks or leaving its `with`
-blocks, so the screen never closes. To close it, turn SIGTERM into
-SystemExit at the top of your program:
-
-```python
-import signal
-import sys
-
-signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-```
-
-When the screen closes, ghee turns the display off.
 
 ## Python scenes
 
@@ -386,12 +371,8 @@ these types:
 
 To serve the [console](console.md) from `ghee.open`, pass `serve=8090` and
 open `http://127.0.0.1:8090/`. ghee logs the address at INFO on the `ghee`
-logger of Python's `logging`. The console locks each param and layer key
-that your code sets. In a drawing, those are the keys that each call
-passes. Leave a key out to tune it in the console, and your value stays
-from frame to frame. The console changes the layers' looks and the params'
-values: your program owns its passes, its shaders, its params' settings and
-its assets.
+logger of Python's `logging`. Keys set by your program are locked in the
+console.
 
 ## Building a scene in Python
 
@@ -409,8 +390,8 @@ file, and takes its keys as keywords:
 | `ghee.Asset(name, file, ...)` | an asset | [Assets](layers.md#assets), [Data files](scenes.md#data-files) |
 | `ghee.Layer(name, ...)` | a layer | [Layers](layers.md) |
 
-Give `ghee.Layer` its `image` as you give `d.image` one: a `.png` or `.jpg`
-file, an image asset, a Pillow image or a numpy array.
+Load an image on `ghee.Layer` from a `.png` or `.jpg` file, an image asset,
+a Pillow image or a numpy array.
 
 In this scene, a `color` param `ink` holds orange, and the shader paints it from
 the top down to black. `uv`, which ghee gives every shader, runs from 0 at the

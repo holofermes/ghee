@@ -81,10 +81,8 @@ ghee render bars.py --display kms
 ## Running one
 
 Binaries and scripts need the execute bit (`chmod +x`). Without it, ghee
-stops with `no scene at bars: need a .scene.json or an executable scene`
-for a program named `bars`, and with `bars.py: no executable bit, and a
-procedural scene must be executable (chmod +x)` for `bars.py`. A file whose
-name ends in `.scene.json` is always a scene file, whatever its bits.
+stops with an error. A file whose name ends in `.scene.json` is always a
+scene file, regardless of its permissions.
 
 ghee finds a program the same way it finds a scene file ([Where ghee finds a
 scene](scenes.md#where-ghee-finds-a-scene)), so `ghee render bars` finds
@@ -95,9 +93,6 @@ bars.sh: choose one`. `ghee serve` shows the program in the
 
 ghee starts the program in the program's own folder, so a relative path is
 relative to the program.
-
-If the program can't start, or exits before it writes its scene, ghee stops,
-and shows what the program wrote on stderr.
 
 ## Arguments
 

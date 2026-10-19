@@ -58,9 +58,7 @@ To pick the format, end the file name in `.png` or `.jpg`. PNGs are
 lossless and stored uncompressed. For smaller files, use `.jpg` with
 `--save-opts quality=90`.
 
-Image files are opaque. To keep the scene's transparency, add `--alpha`. A
-PNG then holds unpremultiplied colours, as PNG's alpha is. A JPEG holds no
-transparency.
+Image files are opaque. To keep the scene's transparency, add `--alpha`.
 
 ## Raw frames
 
@@ -232,9 +230,8 @@ A 1-bit panel shows each pixel fully on or off, so grey edges turn ragged
 and thin text breaks up. Careful: on a 1-bit panel, set text to `"render":
 "mono"` ([Render](layers.md#render)), or bring grey back with a filter
 ([Filters](filters.md)). To show grey as a pattern of dots, add `dither`.
-To get more greys on a panel that takes over 100 frames a second, such as
-an SSD1306 on I2C at 1 MHz, add `frc`. To show 241 greys on a 16-level
-panel, add `frc16`.
+To get more greys on a panel that takes over 100 frames a second, add `frc`.
+To show 241 greys on a 16-level panel, add `frc16`.
 
 ## The console
 

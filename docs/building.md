@@ -17,7 +17,7 @@ the same tree, from `target/lib/ghee`:
 cd python && maturin build --release --compatibility linux -o ../target/lib/ghee
 ```
 
-## For a Pi, from another computer
+## Cross compile for the Pi
 
 To build for a Pi on a 64-bit OS from a Debian or Ubuntu computer, add the
 target, the cross compiler and the arm64 libraries:

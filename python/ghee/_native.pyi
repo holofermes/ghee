@@ -221,6 +221,10 @@ class Drawing:
 def _scene_doc(scene: Scene | dict[str, Any] | str | os.PathLike[str]) -> str:
     """The JSON text of the scene that ghee.run() runs."""
 
+def _set_clock(t: float | None) -> None:
+    """Run the calling thread on a clock that stands at `t` until a frame's
+    wait moves it, for a test. None puts the machine's clock back."""
+
 def _colour_name(text: str) -> bool:
     """True for a CSS colour name, in any case, transparent too."""
 

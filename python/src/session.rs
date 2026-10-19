@@ -8,8 +8,6 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::thread::sleep;
-use std::time::Duration;
 
 use ghee::console::hub::{frame_format, gpu_caps, HwLane, RawFrame};
 use ghee::draw::Call;
@@ -21,7 +19,7 @@ use ghee::looper::{Clock, Frame, Moment, RenderTarget};
 use ghee::output::{encode_jpeg, encode_png, expand_pattern, pacer, AlphaForm, Sinks};
 use ghee::procedural::{load_scene, process, resolve, scene_name};
 use ghee::scene::{coerce, truthy, ArraySize, Scene};
-use ghee::stats::{monotonic, DEST_KMS};
+use ghee::stats::{monotonic, sleep, DEST_KMS};
 use ghee::text::is_font_file;
 use serde_json::{Map, Value};
 
@@ -649,7 +647,7 @@ impl Session {
         let wants = self.console.as_ref().is_some_and(|c| c.hub().wants_draw());
         if wants && !self.renderer.blanked() && self.frame().is_ok() {
             if self.clock.pacer.is_none() {
-                nap(self.clock.idle());
+                sleep(self.clock.idle());
             }
             return Ok(tick);
         }
@@ -664,7 +662,7 @@ impl Session {
         if let Some(c) = self.console.as_ref() {
             c.hub().skipped();
         }
-        nap(self.clock.idle());
+        sleep(self.clock.idle());
         Ok(tick)
     }
 
@@ -926,12 +924,6 @@ impl Session {
         self.h264.close();
         self.sink = Sink::None;
         self.renderer.close();
-    }
-}
-
-fn nap(seconds: f64) {
-    if seconds > 0.0 {
-        sleep(Duration::from_secs_f64(seconds));
     }
 }
 

@@ -204,30 +204,38 @@ def test_a_tick_carries_the_frame_the_time_and_the_step():
     assert [t.dt for t in ticks] == [0.1, 0.1, 0.1]
 
 
-def test_a_frame_after_a_long_wait_steps_a_quarter_second_at_most():
+def test_a_frame_after_a_long_wait_steps_a_quarter_second_at_most(clock):
     # one frame must never step a simulation by seconds
+    clock(0.0)
     with ghee.open(SHOWS_DT, width=4, height=4) as h:
         h.frame()
-        time.sleep(0.4)
+        clock(0.4)
         tick = h.frame()
         assert (tick.dt, pixel(h)[0]) == (0.25, 255)
 
 
-def test_an_unpinned_tick_reads_the_wall_clock():
-    with ghee.open(RED, width=8, height=8, fps=60) as h:
+def test_an_unpinned_tick_reads_the_clock_and_a_frame_waits_out_its_period(clock):
+    clock(10.0)
+    with ghee.open(RED, width=8, height=8, fps=50) as h:
         first = h.frame()
         second = h.frame()
+        clock(10.5)
         third = h.frame()
     assert first.time == 0.0
-    assert 0.0 < second.time < third.time < 5.0
     assert first.dt == 1.0 / 60.0  # nothing is measured before the second frame
-    assert 0.0 < third.dt <= 0.25
+    assert (second.time, second.dt) == pytest.approx((0.02, 0.02))
+    assert (third.time, third.dt) == pytest.approx((0.5, 0.25))
 
 
-def test_the_ticks_dt_add_up_to_the_time_passed_over_skips():
+def test_the_ticks_dt_add_up_to_the_time_passed_over_skips(clock):
+    clock(0.0)
     with ghee.open(RED, width=8, height=8) as h:
-        ticks = [h.frame(), h.skip(), h.skip(), h.frame()]
+        ticks = []
+        for at, call in [(0.0, h.frame), (0.1, h.skip), (0.15, h.skip), (0.3, h.frame)]:
+            clock(at)
+            ticks.append(call())
     passed = ticks[-1].time - ticks[0].time
+    assert passed == pytest.approx(0.3)
     assert sum(t.dt for t in ticks[1:]) == pytest.approx(passed, abs=1e-9)
 
 
@@ -740,19 +748,23 @@ def test_open_with_no_scene_clears_to_black():
         assert all(pixel(h, i) == (0, 0, 0, 255) for i in range(32))
 
 
-def test_a_tick_carries_the_dt_that_its_frame_draws_with():
+def test_a_tick_carries_the_dt_that_its_frame_draws_with(clock):
     """Frame 0 draws with 1/60, and each later frame with the time since the
     frame before, which the tick opened by _tick() pins."""
+    now = 0.0
+    clock(now)
     with ghee.open(SHOWS_DT, width=4, height=4) as h:
         ticks = []
         for wait in (0.0, 0.03, 0.12, 0.06):
-            time.sleep(wait)
+            now += wait
+            clock(now)
             opened = h._tick()
-            time.sleep(0.02)
+            now += 0.02
+            clock(now)
             tick = h.frame()
             assert tick == opened
             ticks.append((tick.dt, pixel(h)[0]))
-    assert ticks[0][0] == 1.0 / 60.0
+    assert [dt for dt, _ in ticks] == pytest.approx([1.0 / 60.0, 0.05, 0.14, 0.08])
     for dt, red in ticks:
         assert abs(dt * 4 * 255 - red) <= 1.5, ticks
 

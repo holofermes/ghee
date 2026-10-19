@@ -1,7 +1,9 @@
 //! The clock, the frame rate and the output names that /stats reports.
 
+use std::cell::Cell;
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// /stats "out" entries.
 pub const DEST_KMS: &str = "kms";
@@ -10,11 +12,38 @@ pub const DEST_PIPE: &str = "pipe";
 pub const DEST_H264: &str = "h264";
 pub const DEST_MJPEG: &str = "mjpeg";
 
+thread_local! {
+    static SET: Cell<Option<f64>> = const { Cell::new(None) };
+}
+
 /// Seconds off the monotonic clock. The whole process shares one origin. One
-/// caller's timestamp means the same to another.
+/// caller's timestamp means the same to another. On a thread whose clock
+/// set_clock() set, that clock.
 pub fn monotonic() -> f64 {
+    if let Some(t) = SET.get() {
+        return t;
+    }
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
     ORIGIN.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
+
+/// Sleep `seconds`. On a thread whose clock set_clock() set, move that clock
+/// on instead.
+pub fn sleep(seconds: f64) {
+    if seconds <= 0.0 {
+        return;
+    }
+    match SET.get() {
+        Some(t) => SET.set(Some(t + seconds)),
+        None => thread::sleep(Duration::from_secs_f64(seconds)),
+    }
+}
+
+/// Run the calling thread on a clock that stands at `t` until a sleep moves
+/// it, for a test of a timing rule. None puts the machine's clock back.
+#[doc(hidden)]
+pub fn set_clock(t: Option<f64>) {
+    SET.set(t);
 }
 
 /// Completed work per elapsed second.
@@ -209,8 +238,18 @@ mod tests {
     #[test]
     fn the_clock_is_one_forward_running_origin() {
         let a = monotonic();
-        let b = monotonic();
+        let b = std::thread::spawn(monotonic).join().unwrap();
         assert!(b >= a);
-        assert!(b - a < 1.0);
+    }
+
+    #[test]
+    fn a_set_clock_stands_until_a_sleep_moves_it_on_its_own_thread_alone() {
+        set_clock(Some(5.0));
+        assert_eq!(monotonic(), 5.0);
+        sleep(0.25);
+        assert_eq!(monotonic(), 5.25);
+        assert!(std::thread::spawn(monotonic).join().unwrap() != 5.25);
+        set_clock(None);
+        assert!(monotonic() != 5.25);
     }
 }

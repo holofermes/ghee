@@ -5,6 +5,40 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::RwLock;
+use std::thread;
+use std::time::Duration;
+
+/// A patience longer than any run. A timed wait given it waits for its
+/// event, and the test runner ends a run that hangs.
+pub(crate) const NEVER: Duration = Duration::from_secs(u32::MAX as u64);
+
+/// Poll until `done` holds.
+pub(crate) fn until(mut done: impl FnMut() -> bool) {
+    while !done() {
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The calling thread's clock, standing at the time given until a sleep or
+/// `pass` moves it. The drop puts the machine's clock back.
+pub(crate) struct Clock;
+
+impl Clock {
+    pub(crate) fn at(t: f64) -> Clock {
+        crate::stats::set_clock(Some(t));
+        Clock
+    }
+
+    pub(crate) fn pass(&self, seconds: f64) {
+        crate::stats::sleep(seconds);
+    }
+}
+
+impl Drop for Clock {
+    fn drop(&mut self) {
+        crate::stats::set_clock(None);
+    }
+}
 
 /// An empty directory of one test's own under the temp directory. The drop
 /// removes it, with everything that the test wrote in it.

@@ -1878,6 +1878,7 @@ fn frame_png<D: Drawer + ?Sized>(drawer: &D, request: Request) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{until, Clock, NEVER};
 
     #[test]
     fn a_console_on_every_interface_prints_the_addresses_that_reach_it() {
@@ -1993,14 +1994,8 @@ mod tests {
             raw.seq += 1;
             hub.raw_ready.notify_all();
         }
-        let end = monotonic() + 5.0;
-        while monotonic() < end {
-            if let Some(jpg) = lock(&hub.latest).jpg.clone() {
-                return jpg;
-            }
-            thread::sleep(Duration::from_millis(20));
-        }
-        panic!("the encoder produced no preview frame");
+        until(|| lock(&hub.latest).jpg.is_some());
+        lock(&hub.latest).jpg.clone().unwrap()
     }
 
     #[test]
@@ -2113,17 +2108,21 @@ mod tests {
     fn a_failure_wakes_a_waiting_viewer_and_the_first_reason_stands() {
         let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
         let c = fanout.add();
+        let woke = Arc::new(AtomicBool::new(false));
+        // A fail before the viewer waits wakes nothing, so the fails repeat
+        // until the viewer wakes.
         let failer = {
-            let fanout = Arc::clone(&fanout);
+            let (fanout, woke) = (Arc::clone(&fanout), Arc::clone(&woke));
             thread::spawn(move || {
-                thread::sleep(Duration::from_millis(100));
-                fanout.fail("first");
+                while !woke.load(Ordering::SeqCst) {
+                    fanout.fail("first");
+                    thread::yield_now();
+                }
                 fanout.fail("second");
             })
         };
-        let t0 = monotonic();
-        assert!(c.get(Duration::from_secs(5)).is_none());
-        assert!(monotonic() - t0 < 2.0);
+        assert!(c.get(NEVER).is_none());
+        woke.store(true, Ordering::SeqCst);
         failer.join().unwrap();
         assert_eq!(fanout.failure().as_deref(), Some("first"));
     }
@@ -2165,10 +2164,11 @@ mod tests {
     }
 
     /// One GET /h264 served by serve_h264, as the raw bytes on the socket.
-    /// `run` drives the fanout while the request is served.
+    /// `run` drives the fanout and reads the viewer's queue while the request
+    /// is served.
     fn h264_exchange(
         fanout: Arc<H264Fanout>,
-        run: impl FnOnce(&H264Fanout) + Send + 'static,
+        run: impl FnOnce(&H264Fanout, &H264Client) + Send + 'static,
     ) -> Vec<u8> {
         use std::io::Read;
         use std::net::TcpStream;
@@ -2176,7 +2176,6 @@ mod tests {
         let port = server.server_addr().to_ip().unwrap().port();
         let client = thread::spawn(move || {
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             s.write_all(b"GET /h264 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
                 .unwrap();
             let mut out = Vec::new();
@@ -2186,8 +2185,8 @@ mod tests {
         let request = server.recv().unwrap();
         let c = fanout.add();
         let driver = {
-            let fanout = Arc::clone(&fanout);
-            thread::spawn(move || run(&fanout))
+            let (fanout, c) = (Arc::clone(&fanout), Arc::clone(&c));
+            thread::spawn(move || run(&fanout, &c))
         };
         serve_h264(request, &fanout, &c, &|| true);
         fanout.remove(&c);
@@ -2222,10 +2221,7 @@ mod tests {
     fn a_stream_that_cannot_start_answers_503_with_the_reason() {
         let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
         let why = "no H264 encoder. hardware: none here. software: no ffmpeg";
-        let out = h264_exchange(fanout, move |f| {
-            thread::sleep(Duration::from_millis(100));
-            f.fail(why);
-        });
+        let out = h264_exchange(fanout, move |f, _| f.fail(why));
         let text = String::from_utf8_lossy(&out);
         assert!(text.starts_with("HTTP/1.1 503"), "{text}");
         assert!(text.ends_with(why), "{text}");
@@ -2235,11 +2231,11 @@ mod tests {
     fn a_stream_that_fails_after_its_start_ends_on_an_error_frame() {
         let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
         let why = "hardware encode failed: stalled";
-        let out = h264_exchange(fanout, move |f| {
-            thread::sleep(Duration::from_millis(100));
+        let out = h264_exchange(fanout, move |f, c| {
             f.opened(256, 64, HW_COLOR);
             f.push(&key_au());
-            thread::sleep(Duration::from_millis(100));
+            // the stream starts once the viewer took the config and the key
+            until(|| lock(&c.state).q.is_empty());
             f.fail(why);
         });
         let head_end = find(&out, b"\r\n\r\n", 0).unwrap();
@@ -2309,34 +2305,39 @@ mod tests {
         let stopping = Arc::new(AtomicBool::new(true));
         let shot = Shot::new(stopping);
         let gen = shot.request();
-        assert!(shot.wait(gen, 5.0).is_none());
+        assert!(shot.wait(gen, NEVER.as_secs_f64()).is_none());
     }
 
     // viewers
 
     #[test]
     fn a_connection_that_named_no_vid_never_expires() {
+        let clock = Clock::at(0.0);
         let hb = Heartbeat::new(0.0);
         let v = hb.join(None);
-        thread::sleep(Duration::from_millis(10));
+        clock.pass(10.0);
         assert!(!hb.gone(&v));
     }
 
     #[test]
     fn a_named_connection_expires_once_its_pings_stop() {
+        let clock = Clock::at(0.0);
         let hb = Heartbeat::new(0.05);
         let v = hb.join(Some("abc"));
+        clock.pass(0.05);
         assert!(!hb.gone(&v));
-        thread::sleep(Duration::from_millis(80));
+        clock.pass(0.01);
         assert!(hb.gone(&v));
     }
 
     #[test]
     fn a_ping_puts_a_named_connection_back_inside_the_deadline() {
+        let clock = Clock::at(0.0);
         let hb = Heartbeat::new(0.05);
         let v = hb.join(Some("abc"));
-        thread::sleep(Duration::from_millis(80));
+        clock.pass(0.08);
         assert_eq!(hb.ping(Some("abc")), 1);
+        clock.pass(0.04);
         assert!(!hb.gone(&v));
     }
 
@@ -2344,9 +2345,10 @@ mod tests {
     fn every_connection_under_one_vid_is_kept_alive_together() {
         // a page that falls back from h264 to MJPEG opens a second stream under
         // its existing ping id
+        let clock = Clock::at(0.0);
         let hb = Heartbeat::new(0.05);
         let (a, b) = (hb.join(Some("abc")), hb.join(Some("abc")));
-        thread::sleep(Duration::from_millis(80));
+        clock.pass(0.08);
         assert_eq!(hb.ping(Some("abc")), 2);
         assert!(!hb.gone(&a) && !hb.gone(&b));
     }

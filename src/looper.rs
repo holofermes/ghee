@@ -14,8 +14,6 @@
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 
 use anyhow::{bail, Result};
 
@@ -24,7 +22,7 @@ use crate::engine::{Feed, Given, Provider, Refused, Renderer, Taken};
 use crate::layer::Address;
 use crate::live::Live;
 use crate::scene::{ArraySize, ParamValue};
-use crate::stats::{monotonic, FrameRate};
+use crate::stats::{monotonic, sleep, FrameRate};
 use serde_json::Value;
 
 /// a frame never hands a scene more than this, however long the loop idled
@@ -454,12 +452,6 @@ pub fn should_draw(
     }
     let dirty = controller.is_none_or(|c| c.dirty(frame, t));
     dirty && watched
-}
-
-fn sleep(seconds: f64) {
-    if seconds > 0.0 {
-        thread::sleep(Duration::from_secs_f64(seconds));
-    }
 }
 
 /// The time of a host's frames: `t`, the period that iTimeDelta takes, a
@@ -1502,16 +1494,18 @@ mod tests {
 
     #[test]
     fn dt_is_the_measured_frame_period() {
+        let _clock = crate::testing::Clock::at(0.0);
         let mut r = Recorder::default();
         let mut s = Sink::new();
         {
             let mut lp = Loop::new(&mut r, vec![&mut s]);
             lp.frames = 4;
+            lp.rest = 0.01;
             lp.run().unwrap();
         }
         let dts = r.dts.borrow();
         assert_eq!(dts.len(), 3); // frame 0 has no previous frame to measure against
-        assert!(dts.iter().all(|v| *v > 0.0 && *v < 5.0));
+        assert!(dts.iter().all(|v| (v - 0.01).abs() < 1e-9), "{dts:?}");
         assert!(r.times.borrow().is_empty()); // the engine's own clock still runs the scene
     }
 
@@ -1543,6 +1537,7 @@ mod tests {
     /// the iTimeDelta that the tick's frame draws with.
     #[test]
     fn a_tick_carries_the_dt_that_its_frame_draws_with() {
+        let _clock = crate::testing::Clock::at(0.0);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut r = Recorder::default();
         let mut s = Sink::new();
@@ -1566,6 +1561,7 @@ mod tests {
     /// loop feeds no period.
     #[test]
     fn a_frame_after_a_restarted_clock_draws_with_the_first_dt() {
+        let _clock = crate::testing::Clock::at(0.0);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut r = Recorder::default();
         let restart = Rc::clone(&r.restart);
@@ -1718,6 +1714,7 @@ mod tests {
         let mut r = Recorder::default();
         let mut s = Sink::new();
         s.persists = true;
+        let _clock = crate::testing::Clock::at(0.0);
         let (drawn, elapsed);
         {
             let mut lp = Loop::new(&mut r, vec![&mut s]);
@@ -1729,7 +1726,7 @@ mod tests {
         }
         // the first iteration draws, and each of the five after it sleeps 10 ms
         assert_eq!(drawn, 1);
-        assert!(elapsed >= 0.05, "elapsed {elapsed}");
+        assert!((elapsed - 0.05).abs() < 1e-9, "elapsed {elapsed}");
     }
 
     #[test]
@@ -2002,6 +1999,7 @@ mod tests {
             }
         }
 
+        let _clock = crate::testing::Clock::at(0.0);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let mut r = Recorder::default();
         let mut s = Sink::new();

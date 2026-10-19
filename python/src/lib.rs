@@ -892,6 +892,14 @@ fn _command(py: Python<'_>, argv: Vec<String>) -> i32 {
     py.detach(|| ghee::cli::main(argv))
 }
 
+/// Run the calling thread on a clock that stands at `t` until a frame's wait
+/// moves it, for a test. None puts the machine's clock back.
+#[pyfunction]
+#[pyo3(signature = (t))]
+fn _set_clock(t: Option<f64>) {
+    ghee::stats::set_clock(t);
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -912,6 +920,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.setattr("_render_check", wrap_pyfunction!(_render_check, m)?)?;
     m.setattr("_direct", wrap_pyfunction!(_direct, m)?)?;
     m.setattr("_scene_doc", wrap_pyfunction!(_scene_doc, m)?)?;
+    m.setattr("_set_clock", wrap_pyfunction!(_set_clock, m)?)?;
     m.add_function(wrap_pyfunction!(open, m)?)?;
     Ok(())
 }

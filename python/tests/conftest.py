@@ -88,6 +88,16 @@ def hang():
     faulthandler.cancel_dump_traceback_later()
 
 
+@pytest.fixture
+def clock():
+    """The test thread's clock: `clock(t)` stands it at `t`, where it stays
+    until a frame's wait moves it on."""
+    from ghee import _native
+
+    yield _native._set_clock
+    _native._set_clock(None)
+
+
 def scene_file(tmp_path, doc, name="s.scene.json"):
     path = tmp_path / name
     path.write_text(json.dumps(doc))

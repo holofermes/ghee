@@ -2151,6 +2151,8 @@ mod tests {
     use super::*;
     use crate::console::core::{parse_query, Headers};
     use crate::scene::Param;
+    use crate::testing::{until, Clock};
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     const SCENE: &str = r#"{"version": 1,
         "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
@@ -2899,7 +2901,6 @@ mod tests {
         let port = server.server_addr().to_ip().unwrap().port();
         let client = thread::spawn(move || {
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             s.write_all(raw).unwrap();
             let mut out = Vec::new();
             let _ = s.read_to_end(&mut out); // the server closes the connection
@@ -2972,7 +2973,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let polled = Arc::clone(&console);
         thread::spawn(move || tx.send(polled.stats()["rev"].clone()));
-        let rev = rx.recv_timeout(Duration::from_secs(5));
+        let rev = rx.recv();
         drop(held);
         assert_eq!(rev, Ok(Value::from(1u64)));
     }
@@ -3432,18 +3433,16 @@ mod tests {
         }
         assert!(frame() == at8, "the saved x places the layer");
         // The loop's tick and update, until the process answers.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        for n in 0.. {
+        let mut n = 0;
+        until(|| {
             let mut slot = ctrl.borrow_mut();
             let running = slot.as_mut().expect("the scene runs");
             running.tick(n, 0.0, 1.0 / 60.0).unwrap();
             running.update(&mut *renderer.borrow_mut(), n, 0.0).unwrap();
             drop(slot);
-            if frame() == at20 || std::time::Instant::now() > deadline {
-                break;
-            }
-        }
-        assert!(frame() == at20, "the tick's x places the layer");
+            n += 1;
+            frame() == at20
+        });
     }
 
     /// A sink that keeps the last frame that it takes.
@@ -3689,11 +3688,9 @@ mod tests {
         assert_eq!(set("pass=main&name=amt&value=0.25").0, 200);
         let all = serde_json::json!({"params": ["main.amt"],
                                      "fields": ["dot.height", "dot.width", "title.x"]});
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while locked() != all && Instant::now() < deadline {
+        while locked() != all {
             frame();
         }
-        assert_eq!(locked(), all);
         assert_eq!(
             set("pass=main&name=amt&value=0.5"),
             (403, "the scene's program sets param 'main.amt'".to_string())
@@ -4032,7 +4029,8 @@ mod tests {
     {
         let renderer = Rc::new(RefCell::new(gpu(32, 24)));
         let (_d, mut console) = tmp_console("throttled");
-        Arc::get_mut(&mut console).unwrap().hub.publish_every = 3600.0;
+        Arc::get_mut(&mut console).unwrap().hub.publish_every = 1.0;
+        let clock = Clock::at(0.0);
         let st = Rc::new(RefCell::new(Running::default()));
         let scene = Scene::from_dict(&serde_json::from_str(SCENE).unwrap(), None, None).unwrap();
         let ctrl: ControllerSlot = RefCell::new(Some(Box::new(Told(Live::new(&scene)))));
@@ -4053,6 +4051,7 @@ mod tests {
         );
         assert_eq!(changes(&console), Value::from(1));
         assert!(live().update_layer(&mut target, &bar(9)).unwrap());
+        clock.pass(0.5);
         publish(&console, &renderer, &st, &ctrl, false);
         assert_eq!(
             running_layers(&console),
@@ -4065,6 +4064,14 @@ mod tests {
             floats(&serde_json::json!([bar(9)]))
         );
         assert_eq!(changes(&console), Value::from(2));
+        assert!(live().update_layer(&mut target, &bar(5)).unwrap());
+        clock.pass(0.5);
+        publish(&console, &renderer, &st, &ctrl, false);
+        assert_eq!(
+            running_layers(&console),
+            floats(&serde_json::json!([bar(5)]))
+        );
+        assert_eq!(changes(&console), Value::from(3));
     }
 
     /// A process stand-in: a scene with something in the controller slot is
@@ -4183,12 +4190,10 @@ mod tests {
         assert_eq!(*reds.borrow(), [255, 255, 255]);
     }
 
-    /// A sink that pauses the console at its first frame, and a thread that
-    /// lets it go `after` seconds later.
+    /// A sink that pauses the console at its first frame.
     struct PauseAt {
-        wrote: Rc<Cell<u32>>,
-        offs: Rc<Cell<u32>>,
-        after: f64,
+        wrote: Arc<AtomicU32>,
+        offs: Arc<AtomicU32>,
         control: Control,
     }
 
@@ -4198,21 +4203,14 @@ mod tests {
         }
 
         fn write(&mut self, _frame: Frame<'_>) -> Result<()> {
-            self.wrote.set(self.wrote.get() + 1);
-            if self.wrote.get() == 1 {
+            if self.wrote.fetch_add(1, Ordering::SeqCst) == 0 {
                 self.control.pause(true);
-                let after = Duration::from_secs_f64(self.after);
-                let control = self.control.clone();
-                thread::spawn(move || {
-                    thread::sleep(after);
-                    control.pause(false);
-                });
             }
             Ok(())
         }
 
         fn turn_off(&mut self) -> Result<()> {
-            self.offs.set(self.offs.get() + 1);
+            self.offs.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -4222,27 +4220,42 @@ mod tests {
     fn a_paused_console_turns_its_sinks_off_and_draws_on_after_it() {
         drop(gpu(8, 8)); // run() opens a renderer of its own on that device
         let (_d, console) = tmp_console("pause");
-        let (wrote, offs) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let (wrote, offs) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
         let control = Control::new();
-        let start = monotonic();
+        // Once the pause turned the sink off, the console is let go until it
+        // draws again. A hold drains the wake of a release that lands before
+        // it rests, so the release repeats.
+        let releaser = {
+            let (wrote, offs, control) = (Arc::clone(&wrote), Arc::clone(&offs), control.clone());
+            thread::spawn(move || {
+                until(|| offs.load(Ordering::SeqCst) > 0);
+                while wrote.load(Ordering::SeqCst) < 2 {
+                    control.pause(false);
+                    thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
         let ran = run(Options {
             store: Some(SceneStore::new(&console.store.dir, Vec::new())),
             port: free_port(),
             size: Some((32, 24)),
             frames: 3,
             sinks: vec![Box::new(PauseAt {
-                wrote: Rc::clone(&wrote),
-                offs: Rc::clone(&offs),
-                after: 0.1,
+                wrote: Arc::clone(&wrote),
+                offs: Arc::clone(&offs),
                 control: control.clone(),
             })],
             control: control.clone(),
             ..Options::default()
         });
+        releaser.join().unwrap();
         assert!(ran.is_ok(), "{:?}", ran.err());
-        assert!(monotonic() - start >= 0.1);
-        assert_eq!(wrote.get(), 3);
-        assert_eq!(offs.get(), 2, "once for the pause, once on the way out");
+        assert_eq!(wrote.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            offs.load(Ordering::SeqCst),
+            2,
+            "once for the pause, once on the way out"
+        );
         assert!(!control.paused());
     }
 
@@ -4480,12 +4493,13 @@ mod tests {
             let stopper = {
                 let console = Arc::clone(&console);
                 thread::spawn(move || {
-                    // the first frame, then time for many more
-                    let deadline = Instant::now() + Duration::from_secs(10);
-                    while console.stats()["frame_ms"] == 0.0 && Instant::now() < deadline {
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    thread::sleep(Duration::from_millis(200));
+                    // a second frame with a viewer, a skipped one without
+                    let (frames, skipped) = if viewers == 0 { (1, 1) } else { (2, 0) };
+                    until(|| {
+                        let stats = console.stats();
+                        stats["frames"].as_u64() >= Some(frames)
+                            && stats["skipped"].as_u64() >= Some(skipped)
+                    });
                     console.stop();
                 })
             };
@@ -4509,6 +4523,7 @@ mod tests {
     fn a_console_with_a_frame_rate_cap_draws_no_faster_than_it() {
         drop(gpu(8, 8)); // run() opens a renderer of its own on that device
         let (_d, console) = tmp_console("capped");
+        let _clock = Clock::at(0.0);
         let summary: Summary = Rc::new(RefCell::new(None));
         let got = Rc::clone(&summary);
         let ran = run(Options {
@@ -4525,9 +4540,9 @@ mod tests {
         });
         assert!(ran.is_ok(), "{:?}", ran.err());
         let (n, wall, _) = summary.borrow().clone().expect("no summary");
-        // five frames at 20 a second leave four periods of 50 ms between them
+        // five frames at 20 a second, each held to its 50 ms
         assert_eq!(n, 5);
-        assert!(wall >= 0.19, "{wall}");
+        assert!((wall - 0.25).abs() < 1e-9, "{wall}");
     }
 
     fn free_port() -> u16 {

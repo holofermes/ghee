@@ -685,8 +685,17 @@ impl Handle {
             move |args: &Bound<'_, PyTuple>, _: Option<&Bound<'_, PyDict>>| -> PyResult<()> {
                 let py = args.py();
                 if let Some(handle) = weak.bind(py).upgrade() {
-                    if let Ok(mut handle) = handle.cast::<Handle>()?.try_borrow_mut() {
-                        handle.close(py)?;
+                    match handle.cast::<Handle>()?.try_borrow_mut() {
+                        Ok(mut handle) => handle.close(py)?,
+                        // A call on the handle, such as frame(), runs Python
+                        // code, where Python runs this handler, so the signal
+                        // goes again until the call returns the handle. Any
+                        // Python code here would run this handler again at
+                        // once. On Linux SIGTERM is 15.
+                        Err(_) => {
+                            unsafe { kill(std::process::id() as std::ffi::c_int, 15) };
+                            return Ok(());
+                        }
                     }
                 }
                 let signal = py.import("signal")?;
@@ -978,6 +987,7 @@ fn _direct(
 
 extern "C" {
     fn signal(sig: std::ffi::c_int, handler: usize) -> usize;
+    fn kill(pid: std::ffi::c_int, sig: std::ffi::c_int) -> std::ffi::c_int;
 }
 
 /// The `ghee` command: `argv` without the program name in, the exit status

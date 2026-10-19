@@ -108,7 +108,7 @@ impl Drop for Earlier {
     fn drop(&mut self) {
         let path = self.dir.join("brightness");
         if let Err(e) = fs::write(&path, format!("{}\n", self.brightness)) {
-            eprintln!("ghee: put the backlight back: {}: {e}", path.display());
+            crate::report::error(format!("put the backlight back: {}: {e}", path.display()));
         }
     }
 }

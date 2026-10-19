@@ -309,7 +309,7 @@ def test_a_scene_that_ghee_refuses_stops_the_run_with_its_one_line(
         shim.run(scene)
     assert stopped.value.code == 1
     err = capfd.readouterr().err
-    assert err.startswith("compile error: ") and "nope" in err, err
+    assert err.startswith("feeder.py: compile error: ") and "nope" in err, err
     assert not frames(tmp_path)
 
 

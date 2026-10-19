@@ -57,20 +57,22 @@ fn accept(out: &mut Map<String, Value>, path: &str, text: &str) -> Option<String
     let fd = match parsed {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("filter {path}: skipped ({e})");
+            crate::report::error(format!("filter {path}: skipped ({e})"));
             return None;
         }
     };
     let named = fd.get("name").is_some_and(Value::is_string)
         && fd.get("fragment").is_some_and(Value::is_string);
     if !named {
-        eprintln!("filter {path}: skipped (needs a string 'name' and 'fragment')");
+        crate::report::error(format!(
+            "filter {path}: skipped (needs a string 'name' and 'fragment')"
+        ));
         return None;
     }
     let name = fd["name"].as_str().unwrap_or_default().to_string();
     if let Some(o) = fd.as_object() {
         if let Err(e) = known_keys(o, &format!("filter '{name}'"), &FILTER_KEYS, &[]) {
-            eprintln!("filter {path}: skipped ({e})");
+            crate::report::error(format!("filter {path}: skipped ({e})"));
             return None;
         }
     }
@@ -109,7 +111,7 @@ pub fn load_filters(extra_dirs: &[&str]) -> Map<String, Value> {
                         out[&name][DIR_KEY] = Value::from(d.to_string());
                     }
                 }
-                Err(e) => eprintln!("filter {p}: skipped ({e})"),
+                Err(e) => crate::report::error(format!("filter {p}: skipped ({e})")),
             }
         }
     }

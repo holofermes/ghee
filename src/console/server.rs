@@ -511,7 +511,7 @@ impl Console {
                 false => self.store.remove_draft(&name),
             };
             if let Err(e) = wrote {
-                eprintln!("ghee console: {name}: its unsaved edits: {e}");
+                crate::report::error(format!("{name}: its unsaved edits: {e}"));
             }
         }
     }
@@ -874,7 +874,7 @@ fn make_renderer(console: &Console, card: Option<Card>) -> Result<Renderer> {
     r.set_rotate(console.rotate)?;
     if let Some(level) = console.brightness {
         if let Err(e) = r.set_brightness(level) {
-            eprintln!("ghee console: {e:#}");
+            crate::report::error(format!("{e:#}"));
         }
     }
     Ok(r)
@@ -1028,7 +1028,7 @@ fn clear(
     let built =
         Scene::from_dict(&black, None, None).and_then(|s| Ok(renderer.borrow_mut().setup(&s)?));
     if let Err(e) = built {
-        eprintln!("ghee console: no scene: {e}");
+        crate::report::error(format!("no scene: {e}"));
     }
     console.hub.reset();
 }
@@ -1084,7 +1084,7 @@ fn drain(
                         .unwrap_or(false);
                 if let Some(live) = ctrl.borrow_mut().as_mut().and_then(|c| c.live()) {
                     if let Err(e) = live.console_scene(&*renderer.borrow(), &mut scene) {
-                        eprintln!("ghee console: apply: {e}");
+                        crate::report::error(format!("apply: {e}"));
                     }
                 }
                 let built =
@@ -1124,7 +1124,7 @@ fn keep_layers(posted: &mut Scene, running: &Scene) -> bool {
             };
             let index = i.min(posted.passes[at].layers.len());
             if let Err(e) = posted.insert_layer(&pass.name, index, layer.clone()) {
-                eprintln!("ghee console: apply: layer {name}: {e}");
+                crate::report::error(format!("apply: layer {name}: {e}"));
                 continue;
             }
             kept = true;
@@ -1216,7 +1216,7 @@ fn set_pass_param(
     match applied {
         Ok(()) => true,
         Err(e) => {
-            eprintln!("set param {name}: {e}");
+            crate::report::error(format!("set param {name}: {e}"));
             false
         }
     }
@@ -1231,7 +1231,7 @@ fn set_scene_param(
     match console_param(renderer, ctrl, None, name, value) {
         Ok(()) => true,
         Err(e) => {
-            eprintln!("set scene param {name}: {e}");
+            crate::report::error(format!("set scene param {name}: {e}"));
             false
         }
     }
@@ -1249,7 +1249,7 @@ fn set_layer(renderer: &RefCell<Renderer>, ctrl: &ControllerSlot, set: &LayerSet
     match applied {
         Ok(()) => true,
         Err(e) => {
-            eprintln!("set layer {}: {e}", set.layer);
+            crate::report::error(format!("set layer {}: {e}", set.layer));
             false
         }
     }
@@ -1368,7 +1368,7 @@ pub fn render_loop(
             let why = format!("render: {}", crate::procedural::process::with_stderr(e));
             console.hub.set_error(&why, None, None);
             if msg != reported {
-                eprintln!("ghee console: {msg}");
+                crate::report::error(&msg);
                 reported = msg;
             }
             true
@@ -1382,7 +1382,7 @@ pub fn render_loop(
             None => clear(console, &renderer, &st, &ctrl),
         }
         if let Err(e) = render.run() {
-            eprintln!("ghee console: render: {e}");
+            crate::report::error(format!("render: {e}"));
         }
         elapsed = render.elapsed;
         out = render.out().iter().map(|d| (*d).to_string()).collect();
@@ -1696,9 +1696,9 @@ impl ConsoleHost for RenderLoopHost {
                 let doc = state::fold(&copy.defaults_doc, &copy.working_doc(), &changed);
                 match store::scene_of(&copy.opened.defaults, &doc, name) {
                     Ok(working) => copy.opened.working = working,
-                    Err(e) => eprintln!(
-                        "ghee console: {name}: the working copy keeps no edit of this apply: {e}"
-                    ),
+                    Err(e) => crate::report::error(format!(
+                        "{name}: the working copy keeps no edit of this apply: {e}"
+                    )),
                 }
             } else {
                 copy.opened.working = scene.clone();

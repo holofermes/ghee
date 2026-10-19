@@ -103,7 +103,7 @@ fn a_compile_error_prints_once_naming_the_pass_and_the_authors_line() {
     let err = String::from_utf8(out.stderr).unwrap();
     // Nothing ahead of it, and one copy of the GL's log.
     let log = err
-        .strip_prefix("compile error: pass 'main', line 3 of its fragment: ")
+        .strip_prefix("ghee: compile error: pass 'main', line 3 of its fragment: ")
         .unwrap_or_else(|| panic!("{err}"));
     assert!(!log.contains("compile error"), "{err}");
     assert_eq!(log, format!("{}\n", log.trim_end()), "{err:?}");
@@ -153,7 +153,7 @@ fn a_refusal_other_than_a_compile_error_prints_alone() {
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     assert_eq!(
         String::from_utf8(out.stderr).unwrap(),
-        "pass 'main': channel 0 binds to buffer 'typo', which is not a pass in this scene\n"
+        "ghee: pass 'main': channel 0 binds to buffer 'typo', which is not a pass in this scene\n"
     );
 }
 

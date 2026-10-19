@@ -77,10 +77,37 @@ pub fn detail(label: &str, text: impl AsRef<str>) {
     }
 }
 
-/// Something is wrong, and the run carries on: a text that draws error
-/// boxes. Every level says it, `--quiet` too.
+/// Something is wrong: a text that draws error boxes, or a command that
+/// fails. Every level says it, `--quiet` too.
 pub fn error(text: impl AsRef<str>) {
-    say("error", text.as_ref());
+    fail("ghee", text);
+}
+
+/// Say an error of program `prog` as `prog: text`, the GNU way, with Rust's
+/// `(os error N)` taken off each errno message.
+pub fn fail(prog: &str, text: impl AsRef<str>) {
+    clear();
+    let _ = writeln!(stderr(), "{prog}: {}", strip_os_error(text.as_ref()));
+}
+
+/// `text` with each ` (os error N)` that Rust adds to an errno message taken
+/// out.
+fn strip_os_error(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(" (os error ") {
+        let tail = &rest[at + " (os error ".len()..];
+        let digits = tail.chars().take_while(char::is_ascii_digit).count();
+        out.push_str(&rest[..at]);
+        if digits > 0 && tail[digits..].starts_with(')') {
+            rest = &tail[digits + 1..];
+        } else {
+            out.push_str(" (os error ");
+            rest = tail;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The run carried on through this, and the reader would want to know.
@@ -225,6 +252,15 @@ mod tests {
             running(240, 900, 33.0, 30.0, 7, "kms+h264"),
             "240/900  33.0 fps  30.0 ms  7 dropped  kms+h264"
         );
+    }
+
+    #[test]
+    fn an_error_line_drops_rusts_os_error_number() {
+        assert_eq!(
+            strip_os_error("x.png: No such file or directory (os error 2)"),
+            "x.png: No such file or directory"
+        );
+        assert_eq!(strip_os_error("a (os error x) b"), "a (os error x) b");
     }
 
     /// Nothing here writes to a pipe's progress row, whatever the level.

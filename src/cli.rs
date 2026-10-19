@@ -47,21 +47,9 @@ use crate::scene::{Pass, Reach, Scene};
 use crate::stats::rate;
 use crate::usage;
 
-/// main() prints this message as written, status 1. main() puts the command
-/// name in front of any other error.
-#[derive(Debug)]
-struct Exit(String);
-
-impl std::fmt::Display for Exit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Exit {}
-
+/// An error that main() prints as written, with status 1.
 fn exit(message: impl Into<String>) -> anyhow::Error {
-    anyhow::Error::new(Exit(message.into()))
+    anyhow::anyhow!(message.into())
 }
 
 /// True when an optional string flag carries text. Unset and "" are false.
@@ -292,8 +280,8 @@ fn scene_of(a: &Ns, card: &mut Option<Card>) -> Result<(Scene, Option<SceneProce
     } else {
         (load_scene(&path, &a.scene_args, true)?, None)
     };
-    let given = Filter::parse_list(text(&a.filters))
-        .map_err(|e| exit(format!("{}: --filters: {e}", a.cmd)))?;
+    let given =
+        Filter::parse_list(text(&a.filters)).map_err(|e| exit(format!("--filters: {e}")))?;
     let wanted = filters::chain(&scene.filters, &given);
     apply_filters(&mut scene, &wanted, None).map_err(|e| match e.is::<filters::Unknown>() {
         true => exit(e.to_string()),
@@ -353,7 +341,7 @@ fn panel_of(a: &Ns, card: &mut Option<Card>) -> Result<Panel> {
 fn display_card<'c>(a: &Ns, card: &'c mut Option<Card>) -> Result<&'c Card> {
     let open = match card.take() {
         Some(open) => open,
-        None => Card::open(a.dri.as_deref()).map_err(|e| exit(format!("{}: {e}", a.cmd)))?,
+        None => Card::open(a.dri.as_deref()).map_err(|e| exit(e.to_string()))?,
     };
     Ok(card.insert(open))
 }
@@ -371,10 +359,7 @@ fn kms_named(a: &Ns) -> Result<()> {
     } else {
         ""
     };
-    Err(exit(format!(
-        "{}: no display '{name}' (takes: kms){hint}",
-        a.cmd
-    )))
+    Err(exit(format!("no display '{name}' (takes: kms){hint}")))
 }
 
 /// A scene builds against this size, worked out before the renderer opens,
@@ -416,25 +401,20 @@ fn file_sink(a: &Ns) -> Result<FileSink> {
     }
     let pattern = text(&a.output);
     if a.frames.is_some_and(|n| n > 1) && expand_pattern(pattern, 0)? == pattern {
-        return Err(exit(format!(
-            "{}: multiple frames into one filename; number them with \
+        return Err(exit(
+            "multiple frames into one filename; number them with \
              a # run (frame.####.png)",
-            a.cmd
-        )));
+        ));
     }
     let save_opts = match given(&a.save_opts) {
-        true => Some(parse_kv(
-            text(&a.save_opts),
-            &format!("{}: --save-opts", a.cmd),
-        )?),
+        true => Some(parse_kv(text(&a.save_opts), "--save-opts")?),
         false => None,
     };
     if a.alpha == Some(AlphaForm::Premultiplied) {
-        return Err(exit(format!(
-            "{}: --alpha premultiplied writes raw frames, -o -; an image file holds \
+        return Err(exit(
+            "--alpha premultiplied writes raw frames, -o -; an image file holds \
              alpha unpremultiplied",
-            a.cmd
-        )));
+        ));
     }
     Ok(FileSink::Images(ImageSequence::with_opts(
         pattern,
@@ -513,43 +493,33 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
     // before anything opens: the tokens after `--` own their own --help
     scene_args_help(a)?;
     if a.serve && given(&a.filters) {
-        return Err(exit(format!(
-            "{}: --filters with --serve; the console has a filter picker",
-            a.cmd
-        )));
+        return Err(exit(
+            "--filters with --serve; the console has a filter picker",
+        ));
     }
     if a.serve && given(&a.h264) {
-        return Err(exit(format!(
-            "{}: --h264 with --serve; the console serves /h264 already",
-            a.cmd
-        )));
+        return Err(exit(
+            "--h264 with --serve; the console serves /h264 already",
+        ));
     }
     if text(&a.output) == "-" && text(&a.h264) == "-" {
-        return Err(exit(format!(
-            "{}: -o - and --h264 - both want stdout",
-            a.cmd
-        )));
+        return Err(exit("-o - and --h264 - both want stdout"));
     }
     if a.alpha.is_some() && a.components == 3 {
-        return Err(exit(format!(
-            "{}: --alpha with --components 3; an RGB frame holds no alpha",
-            a.cmd
-        )));
+        return Err(exit(
+            "--alpha with --components 3; an RGB frame holds no alpha",
+        ));
     }
     let pattern = text(&a.output);
     if given(&a.output) && pattern != "-" {
         if !is_image_name(pattern) {
             return Err(exit(format!(
-                "{}: -o wants an image pattern such as frame.####.png, or '-', \
-                 got '{pattern}'; a display takes --display",
-                a.cmd
+                "-o wants an image pattern such as frame.####.png, or '-', \
+                 got '{pattern}'; a display takes --display"
             )));
         }
         if a.alpha.is_some() && !pattern.to_lowercase().ends_with(".png") {
-            return Err(exit(format!(
-                "{}: --alpha with a .jpg; a JPEG holds no alpha",
-                a.cmd
-            )));
+            return Err(exit("--alpha with a .jpg; a JPEG holds no alpha"));
         }
     }
     report::apply(a);
@@ -564,16 +534,13 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
     let panel = panel_of(a, &mut card)?;
     let kms = matches!(panel, Panel::Kms(_));
     if a.brightness.is_some() && !kms {
-        return Err(exit(format!("{}: --brightness needs --display kms", a.cmd)));
+        return Err(exit("--brightness needs --display kms"));
     }
     if a.drop && !kms {
-        return Err(exit(format!("{}: --drop needs --display kms", a.cmd)));
+        return Err(exit("--drop needs --display kms"));
     }
     if matches!(panel, Panel::None) && !given(&a.output) && !given(&a.h264) && !a.serve {
-        return Err(exit(format!(
-            "{}: pass -o PATTERN, --display, --h264 PATH or --serve",
-            a.cmd
-        )));
+        return Err(exit("pass -o PATTERN, --display, --h264 PATH or --serve"));
     }
     let dri = a.dri.clone();
     let ((w, h), components) = geometry(a, &panel);
@@ -619,7 +586,7 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
     if let Some(level) = a.brightness {
         match r.set_brightness(level) {
             Ok(took) => report::detail("backlight", format!("{took:.3}")),
-            Err(e) => report::error(format!("{}: {e:#}", a.cmd)),
+            Err(e) => report::error(format!("{e:#}")),
         }
     }
     match r.setup(&scene) {
@@ -806,7 +773,7 @@ fn my_scenes(a: &Ns) -> Result<String> {
             .map(|d| d.join("ghee/scenes"))
     });
     let dir = dir.ok_or_else(|| {
-        exit("serve: no directory for your scenes: set HOME or XDG_DATA_HOME, or pass --my-scenes")
+        exit("no directory for your scenes: set HOME or XDG_DATA_HOME, or pass --my-scenes")
     })?;
     Ok(dir.to_string_lossy().into_owned())
 }
@@ -814,8 +781,7 @@ fn my_scenes(a: &Ns) -> Result<String> {
 /// A store for the single scene `render --serve` names. A bundled example
 /// keeps its state file as a demo, whichever way a command reaches it.
 fn one_scene_store(a: &Ns, path: &str) -> Result<SceneStore> {
-    let mut store =
-        SceneStore::one(path, a.scene_args.clone()).map_err(|e| exit(format!("{}: {e}", a.cmd)))?;
+    let mut store = SceneStore::one(path, a.scene_args.clone()).map_err(|e| exit(e.to_string()))?;
     store.demo = in_examples(path);
     Ok(store)
 }
@@ -832,12 +798,12 @@ fn in_examples(path: &str) -> bool {
 /// `serve` is `render --serve` over a directory of scenes.
 fn cmd_serve(a: &Ns) -> Result<()> {
     if a.demo && given(&a.scene) {
-        return Err(exit("serve: pass a scenes directory or --demo, not both"));
+        return Err(exit("pass a scenes directory or --demo, not both"));
     }
     if !a.demo && !given(&a.scene) && given(&a.display) && Path::new(text(&a.display)).is_dir() {
         // --display takes an optional value, so it took the directory
         return Err(exit(format!(
-            "serve: --display took '{}' as the display name; \
+            "--display took '{}' as the display name; \
              put the scenes directory before it",
             text(&a.display)
         )));
@@ -947,7 +913,7 @@ fn line(text: &str) {
         if e.kind() == std::io::ErrorKind::BrokenPipe {
             std::process::exit(0);
         }
-        eprintln!("ghee: {e}");
+        report::fail("ghee", e.to_string());
         std::process::exit(1);
     }
 }
@@ -959,13 +925,13 @@ fn line(text: &str) {
 fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
     let Some(panel) = overlay::panel(&a.panel) else {
         return Err(exit(format!(
-            "overlay: no panel '{}' (takes: {})",
+            "no panel '{}' (takes: {})",
             a.panel,
             overlay::panels().join(", ")
         )));
     };
     let opts = match given(&a.opts) {
-        true => parse_kv(text(&a.opts), "overlay: --opts")?,
+        true => parse_kv(text(&a.opts), "--opts")?,
         false => Map::new(),
     };
     let unknown: Vec<&str> = opts
@@ -975,21 +941,21 @@ fn cmd_overlay(a: &OverlayArgs) -> Result<()> {
         .collect();
     if !unknown.is_empty() {
         return Err(exit(format!(
-            "overlay: no option {} on {} (takes: {})",
+            "no option {} on {} (takes: {})",
             unknown.join(", "),
             a.panel,
             panel.options.join(", ")
         )));
     }
     let pairs: Vec<(String, Value)> = opts.into_iter().collect();
-    let setup = (panel.setup)(&pairs).map_err(|e| exit(format!("overlay: {e}")))?;
+    let setup = (panel.setup)(&pairs).map_err(|e| exit(e.to_string()))?;
     for text in &setup.lines {
         line(text);
     }
     let Some(file) = setup.file else {
         if given(&a.output) {
             return Err(exit(format!(
-                "overlay: -o with {}, a panel that takes no file",
+                "-o with {}, a panel that takes no file",
                 a.panel
             )));
         }
@@ -1597,8 +1563,8 @@ impl ServeArgs {
     }
 }
 
-/// The command name behind a failure report, and the result of that command.
-fn dispatch(cli: Cli, scene_args: Vec<String>, control: &Control) -> (&'static str, Result<()>) {
+/// The result of the command.
+fn dispatch(cli: Cli, scene_args: Vec<String>, control: &Control) -> Result<()> {
     let cmd = match &cli.cmd {
         Command::Render(_) => "render",
         Command::Serve(_) => "serve",
@@ -1606,18 +1572,14 @@ fn dispatch(cli: Cli, scene_args: Vec<String>, control: &Control) -> (&'static s
         Command::Overlay(_) => "overlay",
     };
     if !scene_args.is_empty() && !matches!(cli.cmd, Command::Render(_) | Command::Serve(_)) {
-        return (
-            cmd,
-            Err(exit(format!("{cmd}: takes no scene arguments after --"))),
-        );
+        return Err(exit(format!("{cmd}: takes no scene arguments after --")));
     }
-    let ran = match cli.cmd {
+    match cli.cmd {
         Command::Render(a) => cmd_render(&a.ns(scene_args).under(control)),
         Command::Serve(a) => cmd_serve(&a.ns(scene_args).under(control)),
         Command::Displays => cmd_displays(),
         Command::Overlay(a) => cmd_overlay(&a),
-    };
-    (cmd, ran)
+    }
 }
 
 /// The top-level parser reports a token when no subcommand claims it. The
@@ -1628,11 +1590,16 @@ fn clap_status(e: &clap::Error) -> i32 {
             .get(ContextKind::InvalidArg)
             .map(|v| v.to_string())
             .unwrap_or_default();
-        eprintln!("ghee: error: unrecognized arguments: {arg}");
+        report::fail("ghee", format!("unrecognized arguments: {arg}"));
         return 2;
     }
-    let _ = e.print();
-    i32::from(e.use_stderr()) * 2
+    if !e.use_stderr() {
+        let _ = e.print();
+        return 0;
+    }
+    let text = e.to_string();
+    report::fail("ghee", text.trim_end().trim_start_matches("error: "));
+    2
 }
 
 /// Two checks on the engine itself. They stay out of `ghee --help`.
@@ -1648,7 +1615,7 @@ fn extras(argv: &[String]) -> Option<i32> {
         _ => return None,
     };
     Some(ran.unwrap_or_else(|e| {
-        eprintln!("{e}");
+        report::fail("ghee", e.to_string());
         1
     }))
 }
@@ -1700,19 +1667,19 @@ pub fn main(argv: Vec<String>) -> i32 {
     };
     let control = Control::new();
     if let Err(e) = control::catch(&control) {
-        eprintln!("ghee: {e}");
+        report::fail("ghee", e.to_string());
         return 1;
     }
-    let (cmd, ran) = dispatch(cli, scene_args, &control);
+    let ran = dispatch(cli, scene_args, &control);
     control::release(&control);
-    status(&control, cmd, ran)
+    status(&control, ran)
 }
 
-/// The exit status of command `cmd` that ended with `ran` under `control`:
-/// 1 for an error, which this prints. After SIGINT or SIGTERM this sends the
-/// signal again, and the process ends by it; 128 plus the signal's number is
+/// The exit status of a command that ended with `ran` under `control`: 1 for
+/// an error, which this prints. After SIGINT or SIGTERM this sends the
+/// signal again, and the process ends by it. 128 plus the signal's number is
 /// the status when a handler of the caller's takes it instead.
-fn status(control: &Control, cmd: &str, ran: Result<()>) -> i32 {
+fn status(control: &Control, ran: Result<()>) -> i32 {
     if let Some(sig) = control.signal() {
         control::reraise(sig);
         return 128 + sig;
@@ -1720,20 +1687,18 @@ fn status(control: &Control, cmd: &str, ran: Result<()>) -> i32 {
     match ran {
         Ok(()) => 0,
         Err(e) => {
-            say_failure(cmd, &e);
+            say_failure("ghee", &e);
             1
         }
     }
 }
 
-/// Print `e`, the failure of command `cmd`, as the command line prints it.
-pub fn say_failure(cmd: &str, e: &anyhow::Error) {
+/// Print `e`, the failure of program `prog`, as the command line prints it.
+pub fn say_failure(prog: &str, e: &anyhow::Error) {
     if std::env::var("GHEE_TRACEBACK").is_ok_and(|v| !v.is_empty()) {
-        eprintln!("{e:?}");
-    } else if let Some(line) = e.downcast_ref::<Exit>() {
-        eprintln!("{line}");
+        report::fail(prog, format!("{e:?}"));
     } else {
-        eprintln!("{cmd}: {e:#}");
+        report::fail(prog, format!("{e:#}"));
     }
 }
 
@@ -1877,7 +1842,7 @@ pub fn direct(prog: &str, flags: &[String], here: Here, card: Option<Card>) -> R
     let a = match direct_ns(prog, flags, Some(here)) {
         Ok(a) => a,
         Err(why) => {
-            eprintln!("{prog}: error: {why}");
+            report::fail(prog, format!("error: {why}"));
             return Ok(2);
         }
     };
@@ -1921,7 +1886,7 @@ mod tests {
 
     fn run(tokens: &[&str]) -> Result<()> {
         let (cli, scene_args) = parse(tokens);
-        dispatch(cli, scene_args, &Control::new()).1
+        dispatch(cli, scene_args, &Control::new())
     }
 
     /// The message of a call that has to fail. Neither Panel nor FileSink is
@@ -1950,7 +1915,7 @@ mod tests {
     fn brightness_takes_a_level_for_a_kms_display() {
         let (_d, path) = scene_file("brightness");
         let e = run(&["render", &path, "-o", "x.png", "--brightness", "0.5"]).unwrap_err();
-        assert_eq!(e.to_string(), "render: --brightness needs --display kms");
+        assert_eq!(e.to_string(), "--brightness needs --display kms");
         assert_eq!(
             ns(&["serve", "--demo", "--brightness", "0.25"]).brightness,
             Some(0.25)
@@ -1961,7 +1926,7 @@ mod tests {
     fn drop_takes_a_kms_display() {
         let (_d, path) = scene_file("drop");
         let e = run(&["render", &path, "-o", "x.png", "--drop"]).unwrap_err();
-        assert_eq!(e.to_string(), "render: --drop needs --display kms");
+        assert_eq!(e.to_string(), "--drop needs --display kms");
         assert!(ns(&["serve", "--demo", "--display", "--drop"]).drop);
     }
 
@@ -1992,12 +1957,11 @@ mod tests {
     #[test]
     fn parse_kv_malformed_exits_naming_the_flag_that_took_it() {
         for (s, what) in [
-            ("quality=90,nope", "render: --save-opts"),
-            ("width=240,nope", "overlay: --opts"),
+            ("quality=90,nope", "--save-opts"),
+            ("width=240,nope", "--opts"),
         ] {
             let e = parse_kv(s, what).unwrap_err();
             assert_eq!(e.to_string(), format!("{what} wants k=v pairs, got 'nope'"));
-            assert!(e.downcast_ref::<Exit>().is_some());
         }
     }
 
@@ -2113,18 +2077,18 @@ mod tests {
                 &ns(&["render", "s", "--display", "hdmi"]),
                 &mut None
             )),
-            "render: no display 'hdmi' (takes: kms)"
+            "no display 'hdmi' (takes: kms)"
         );
         assert_eq!(
             failure(panel_of(&ns(&["serve", "--display", &d]), &mut None)),
-            format!("serve: no display '{d}' (takes: kms), and a scenes directory goes before it")
+            format!("no display '{d}' (takes: kms), and a scenes directory goes before it")
         );
     }
 
     #[test]
     fn two_sinks_cannot_both_claim_stdout() {
         let e = run(&["render", "s", "-o", "-", "--h264", "-"]).unwrap_err();
-        assert_eq!(e.to_string(), "render: -o - and --h264 - both want stdout");
+        assert_eq!(e.to_string(), "-o - and --h264 - both want stdout");
     }
 
     #[test]
@@ -2132,7 +2096,7 @@ mod tests {
         let e = run(&["render", "s", "-o", "-", "--alpha", "--components", "3"]).unwrap_err();
         assert_eq!(
             e.to_string(),
-            "render: --alpha with --components 3; an RGB frame holds no alpha"
+            "--alpha with --components 3; an RGB frame holds no alpha"
         );
     }
 
@@ -2141,7 +2105,7 @@ mod tests {
         let e = run(&["render", "s", "-o", "kms"]).unwrap_err();
         assert_eq!(
             e.to_string(),
-            "render: -o wants an image pattern such as frame.####.png, or '-', \
+            "-o wants an image pattern such as frame.####.png, or '-', \
              got 'kms'; a display takes --display"
         );
     }
@@ -2149,10 +2113,7 @@ mod tests {
     #[test]
     fn alpha_is_refused_with_a_jpeg() {
         let e = run(&["render", "s", "-o", "f.####.JPG", "--alpha"]).unwrap_err();
-        assert_eq!(
-            e.to_string(),
-            "render: --alpha with a .jpg; a JPEG holds no alpha"
-        );
+        assert_eq!(e.to_string(), "--alpha with a .jpg; a JPEG holds no alpha");
     }
 
     #[test]
@@ -2160,7 +2121,7 @@ mod tests {
         let (_d, path) = scene_file("nowhere");
         assert_eq!(
             run(&["render", &path]).unwrap_err().to_string(),
-            "render: pass -o PATTERN, --display, --h264 PATH or --serve"
+            "pass -o PATTERN, --display, --h264 PATH or --serve"
         );
     }
 
@@ -2169,11 +2130,11 @@ mod tests {
         for (extra, msg) in [
             (
                 vec!["--filters", "dither"],
-                "render: --filters with --serve; the console has a filter picker",
+                "--filters with --serve; the console has a filter picker",
             ),
             (
                 vec!["--h264", "x.h264"],
-                "render: --h264 with --serve; the console serves /h264 already",
+                "--h264 with --serve; the console serves /h264 already",
             ),
         ] {
             let mut tokens = vec!["render", "s", "--serve"];
@@ -2188,7 +2149,7 @@ mod tests {
             run(&["serve", "scenes/", "--demo"])
                 .unwrap_err()
                 .to_string(),
-            "serve: pass a scenes directory or --demo, not both"
+            "pass a scenes directory or --demo, not both"
         );
     }
 
@@ -2198,7 +2159,7 @@ mod tests {
         assert_eq!(
             run(&["serve", "--display", &d]).unwrap_err().to_string(),
             format!(
-                "serve: --display took '{d}' as the display name; \
+                "--display took '{d}' as the display name; \
                  put the scenes directory before it"
             )
         );
@@ -2236,7 +2197,7 @@ mod tests {
         for (tokens, msg) in [
             (
                 vec!["overlay", "does-not-exist"],
-                "overlay: no panel 'does-not-exist' (takes: st7789, ssd1306, sh1106, \
+                "no panel 'does-not-exist' (takes: st7789, ssd1306, sh1106, \
                  sh1106-spi, ssd1322, ili9341)",
             ),
             (
@@ -2248,15 +2209,15 @@ mod tests {
                     "-o",
                     "panel.bin",
                 ],
-                "overlay: -o with ssd1306, a panel that takes no file",
+                "-o with ssd1306, a panel that takes no file",
             ),
             (
                 vec!["overlay", "sh1106", "--opts", "dc=24"],
-                "overlay: no option dc on sh1106 (takes: address, speed)",
+                "no option dc on sh1106 (takes: address, speed)",
             ),
             (
                 vec!["overlay", "st7789", "--opts", "widht=240"],
-                "overlay: no option widht on st7789 (takes: width, height, \
+                "no option widht on st7789 (takes: width, height, \
                  x_offset, y_offset, dc, rst, backlight, speed, spi_bus, spi_device, \
                  madctl)",
             ),
@@ -2325,10 +2286,7 @@ mod tests {
     fn multiple_frames_into_one_filename_is_refused() {
         let a = ns(&["render", "s", "-o", "one.png", "--frames", "4"]);
         let e = failure(file_sink(&a));
-        assert!(
-            e.starts_with("render: multiple frames into one filename"),
-            "{e}"
-        );
+        assert!(e.starts_with("multiple frames into one filename"), "{e}");
         // one frame into one name overwrites. A # run numbers the files.
         for tokens in [
             vec!["render", "s", "-o", "one.png"],
@@ -2484,7 +2442,7 @@ mod tests {
         ));
         assert_eq!(
             e,
-            "render: --filters: filter 'frc=calm': 'calm' needs the form param=value"
+            "--filters: filter 'frc=calm': 'calm' needs the form param=value"
         );
         let e = failure(scene_of(
             &ns(&["render", &path, "--filters", "nope"]),
@@ -2604,9 +2562,6 @@ mod tests {
         let flags = argv(&["-o", &frame, "--frames", "2"]);
         let a = direct_ns("red.py", &flags, Some(here())).unwrap();
         let e = render(&a, None).unwrap_err().to_string();
-        assert!(
-            e.starts_with("red.py: multiple frames into one filename"),
-            "{e}"
-        );
+        assert!(e.starts_with("multiple frames into one filename"), "{e}");
     }
 }

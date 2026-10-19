@@ -137,10 +137,6 @@ pub fn scene_name(path: &str) -> String {
     }
 }
 
-fn prog(path: &str) -> String {
-    format!("ghee render {} --", scene_name(path))
-}
-
 /// Load a scene package. The path names a directory, a .scene.json, or a .py.
 ///
 /// `args` are the command-line tokens after `--`.
@@ -163,8 +159,8 @@ pub fn load_scene(path: &str, args: &[String], strict: bool) -> Result<Scene> {
     }
     if strict && !args.is_empty() {
         bail!(
-            "{}: error: unrecognized arguments: {}",
-            prog(path),
+            "{}: unrecognized arguments: {}",
+            scene_name(path),
             args.join(" ")
         );
     }
@@ -344,8 +340,8 @@ mod tests {
         fs::write(format!("{d}/flat{SUFFIX}"), JSON_SCENE).unwrap();
         let scene = load_scene(&format!("{d}/./flat{SUFFIX}"), &no_args(), true).unwrap();
         assert_eq!(scene.passes.len(), 1);
-        assert_eq!(prog(&format!("{d}/sub/../flat.py")), "ghee render flat --");
-        assert_eq!(prog(&format!("{d}/wob/")), "ghee render wob --");
+        assert_eq!(scene_name(&format!("{d}/sub/../flat.py")), "flat");
+        assert_eq!(scene_name(&format!("{d}/wob/")), "wob");
     }
 
     #[test]
@@ -354,10 +350,7 @@ mod tests {
         let path = format!("{d}/flat{SUFFIX}");
         fs::write(&path, JSON_SCENE).unwrap();
         let e = load_scene(&path, &args(&["--emit", "8x8"]), true).unwrap_err();
-        assert_eq!(
-            e.to_string(),
-            "ghee render flat --: error: unrecognized arguments: --emit 8x8"
-        );
+        assert_eq!(e.to_string(), "flat: unrecognized arguments: --emit 8x8");
         // a host hands one set of tokens to every scene it loads
         assert!(load_scene(&path, &args(&["--emit", "8x8"]), false).is_ok());
     }

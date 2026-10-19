@@ -312,15 +312,15 @@ impl SceneStore {
             Ok(edits) => edits,
             Err(e) => {
                 match state::move_unreadable(&path) {
-                    Ok(to) => eprintln!(
+                    Ok(to) => crate::report::error(format!(
                         "{name}: its state file is unreadable, so none of it applies: {e}. \
                          It moved to {}",
                         to.display()
-                    ),
-                    Err(why) => eprintln!(
+                    )),
+                    Err(why) => crate::report::error(format!(
                         "{name}: its state file is unreadable, so none of it applies: {e}. \
                          It could not move aside, so the next save replaces it: {why}"
-                    ),
+                    )),
                 }
                 None
             }
@@ -345,18 +345,20 @@ impl SceneStore {
             Ok(draft) => draft?,
             Err(e) => {
                 match state::move_unreadable(&path) {
-                    Ok(to) => eprintln!(
+                    Ok(to) => crate::report::error(format!(
                         "{name}: its unsaved edits are unreadable: {e}. They moved to {}",
                         to.display()
-                    ),
-                    Err(why) => eprintln!("{name}: its unsaved edits are unreadable: {e}: {why}"),
+                    )),
+                    Err(why) => crate::report::error(format!(
+                        "{name}: its unsaved edits are unreadable: {e}: {why}"
+                    )),
                 }
                 return None;
             }
         };
         if draft.same(saved.unwrap_or(&Edits::default())) {
             if let Err(e) = state::remove(&path) {
-                eprintln!("{name}: {e}");
+                crate::report::error(format!("{name}: {e}"));
             }
             return None;
         }
@@ -658,11 +660,11 @@ pub fn working(name: &str, defaults: &Scene, edits: &Edits) -> (Scene, Vec<Item>
                     .strip_prefix(&format!("{name}: "))
                     .unwrap_or(&e)
                     .to_string();
-                eprintln!(
+                crate::report::error(format!(
                     "{name}: its saved edit of {} makes no scene, so it waits in the state \
                      file: {why}",
                     edit.what()
-                );
+                ));
                 broken.push(Broken { edit, why });
             }
         }

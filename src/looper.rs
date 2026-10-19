@@ -813,11 +813,12 @@ impl<'a> Loop<'a> {
                 s.turn_off()?;
             }
         }
+        // rest before the poll, which drains the wake of a release
+        let idle = self.idle();
+        sleep(idle);
         if let Some(p) = self.poll.as_mut() {
             p();
         }
-        let idle = self.idle();
-        sleep(idle);
         Ok(())
     }
 

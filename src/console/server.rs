@@ -2152,7 +2152,6 @@ mod tests {
     use crate::console::core::{parse_query, Headers};
     use crate::scene::Param;
     use crate::testing::{until, Clock};
-    use std::sync::atomic::{AtomicU32, Ordering};
 
     const SCENE: &str = r#"{"version": 1,
         "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }"}]}"#;
@@ -4190,10 +4189,11 @@ mod tests {
         assert_eq!(*reds.borrow(), [255, 255, 255]);
     }
 
-    /// A sink that pauses the console at its first frame.
+    /// A sink that pauses the console at its first frame, and lets it go as
+    /// the pause turns it off.
     struct PauseAt {
-        wrote: Arc<AtomicU32>,
-        offs: Arc<AtomicU32>,
+        wrote: Rc<Cell<u32>>,
+        offs: Rc<Cell<u32>>,
         control: Control,
     }
 
@@ -4203,14 +4203,18 @@ mod tests {
         }
 
         fn write(&mut self, _frame: Frame<'_>) -> Result<()> {
-            if self.wrote.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.wrote.set(self.wrote.get() + 1);
+            if self.wrote.get() == 1 {
                 self.control.pause(true);
             }
             Ok(())
         }
 
         fn turn_off(&mut self) -> Result<()> {
-            self.offs.fetch_add(1, Ordering::SeqCst);
+            self.offs.set(self.offs.get() + 1);
+            if self.offs.get() == 1 {
+                self.control.pause(false);
+            }
             Ok(())
         }
     }
@@ -4220,42 +4224,24 @@ mod tests {
     fn a_paused_console_turns_its_sinks_off_and_draws_on_after_it() {
         drop(gpu(8, 8)); // run() opens a renderer of its own on that device
         let (_d, console) = tmp_console("pause");
-        let (wrote, offs) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
+        let (wrote, offs) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
         let control = Control::new();
-        // Once the pause turned the sink off, the console is let go until it
-        // draws again. A hold drains the wake of a release that lands before
-        // it rests, so the release repeats.
-        let releaser = {
-            let (wrote, offs, control) = (Arc::clone(&wrote), Arc::clone(&offs), control.clone());
-            thread::spawn(move || {
-                until(|| offs.load(Ordering::SeqCst) > 0);
-                while wrote.load(Ordering::SeqCst) < 2 {
-                    control.pause(false);
-                    thread::sleep(Duration::from_millis(1));
-                }
-            })
-        };
         let ran = run(Options {
             store: Some(SceneStore::new(&console.store.dir, Vec::new())),
             port: free_port(),
             size: Some((32, 24)),
             frames: 3,
             sinks: vec![Box::new(PauseAt {
-                wrote: Arc::clone(&wrote),
-                offs: Arc::clone(&offs),
+                wrote: Rc::clone(&wrote),
+                offs: Rc::clone(&offs),
                 control: control.clone(),
             })],
             control: control.clone(),
             ..Options::default()
         });
-        releaser.join().unwrap();
         assert!(ran.is_ok(), "{:?}", ran.err());
-        assert_eq!(wrote.load(Ordering::SeqCst), 3);
-        assert_eq!(
-            offs.load(Ordering::SeqCst),
-            2,
-            "once for the pause, once on the way out"
-        );
+        assert_eq!(wrote.get(), 3);
+        assert_eq!(offs.get(), 2, "once for the pause, once on the way out");
         assert!(!control.paused());
     }
 

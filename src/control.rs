@@ -126,8 +126,9 @@ static WAKE: AtomicI32 = AtomicI32::new(-1);
 /// The last signal caught since the last catch(), 0 for none.
 static SIGNALLED: AtomicI32 = AtomicI32::new(0);
 
-/// The renders that a signal stops.
-static CAUGHT: Mutex<Vec<Control>> = Mutex::new(Vec::new());
+/// The renders that a signal stops, and the handlers of SIGINT and SIGTERM
+/// from before the first of them, which go back once none is left.
+static CAUGHT: Mutex<(Vec<Control>, [usize; 2])> = Mutex::new((Vec::new(), [0; 2]));
 
 /// A signal handler may only make async-signal-safe calls, and taking a lock
 /// is not one: the thread that the signal lands on may hold that lock.
@@ -141,15 +142,15 @@ extern "C" fn on_signal(sig: c_int) {
 }
 
 /// Stop `control` on SIGINT and SIGTERM. A thread of ghee's own stops it, so
-/// the signal handler takes no lock. The handlers stay installed after the
-/// render ends.
+/// the signal handler takes no lock. The console's run() puts the handlers
+/// from before back when it returns, so a signal after that takes its usual
+/// course.
 pub fn stop_on_signals(control: &Control) -> io::Result<()> {
-    catch(control).map(|_| ())
+    catch(control)
 }
 
-/// stop_on_signals(), returning the handlers of SIGINT and SIGTERM that it
-/// replaced, for release().
-pub(crate) fn catch(control: &Control) -> io::Result<[usize; 2]> {
+/// stop_on_signals(), for release() to undo.
+pub(crate) fn catch(control: &Control) -> io::Result<()> {
     if WAKE.load(Ordering::SeqCst) < 0 {
         let (wake, woken) = std::os::unix::net::UnixStream::pair()?;
         wake.set_nonblocking(true)?;
@@ -163,7 +164,7 @@ pub(crate) fn catch(control: &Control) -> io::Result<[usize; 2]> {
                         Ok(0) => return,
                         Ok(n) => {
                             let sig = i32::from(bytes[n - 1]);
-                            for c in lock(&CAUGHT).iter() {
+                            for c in lock(&CAUGHT).0.iter() {
                                 c.0.signal.store(sig, Ordering::SeqCst);
                                 c.stop();
                             }
@@ -176,9 +177,25 @@ pub(crate) fn catch(control: &Control) -> io::Result<[usize; 2]> {
     }
     SIGNALLED.store(0, Ordering::SeqCst);
     control.0.caught.store(true, Ordering::SeqCst);
-    lock(&CAUGHT).push(control.clone());
-    let handler = on_signal as extern "C" fn(c_int) as usize;
-    unsafe { Ok([signal(SIGINT, handler), signal(SIGTERM, handler)]) }
+    let mut caught = lock(&CAUGHT);
+    if caught.0.iter().any(|c| c.same(control)) {
+        return Ok(());
+    }
+    caught.0.push(control.clone());
+    if caught.0.len() == 1 {
+        let handler = on_signal as extern "C" fn(c_int) as usize;
+        caught.1 = unsafe { [signal(SIGINT, handler), signal(SIGTERM, handler)] };
+    }
+    Ok(())
+}
+
+/// Releases its control from catch() when it drops.
+pub(crate) struct Released(pub(crate) Control);
+
+impl Drop for Released {
+    fn drop(&mut self) {
+        release(&self.0);
+    }
 }
 
 /// Send `sig` to this process again, to the handler that release() put back,
@@ -191,18 +208,25 @@ pub(crate) fn reraise(sig: c_int) {
     unsafe { raise(sig) };
 }
 
-/// Put back the handlers of SIGINT and SIGTERM that catch() replaced, and
-/// let `control` go.
-pub(crate) fn release(control: &Control, held: [usize; 2]) {
+/// Let `control` go from catch(), and put back the handlers of SIGINT and
+/// SIGTERM that catch() replaced once no render is caught. A control that
+/// catch() never took stays as it is.
+pub(crate) fn release(control: &Control) {
+    let mut caught = lock(&CAUGHT);
+    if !caught.0.iter().any(|c| c.same(control)) {
+        return;
+    }
     control
         .0
         .signal
         .store(SIGNALLED.load(Ordering::SeqCst), Ordering::SeqCst);
     control.0.caught.store(false, Ordering::SeqCst);
-    lock(&CAUGHT).retain(|c| !c.same(control));
-    unsafe {
-        signal(SIGINT, held[0]);
-        signal(SIGTERM, held[1]);
+    caught.0.retain(|c| !c.same(control));
+    if caught.0.is_empty() {
+        unsafe {
+            signal(SIGINT, caught.1[0]);
+            signal(SIGTERM, caught.1[1]);
+        }
     }
 }
 
@@ -231,15 +255,29 @@ mod tests {
     }
 
     #[test]
+    fn the_handlers_from_before_go_back_once_no_render_is_caught() {
+        const SIG_IGN: usize = 1;
+        let ours = on_signal as extern "C" fn(c_int) as usize;
+        let before = unsafe { signal(SIGINT, SIG_IGN) };
+        let (a, b) = (Control::new(), Control::new());
+        catch(&a).unwrap();
+        catch(&b).unwrap();
+        release(&a);
+        assert_eq!(unsafe { signal(SIGINT, ours) }, ours);
+        release(&b);
+        assert_eq!(unsafe { signal(SIGINT, before) }, SIG_IGN);
+    }
+
+    #[test]
     fn a_signal_stops_the_render_that_caught_it() {
         extern "C" {
             fn raise(sig: c_int) -> c_int;
         }
         let c = Control::new();
-        let held = catch(&c).unwrap();
+        catch(&c).unwrap();
         unsafe { raise(SIGTERM) };
         crate::testing::until(|| c.stopped());
-        release(&c, held);
+        release(&c);
         assert!(c.stopped());
         assert_eq!(c.signal(), Some(SIGTERM));
     }

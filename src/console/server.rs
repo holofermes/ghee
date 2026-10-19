@@ -2046,6 +2046,7 @@ pub fn run(opts: Options) -> Result<()> {
         filters,
         control,
     } = opts;
+    let _released = crate::control::Released(control.clone());
     crate::filters::check_filters(&filters, &crate::filters::load_filters(&[]))?;
     let mut store = match store {
         Some(store) => store,
@@ -4358,6 +4359,31 @@ mod tests {
                 *self.1.borrow_mut() = serde_json::from_str(body)?;
             }
             Ok(())
+        }
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_run_puts_back_the_signal_handlers_from_before_it() {
+        extern "C" {
+            fn signal(sig: c_int, handler: usize) -> usize;
+        }
+        const SIG_DFL: usize = 0;
+        drop(gpu(8, 8)); // run() opens a renderer of its own on that device
+        let (_d, console) = tmp_console("signals");
+        let control = Control::new();
+        crate::control::stop_on_signals(&control).unwrap();
+        let ran = run(Options {
+            store: Some(SceneStore::new(&console.store.dir, Vec::new())),
+            port: free_port(),
+            size: Some((8, 8)),
+            frames: 1,
+            control,
+            ..Options::default()
+        });
+        assert!(ran.is_ok(), "{:?}", ran.err());
+        for sig in [crate::control::SIGINT, crate::control::SIGTERM] {
+            assert_eq!(unsafe { signal(sig, SIG_DFL) }, SIG_DFL, "{sig}");
         }
     }
 

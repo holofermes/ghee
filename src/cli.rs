@@ -1699,15 +1699,12 @@ pub fn main(argv: Vec<String>) -> i32 {
         Err(e) => return clap_status(&e),
     };
     let control = Control::new();
-    let held = match control::catch(&control) {
-        Ok(held) => held,
-        Err(e) => {
-            eprintln!("ghee: {e}");
-            return 1;
-        }
-    };
+    if let Err(e) = control::catch(&control) {
+        eprintln!("ghee: {e}");
+        return 1;
+    }
     let (cmd, ran) = dispatch(cli, scene_args, &control);
-    control::release(&control, held);
+    control::release(&control);
     status(&control, cmd, ran)
 }
 
@@ -1884,9 +1881,9 @@ pub fn direct(prog: &str, flags: &[String], here: Here, card: Option<Card>) -> R
             return Ok(2);
         }
     };
-    let held = control::catch(&a.control)?;
+    control::catch(&a.control)?;
     let ran = render(&a, card);
-    control::release(&a.control, held);
+    control::release(&a.control);
     if let Some(sig) = a.control.signal() {
         control::reraise(sig);
         return Ok(0);

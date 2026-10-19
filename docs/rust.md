@@ -231,7 +231,9 @@ to show.
 `run` returns when its `Control` stops. Keep a clone of the `Control` that
 you pass in `Options`, and call `stop` on it from any thread.
 `stop_on_signals` stops it on SIGINT and SIGTERM, and `signal` then names
-the signal, such as 15 for SIGTERM. A stopped `Control` stays stopped, so
+the signal, such as 15 for SIGTERM. When `run` returns, SIGINT and SIGTERM
+go back to the handlers that they had before `stop_on_signals`, so a second
+Ctrl-C ends your program as usual. A stopped `Control` stays stopped, so
 make a new one for each run.
 
 Careful: `stop` takes a lock. Never call it from a signal handler of your

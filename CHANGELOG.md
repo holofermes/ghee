@@ -216,6 +216,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   nothing and ending with status 0.
 - `--stats` prints its summary when a Ctrl-C or a SIGTERM ends the render
   too, instead of nothing.
+- `/set` refuses `NaN` and infinity, and names the value as sent, instead
+  of `None`. `set_param` raises ValueError for them.
 
 ## 0.4.0 - 2026-08-06
 

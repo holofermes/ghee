@@ -131,16 +131,23 @@ fn to_json(v: &Bound<'_, PyAny>) -> PyResult<Value> {
         }
         return Ok(Value::Object(out));
     }
+    let finite = |f: f64| match f.is_finite() {
+        true => Ok(Value::from(f)),
+        false => Err(PyValueError::new_err(format!(
+            "{} is not a number",
+            v.repr()?
+        ))),
+    };
     // A float answers before the int, whose failed extraction raises and
     // drops a Python error.
     if let Ok(f) = v.cast::<PyFloat>() {
-        return Ok(Value::from(f.value()));
+        return finite(f.value());
     }
     if let Ok(i) = v.extract::<i64>() {
         return Ok(Value::from(i));
     }
     if let Ok(f) = v.extract::<f64>() {
-        return Ok(Value::from(f));
+        return finite(f);
     }
     if let Ok(items) = v.try_iter() {
         let mut out: Vec<Value> = Vec::new();

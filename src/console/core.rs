@@ -363,16 +363,14 @@ fn unquote_plus(s: &str) -> ConsoleResult<String> {
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
-/// Parse a float. Whitespace around the number is fine. Any other text fails.
+/// Parse a finite float, the numbers that JSON holds. Whitespace around the
+/// number is fine. Any other text fails, NaN and infinity too.
 fn py_float(raw: &str) -> Result<f64, String> {
-    let s = raw.trim().to_ascii_lowercase();
-    let text = if s.trim_start_matches(['+', '-']) == "infinity" {
-        s.replace("infinity", "inf")
-    } else {
-        s
-    };
-    text.parse::<f64>()
-        .map_err(|_| format!("{} is not a number", py_repr(&Value::from(raw))))
+    raw.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|f| f.is_finite())
+        .ok_or_else(|| format!("{} is not a number", py_repr(&Value::from(raw))))
 }
 
 /// The value set_param expects, from a /set raw query string.
@@ -3092,6 +3090,8 @@ mod tests {
             ("float", "3", Ok(json!(3.0))),
             ("int", "5", Ok(json!(5.0))),
             ("float", "notanumber", Err("'notanumber' is not a number")),
+            ("float", "NaN", Err("'NaN' is not a number")),
+            ("float", "-inf", Err("'-inf' is not a number")),
             ("bool", "true", Ok(json!(true))),
             ("bool", "TRUE", Ok(json!(true))),
             ("bool", " true ", Ok(json!(true))),

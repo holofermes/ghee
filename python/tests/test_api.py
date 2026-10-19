@@ -97,6 +97,8 @@ def test_a_param_reaches_the_shader_live():
         assert pixel(h)[0] == 0
         with pytest.raises(TypeError):
             h.set_param("gain", 1.0, pass_="main")
+        with pytest.raises(ValueError, match="^nan is not a number$"):
+            h.set_param("gain", float("nan"))
 
 
 def test_a_filter_entry_starts_the_filter_where_set_param_puts_it():

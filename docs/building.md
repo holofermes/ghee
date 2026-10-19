@@ -17,6 +17,30 @@ the same tree, from `target/lib/ghee`:
 cd python && maturin build --release --compatibility linux -o ../target/lib/ghee
 ```
 
+## For a Pi, from another computer
+
+To build for a Pi on a 64-bit OS from a Debian or Ubuntu computer, add the
+target, the cross compiler and the arm64 libraries:
+
+```
+rustup target add aarch64-unknown-linux-gnu
+sudo dpkg --add-architecture arm64
+sudo apt update
+sudo apt install gcc-aarch64-linux-gnu libdrm-dev:arm64 libgbm-dev:arm64 \
+    libegl-dev:arm64 libgles-dev:arm64
+```
+
+Name the linker in the `.cargo/config.toml` of the project that you build:
+
+```toml
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+```
+
+Then build with `cargo build --release --target aarch64-unknown-linux-gnu`.
+The binary runs on a Pi whose glibc is as new as the computer's, or newer,
+such as a Pi on the same Debian release.
+
 ## Tests
 
 ```

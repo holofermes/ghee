@@ -142,6 +142,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `ghee` prints its usage on stderr and exits with status 2.
 - The console prints its address on stderr. `ghee.open(serve=...)` logs it
   at INFO on the `ghee` logger of Python's `logging`.
+- The console answers HEAD as it answers GET, and a 405 names the methods
+  that the path takes in `Allow`.
 
 ### Fixed
 

@@ -1655,14 +1655,26 @@ pub fn handle<D: Drawer + ?Sized, H: ConsoleHost>(
         Ok(q) => q,
         Err(e) => return send(request, &Response::text(e.status, &e.message)),
     };
-    if method == "GET" {
+    if method == "HEAD" {
+        let streamed = match path {
+            "/stream" => Some("multipart/x-mixed-replace; boundary=frame"),
+            "/h264" => Some("application/octet-stream"),
+            _ => None,
+        };
+        if let Some(ctype) = streamed {
+            let mut head = Response::text(200, "");
+            head.content_type = ctype.to_string();
+            return send(request, &head);
+        }
+    }
+    if method == "GET" || method == "HEAD" {
         match path {
             "/stream" => return stream(drawer, request, &query),
             "/h264" => return h264(drawer, request, &query),
             "/frame.png" => return frame_png(drawer, request),
             _ => {}
         }
-        let resp = api.dispatch("GET", path, &query, &headers, b"");
+        let resp = api.dispatch(&method, path, &query, &headers, b"");
         return send(request, &resp);
     }
     if method == "POST" && path == "/upload" {

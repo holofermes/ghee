@@ -847,8 +847,8 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                 return Some(too_large(self.cap(path)));
             }
         }
-        if method == "GET" && self.post_only.iter().any(|p| p == path) {
-            return Some(Response::text(405, &format!("{path} is POST only")));
+        if matches!(method, "GET" | "HEAD") && self.post_only.iter().any(|p| p == path) {
+            return Some(not_allowed(&format!("{path} is POST only"), "POST"));
         }
         None
     }
@@ -942,9 +942,11 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             return refused;
         }
         let out = match method {
-            "GET" => self.get(path, query),
+            "GET" | "HEAD" => self.get(path, query),
             "POST" => self.post(path, query, headers, body),
-            _ => return Response::text(405, &format!("{method} is not allowed")),
+            _ => {
+                return not_allowed(&format!("{method} is not allowed"), "GET, HEAD, POST");
+            }
         };
         out.unwrap_or_else(|e| Response::text(e.status, &e.message))
     }
@@ -1121,6 +1123,13 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
             headers: Vec::new(),
         }
     }
+}
+
+/// A 405 for `why`, its `Allow` header naming the methods that the path takes.
+fn not_allowed(why: &str, allow: &str) -> Response {
+    let mut r = Response::text(405, why);
+    r.headers.push(("Allow".to_string(), allow.to_string()));
+    r
 }
 
 fn too_large(cap: usize) -> Response {
@@ -2586,14 +2595,31 @@ mod tests {
         );
     }
 
+    fn allow(r: &Response) -> Option<&str> {
+        r.headers
+            .iter()
+            .find(|(k, _)| k == "Allow")
+            .map(|(_, v)| v.as_str())
+    }
+
     #[test]
-    fn an_unknown_method_is_405() {
-        assert_eq!(
-            api()
-                .dispatch("DELETE", "/stats", &Query::new(), &local(), b"")
-                .status,
-            405
-        );
+    fn an_unknown_method_is_405_and_names_the_methods_that_ghee_takes() {
+        let r = api().dispatch("DELETE", "/stats", &Query::new(), &local(), b"");
+        assert_eq!((r.status, allow(&r)), (405, Some("GET, HEAD, POST")));
+    }
+
+    #[test]
+    fn head_answers_as_get_does() {
+        let api = api();
+        for path in ["/stats", "/scene", "/scenes", "/nope"] {
+            let got = api.dispatch("GET", path, &Query::new(), &local(), b"");
+            let head = api.dispatch("HEAD", path, &Query::new(), &local(), b"");
+            assert_eq!(
+                (head.status, &head.content_type, &head.headers),
+                (got.status, &got.content_type, &got.headers),
+                "{path}"
+            );
+        }
     }
 
     /// Each request that edits a scene, naming scene `name`: a /set, a posted
@@ -2667,8 +2693,7 @@ mod tests {
                 path,
                 &[("pass", "main"), ("name", "k"), ("value", "1")],
             );
-            assert_eq!((r.status, path), (405, path));
-            assert!(body(&r).contains("POST"));
+            assert_eq!((r.status, path, allow(&r)), (405, path, Some("POST")));
         }
         assert!(api.host.calls.borrow().is_empty());
     }

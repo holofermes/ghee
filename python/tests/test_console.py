@@ -3,6 +3,7 @@
 import concurrent.futures
 import contextlib
 import copy
+import http.client
 import inspect
 import io
 import json
@@ -673,6 +674,33 @@ def test_either_host_gives_its_address_and_serves_the_same_stats_and_preview(
     line = line[line.index("ghee console:") :]
     assert line.startswith(f"ghee console: http://127.0.0.1:{port}/ 1 scene ['"), line
     assert line.endswith("preview 640x320 rgba)"), line
+
+
+def answer(port, method, path):
+    """The status, headers and body of one request."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request(method, path)
+        r = conn.getresponse()
+        return r.status, dict(r.getheaders()), r.read()
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("host", ["open", "serve"])
+def test_head_answers_as_get_and_a_405_names_the_methods(host, tmp_path):
+    with drawn(host, tmp_path) as (port, _step):
+        for path in ["/stats", "/scene", "/nope"]:
+            status, headers, _ = answer(port, "GET", path)
+            want = (status, headers.get("Content-Type"), headers.get("ETag"), b"")
+            status, headers, body = answer(port, "HEAD", path)
+            got = (status, headers.get("Content-Type"), headers.get("ETag"), body)
+            assert got == want, path
+        status, headers, body = answer(port, "HEAD", "/stream")
+        assert (status, body) == (200, b"")
+        assert headers["Content-Type"].startswith("multipart/x-mixed-replace")
+        status, headers, _ = answer(port, "DELETE", "/stats")
+        assert (status, headers.get("Allow")) == (405, "GET, HEAD, POST")
 
 
 def test_an_apply_gives_layers_a_new_look_and_changes_nothing_else():

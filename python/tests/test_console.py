@@ -61,6 +61,22 @@ def post_json(port, path, doc):
         return r.status, r.read()
 
 
+def refused(port, doc, at, value, what):
+    """POST /scene with `doc`, its key at the path `at` set to `value`, and
+    assert the 403 that names `what`, a key that the program sets."""
+    changed = copy.deepcopy(doc)
+    node = changed
+    for k in at[:-1]:
+        node = node[k]
+    node[at[-1]] = value
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        post_json(port, "/scene", changed)
+    assert (raised.value.code, raised.value.read().decode()) == (
+        403,
+        f"the scene's program sets {what}",
+    )
+
+
 def json_of(port, path):
     status, body = get(port, path)
     assert status == 200
@@ -441,8 +457,17 @@ def test_the_console_locks_what_the_host_sets_and_the_rest_still_edits():
         looked = json_of(port, "/scene")
         title, text = looked["passes"][0]["layers"]
         assert (looked["params"]["tint"]["value"], title["y"]) == ([0, 1, 0], 2)
-        title.update(x=9, opacity=0.5)
-        text["text"] = "ho"
+        refused(
+            port, looked, ["passes", 0, "layers", 0, "x"], 9, "layer field 'title.x'"
+        )
+        refused(
+            port,
+            looked,
+            ["passes", 0, "layers", 1, "text"],
+            "ho",
+            "layer field 'text.text'",
+        )
+        title["opacity"] = 0.5
         assert post_json(port, "/scene", looked)[0] == 200
         h.frame()
         title, text = json_of(port, "/scene")["passes"][0]["layers"]
@@ -478,7 +503,10 @@ def test_a_drawing_locks_the_keys_it_passes_and_the_console_keeps_the_rest():
         assert post(port, "/set?layer=text&field=opacity&value=0.5")[0] == 200
         draw("b")
         looked = json_of(port, "/scene")
-        looked["passes"][0]["layers"][0].update(text_align="center", x=7)
+        refused(
+            port, looked, ["passes", 0, "layers", 0, "x"], 7, "layer field 'text.x'"
+        )
+        looked["passes"][0]["layers"][0]["text_align"] = "center"
         assert post_json(port, "/scene", looked)[0] == 200
         for words in "cde":
             draw(words)
@@ -613,10 +641,24 @@ def test_a_drawing_locks_the_keys_it_passes_through_either_host(host, tmp_path):
         until(lambda: len(sizes) > 3, lambda: (step(), text()))
         got = text()
         assert (got["x"], got.get("opacity")) == (1, 0.5)
-        # font_family takes a rebuild under ghee serve; the page's x is stale
+        # font_family takes a rebuild under ghee serve
         looked = json_of(port, "/scene")
-        looked["passes"][0]["layers"][0].update(font_family=["Pixel Operator 8"], x=6)
-        assert post_json(port, "/scene", looked)[0] == 200
+        refused(
+            port, looked, ["passes", 0, "layers", 0, "x"], 6, "layer field 'text.x'"
+        )
+
+        def font():
+            # the program gives font_size a new value each frame, so a post
+            # that read an older one is refused, and goes again
+            now = json_of(port, "/scene")
+            now["passes"][0]["layers"][0]["font_family"] = ["Pixel Operator 8"]
+            try:
+                return post_json(port, "/scene", now)[0] == 200
+            except urllib.error.HTTPError as e:
+                assert e.code == 403, e.read()
+                return False
+
+        until(font, step)
         del sizes[:]
         until(lambda: len(sizes) > 3, lambda: (step(), text()))
         got = text()

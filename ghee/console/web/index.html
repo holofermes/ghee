@@ -955,6 +955,7 @@ function edit(path, scene, q, body){
 }
 async function sendEdit(path, scene, job, key, body){
   if (key != null) queuedSets.delete(key);
+  if (typeof body === "function") body = await body();
   const headers = body == null ? {} : {"Content-Type": "application/json"};
   if (rev != null && scene === active && !isProcedural()) headers["If-Match"] = `"${rev}"`;
   try {
@@ -3231,8 +3232,9 @@ function buildParams(){
 let postErr = "";
 // A scene that is still loading answers 503, and the post goes again.
 async function postScene(){
-  const name = active;
-  const r = await edit("/scene", name, "name=" + enc(name), JSON.stringify(work));
+  const name = active, doc = clone(work);
+  const body = isProcedural() ? () => runningLocked(name, doc) : JSON.stringify(doc);
+  const r = await edit("/scene", name, "name=" + enc(name), body);
   if (!r || r.status === 409 || r.status === 412) return r;
   if (r.status === 503){ rebuildSoon(); return r; }
   if (r.ok){
@@ -3244,6 +3246,33 @@ async function postScene(){
   else postErr = await r.text();
   showErrors();
   return r;
+}
+// `doc` as JSON, with each param and layer key that the program set at its
+// value in the scene as it runs now. ghee refuses a post that changes one.
+async function runningLocked(name, doc){
+  if (LOCKS.params.length || LOCKS.fields.length){
+    const now = await jget("/scene?name=" + enc(name)).catch(() => null);
+    if (now) layLocked(now, doc);
+  }
+  return JSON.stringify(doc);
+}
+function layLocked(now, doc){
+  const passOf = (d, n) => (d.passes || []).find(p => p.name === n) || {};
+  const layerOf = (d, n) => (d.passes || []).flatMap(p => p.layers || []).find(l => l.name === n);
+  const take = (from, to, k) => { if (has(from, k)) to[k] = clone(from[k]); else delete to[k]; };
+  LOCKS.params.forEach(k => {
+    const [pass, name] = k.includes(".") ? k.split(".") : [null, k];
+    const from = (pass ? passOf(now, pass).params : now.params) || {};
+    const to = (pass ? passOf(doc, pass).params : doc.params) || {};
+    if (isObj(from[name]) && isObj(to[name])) take(from[name], to[name], "value");
+  });
+  LOCKS.fields.forEach(k => {
+    const [name, key, field] = k.split(".");
+    const from = layerOf(now, name), to = layerOf(doc, name);
+    if (!from || !to) return;
+    if (field != null && isObj(from[key]) && isObj(to[key])) take(from[key], to[key], field);
+    else take(from, to, key);
+  });
 }
 // A live value for scene `scene`, the one this page showed when it built the
 // control.

@@ -319,15 +319,24 @@ impl WorkingCopy {
 
 /// Take out of `values`, the values of a scene's edits, each param and
 /// field of a layer that `locks` holds, and the removal of an effect that
-/// holds such a field.
-pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
+/// holds such a field. Returns why a console may not change each one, as a
+/// `/set` of it answers.
+pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) -> Vec<String> {
     fn take(map: &mut Map<String, Value>, mut out: impl FnMut(&str, &mut Value) -> bool) -> bool {
         let had = map.len();
         map.retain(|k, v| !out(k, v));
         had > 0 && map.is_empty()
     }
+    let mut refused = Vec::new();
+    let mut param = |pass: Option<&str>, name: &str| match locks.param_refusal(pass, name) {
+        Some(why) => {
+            refused.push(why);
+            true
+        }
+        None => false,
+    };
     if let Some(Value::Object(params)) = values.get_mut("params") {
-        if take(params, |name, _| locks.param(None, name)) {
+        if take(params, |name, _| param(None, name)) {
             values.remove("params");
         }
     }
@@ -336,7 +345,7 @@ pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
             let Some(Value::Object(params)) = v.get_mut("params") else {
                 return false;
             };
-            if !take(params, |name, _| locks.param(Some(pass), name)) {
+            if !take(params, |name, _| param(Some(pass), name)) {
                 return false;
             }
             let Value::Object(fields) = v else {
@@ -349,6 +358,13 @@ pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
             values.remove("passes");
         }
     }
+    let mut field = |why: Option<String>| match why {
+        Some(why) => {
+            refused.push(why);
+            true
+        }
+        None => false,
+    };
     if let Some(Value::Object(layers)) = values.get_mut("layers") {
         let gone = take(layers, |layer, v| {
             let Value::Object(fields) = v else {
@@ -361,15 +377,15 @@ pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
                     field: key,
                 };
                 match value {
-                    _ if locks.field(&own) => true,
-                    Value::Null => locks.effect(layer, key),
-                    Value::Object(sub) => take(sub, |field, _| {
+                    _ if locks.field(&own) => field(locks.field_refusal(&own)),
+                    Value::Null => field(locks.effect_refusal(layer, key)),
+                    Value::Object(sub) => take(sub, |name, _| {
                         let at = Address {
                             layer,
                             effect: Some(key),
-                            field,
+                            field: name,
                         };
-                        locks.field(&at)
+                        field(locks.field_refusal(&at))
                     }),
                     _ => false,
                 }
@@ -379,6 +395,7 @@ pub fn leave_out(values: &mut Map<String, Value>, locks: &Locks) {
             values.remove("layers");
         }
     }
+    refused
 }
 
 /// A source for one declared array: its size and the frame number give this
@@ -1776,11 +1793,12 @@ impl ConsoleHost for RenderLoopHost {
                 // The program's own drawings and sets stay its own: the
                 // working copy takes what the page changed in what runs.
                 let mut changed = state::diff(&copy.live_doc(name, hub), &scene.to_dict(), true);
-                self.console.with_locks(name, |locks| {
-                    if let Some(locks) = locks {
-                        leave_out(&mut changed.values, locks);
-                    }
+                let refused = self.console.with_locks(name, |locks| {
+                    locks.map(|l| leave_out(&mut changed.values, l))
                 });
+                if let Some(why) = refused.unwrap_or_default().into_iter().next() {
+                    return Err(ConsoleError::read_only(why));
+                }
                 let doc = state::fold(&copy.defaults_doc, &copy.working_doc(), &changed);
                 match store::scene_of(&copy.opened.defaults, &doc, name) {
                     Ok(working) => copy.opened.working = working,
@@ -3811,19 +3829,27 @@ mod tests {
             )
         );
         assert_eq!(set("layer=title&field=y&value=3").0, 200);
-        // a page one step behind posts the values from before the sets
-        let mut stale = json_of(&ask(&api, "GET", "/scene", "name=proc", "").1);
-        stale["passes"][0]["params"]["amt"]["value"] = Value::from(0.9);
-        for layer in stale["passes"][0]["layers"].as_array_mut().unwrap() {
-            match layer["name"].as_str() {
-                Some("title") => {
-                    layer["x"] = Value::from(9);
-                    layer["y"] = Value::from(6);
-                }
-                _ => layer["width"] = Value::from(9),
-            }
+        // a post that changes what the process set answers as a /set of it
+        let running = json_of(&ask(&api, "GET", "/scene", "name=proc", "").1);
+        let changing = |at: &str, value: f64| {
+            let mut doc = running.clone();
+            *doc.pointer_mut(at).unwrap() = Value::from(value);
+            doc["passes"][0]["layers"][0]["y"] = Value::from(6);
+            ask(&api, "POST", "/scene", "name=proc", &doc.to_string())
+        };
+        let refusals = [
+            ("/passes/0/params/amt/value", "param 'main.amt'"),
+            ("/passes/0/layers/0/x", "layer field 'title.x'"),
+            ("/passes/0/layers/1/width", "layer field 'dot.width'"),
+        ];
+        for (at, what) in refusals {
+            let (status, body, _) = changing(at, 9.0);
+            assert_eq!(
+                (status, body),
+                (403, format!("the scene's program sets {what}"))
+            );
         }
-        let posted = ask(&api, "POST", "/scene", "name=proc", &stale.to_string());
+        let posted = changing("/passes/0/layers/0/y", 6.0);
         assert_eq!(posted.0, 200, "{}", posted.1);
         let only_y = serde_json::json!({"layers": {"title": {"y": 6.0}}});
         let edits = json_of(&ask(&api, "GET", "/edits", "name=proc", "").1);

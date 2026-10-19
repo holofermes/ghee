@@ -176,6 +176,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   signal that ended it, as in `did not complete the handshake (exit status
   3)`. ghee logs a line when it sends the program SIGTERM or SIGKILL.
 - `ghee render -v` names the program that runs in place of a scene file.
+- A `POST /scene` that changes a param or a layer key that the scene's
+  program sets answers 403, as a `/set` of it does, instead of keeping the
+  program's value.
 - A change that a scene's program makes to its layers gives the scene a new
   `ETag`.
 

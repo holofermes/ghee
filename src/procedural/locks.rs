@@ -119,6 +119,21 @@ impl Locks {
         self.fields.contains(&whole) || self.fields.iter().any(|f| f.starts_with(&at))
     }
 
+    /// Why a console refuses to remove the effect `effect` of layer
+    /// `layer`, or None when the program set neither it nor a field of it.
+    pub fn effect_refusal(&self, layer: &str, effect: &str) -> Option<String> {
+        let whole = format!("{layer}.{effect}");
+        let at = format!("{whole}.");
+        let mut set: Vec<&String> = self
+            .fields
+            .iter()
+            .filter(|f| **f == whole || f.starts_with(&at))
+            .collect();
+        set.sort();
+        set.first()
+            .map(|f| format!("the scene's program sets layer field '{f}'"))
+    }
+
     /// Why a console refuses to set the param `name` of pass `pass`, None
     /// for a scene param, or None when the program never set it.
     pub fn param_refusal(&self, pass: Option<&str>, name: &str) -> Option<String> {

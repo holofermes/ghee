@@ -48,7 +48,7 @@ bad /set: param 'nope' is not a param this scene declares (main.tile, tile, main
 | Status | When |
 | --- | --- |
 | 400 | a bad query or value |
-| 403 | a param or a layer key that the scene's program sets ([Locked](#locked)), a change that a [Python console](#from-python) refuses, a `Host` header other than `localhost`, a `127.x.x.x` address, `[::1]` or a name passed to `--allow-hosts`, with or without a port ([From another computer](console.md#from-another-computer)), or a POST from another site's web page |
+| 403 | a change to a param or a layer key that the scene's program sets ([Locked](#locked)), a change that a [Python console](#from-python) refuses, a `Host` header other than `localhost`, a `127.x.x.x` address, `[::1]` or a name passed to `--allow-hosts`, with or without a port ([From another computer](console.md#from-another-computer)), or a POST from another site's web page |
 | 404 | an unknown path, scene or item |
 | 405 | a GET to a path that changes something, which takes POST alone, or a method other than GET, HEAD and POST. `Allow` names the methods that the path takes |
 | 409 | an edit for a scene other than the open one, or a scene name that's taken |
@@ -115,8 +115,9 @@ the key back to its default.
 ### Locked
 
 While a [procedural scene](procedural.md)'s program, or your Python
-program, sets a param or a layer key, a `/set` of it answers 403, and `GET
-/stats` lists it under [`locked`](#stats).
+program, sets a param or a layer key, a `/set` of it answers 403, and so
+does a `POST /scene` that gives it another value. `GET /stats` lists it
+under [`locked`](#stats).
 
 ## Revisions
 

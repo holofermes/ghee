@@ -139,8 +139,8 @@ impl ConsoleHost for Host {
 
     /// An apply gives each layer of the scene the look that `scene` gives
     /// it, and changes nothing else: a layer that `scene` leaves out keeps
-    /// its look, and one that the scene lacks is skipped. What the host set
-    /// keeps the host's values.
+    /// its look, and one that the scene lacks is skipped. A change to what
+    /// the host set answers 403, as a /set of it does.
     fn apply_scene(&self, scene: Scene) -> ConsoleResult<()> {
         let posted = scene.to_dict();
         let running = self.0.hub.scene().unwrap_or_default();
@@ -151,7 +151,11 @@ impl ConsoleHost for Host {
             ));
         }
         let mut changed = state::diff(&running, &posted, true);
-        leave_out(&mut changed.values, &lock(&self.0.locks));
+        changed.values.retain(|k, _| k == "layers");
+        let refused = leave_out(&mut changed.values, &lock(&self.0.locks));
+        if let Some(why) = refused.into_iter().next() {
+            return Err(ConsoleError::read_only(why));
+        }
         let posted = state::fold(&running, &running, &changed);
         let now: Vec<&Value> = layers_of(&running).collect();
         let looks: Vec<Value> = layers_of(&posted)

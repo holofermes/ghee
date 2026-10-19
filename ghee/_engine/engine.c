@@ -1193,8 +1193,7 @@ GheeScene *ghee_display_create_on(int card, int width, int height, const char *d
     return g;
 }
 
-// The kernel's fbdev emulation of a card, open, else -1. At the card's last
-// close the kernel lights the display again with the fbdev's own buffer.
+// The kernel's fbdev emulation of a card, open, else -1.
 static int open_fbdev(int drm_fd) {
     char dir[PATH_MAX + 16];
     if (!node_device(drm_fd, dir)) return -1;

@@ -709,7 +709,6 @@ impl<'a> Loop<'a> {
         shut.and(ran)
     }
 
-    /// Clear every sink and turn it off, unless a hold turned it off.
     fn shutdown(&mut self) -> Result<()> {
         for s in self.sinks.iter_mut() {
             s.clear()?;

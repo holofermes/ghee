@@ -25,8 +25,8 @@ const BUILTIN: [(&str, &str); 3] = [
         include_str!("../ghee/filters/frc.filter.json"),
     ),
     (
-        "frc256.filter.json",
-        include_str!("../ghee/filters/frc256.filter.json"),
+        "frc16.filter.json",
+        include_str!("../ghee/filters/frc16.filter.json"),
     ),
 ];
 
@@ -655,15 +655,15 @@ mod tests {
             None,
         )
         .unwrap();
-        apply_filters(&mut sc, &[crate::filters::Filter::named("frc256")], None).unwrap();
+        apply_filters(&mut sc, &[crate::filters::Filter::named("frc16")], None).unwrap();
         let a = sc
             .assets
             .iter()
-            .find(|a| a.name == "frc256_bluenoise")
+            .find(|a| a.name == "frc16_bluenoise")
             .expect("bluenoise asset");
         let img = a.image.as_ref().expect("decoded");
         assert_eq!((img.width, img.height), (64, 64));
-        assert!(sc.passes.last().unwrap().name.starts_with("frc256"));
+        assert!(sc.passes.last().unwrap().name.starts_with("frc16"));
     }
 
     #[test]
@@ -748,7 +748,7 @@ mod tests {
             None,
         )
         .unwrap();
-        apply_filters(&mut sc, &[crate::filters::Filter::named("frc256")], None).unwrap();
+        apply_filters(&mut sc, &[crate::filters::Filter::named("frc16")], None).unwrap();
         let mut doc = sc.to_dict();
         // A filter's asset stays out of the document, and comes back with its
         // filter.
@@ -778,16 +778,16 @@ mod tests {
         )
         .unwrap();
         sc.load_assets(&d).unwrap();
-        apply_filters(&mut sc, &[crate::filters::Filter::named("frc256")], None).unwrap();
+        apply_filters(&mut sc, &[crate::filters::Filter::named("frc16")], None).unwrap();
         let names: Vec<&str> = sc.assets.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["bluenoise", "frc256_bluenoise"]);
+        assert_eq!(names, ["bluenoise", "frc16_bluenoise"]);
         let main = sc.passes[0].glsl(Some(&sc.params), None, &sc.assets, &[], false);
         assert!(main.contains("uniform sampler2D bluenoise_tex;"));
-        assert!(!main.contains("frc256_bluenoise"));
+        assert!(!main.contains("frc16_bluenoise"));
         let filt = sc.passes[1].glsl(Some(&sc.params), None, &sc.assets, &[], false);
-        assert!(filt.contains("uniform sampler2D frc256_bluenoise_tex;"));
-        assert!(filt.contains("#define bluenoise_tex frc256_bluenoise_tex"));
-        assert!(filt.contains("#define bluenoise_size frc256_bluenoise_size"));
+        assert!(filt.contains("uniform sampler2D frc16_bluenoise_tex;"));
+        assert!(filt.contains("#define bluenoise_tex frc16_bluenoise_tex"));
+        assert!(filt.contains("#define bluenoise_size frc16_bluenoise_size"));
         assert!(!filt.contains("uniform sampler2D bluenoise_tex;"));
 
         let mut sp = Scene::from_dict(
@@ -797,7 +797,7 @@ mod tests {
             None,
         )
         .unwrap();
-        apply_filters(&mut sp, &[crate::filters::Filter::named("frc256")], None).unwrap();
+        apply_filters(&mut sp, &[crate::filters::Filter::named("frc16")], None).unwrap();
         let filt = sp.passes[1].glsl(Some(&sp.params), None, &sp.assets, &[], false);
         let (decl, def) = (
             filt.find("uniform float bluenoise_size;").unwrap(),
@@ -874,20 +874,20 @@ mod tests {
         // A scene file posted as it is: its filters list and no filter pass.
         let _g = env_guard();
         let mut sc = Scene::from_dict(
-            &json!({"version": 1, "filters": ["frc256"],
+            &json!({"version": 1, "filters": ["frc16"],
                     "passes": [{"name": "m", "fragment": GOOD}]}),
             None,
             None,
         )
         .unwrap();
         rebuild_filters(&mut sc, None).unwrap();
-        assert_eq!(names(&sc), ["m", "frc256"]);
-        assert_eq!(sc.passes[1].filter, "frc256");
-        assert_eq!(sc.assets[0].name, "frc256_bluenoise");
+        assert_eq!(names(&sc), ["m", "frc16"]);
+        assert_eq!(sc.passes[1].filter, "frc16");
+        assert_eq!(sc.assets[0].name, "frc16_bluenoise");
         // Posted again with its pass, as the console sends it: no second copy.
         let mut again = Scene::from_dict(&sc.to_dict(), None, None).unwrap();
         rebuild_filters(&mut again, None).unwrap();
-        assert_eq!(names(&again), ["m", "frc256"]);
+        assert_eq!(names(&again), ["m", "frc16"]);
     }
 
     #[test]
@@ -910,13 +910,13 @@ mod tests {
     fn a_hidden_filters_entry_appends_its_pass_hidden() {
         let _g = env_guard();
         let hidden = json!({"name": "dither", "visible": false});
-        // frc256 brings an asset, and its pass rebuilds the scene before the
+        // frc16 brings an asset, and its pass rebuilds the scene before the
         // hidden filter appends.
         for (filters, eyes, back) in [
             (
-                json!(["frc256", hidden]),
-                vec![("", true), ("frc256", true), ("dither", false)],
-                json!(["frc256", "dither"]),
+                json!(["frc16", hidden]),
+                vec![("", true), ("frc16", true), ("dither", false)],
+                json!(["frc16", "dither"]),
             ),
             (
                 json!([hidden]),
@@ -949,13 +949,13 @@ mod tests {
         let mut sc = Scene::from_dict(
             &json!({"version": 1, "filters": [],
                     "passes": [{"name": "m", "fragment": GOOD},
-                               {"name": "frc256", "fragment": GOOD}]}),
+                               {"name": "frc16", "fragment": GOOD}]}),
             None,
             None,
         )
         .unwrap();
         rebuild_filters(&mut sc, None).unwrap();
-        assert_eq!(names(&sc), ["m", "frc256"]);
+        assert_eq!(names(&sc), ["m", "frc16"]);
         assert!(sc.passes[1].filter.is_empty());
     }
 
@@ -993,12 +993,12 @@ mod tests {
         let _g = env_guard();
         let d = tmpdir("skipped-shadow");
         std::fs::write(
-            format!("{d}/frc256.filter.json"),
-            json!({"name": "frc256"}).to_string(),
+            format!("{d}/frc16.filter.json"),
+            json!({"name": "frc16"}).to_string(),
         )
         .unwrap();
         let reg = load_filters(&[&d]);
-        assert!(reg["frc256"].get(DIR_KEY).is_none());
+        assert!(reg["frc16"].get(DIR_KEY).is_none());
     }
 
     #[test]
@@ -1023,7 +1023,7 @@ mod tests {
         let reg = load_filters(&[]);
         assert!(reg.contains_key("dither"));
         assert!(reg.contains_key("frc"));
-        assert!(reg.contains_key("frc256"));
+        assert!(reg.contains_key("frc16"));
     }
 
     #[test]
@@ -1299,8 +1299,8 @@ mod tests {
         );
         // A later filter of the same name sets its values in the earlier one's place.
         let first = Filter::parse_list("frc=calm=8,dither").unwrap();
-        let later = Filter::parse_list("dither=levels=4,frc=coarse=1,frc256").unwrap();
-        let both = Filter::parse_list("frc=calm=8:coarse=1,dither=levels=4,frc256").unwrap();
+        let later = Filter::parse_list("dither=levels=4,frc=coarse=1,frc16").unwrap();
+        let both = Filter::parse_list("frc=calm=8:coarse=1,dither=levels=4,frc16").unwrap();
         assert_eq!(chain(&first, &later), both);
     }
 

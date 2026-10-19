@@ -5505,23 +5505,20 @@ mod tests {
             e.to_string(),
             "scene param 'amount' and param 'amount' in pass 'dither' share a name"
         );
-        let doc = named(json!({"params": {"frc256_bluenoise_tex": f}}), json!({}));
+        let doc = named(json!({"params": {"frc16_bluenoise_tex": f}}), json!({}));
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
-        let e = crate::filters::apply_filters(
-            &mut sc,
-            &[crate::filters::Filter::named("frc256")],
-            None,
-        )
-        .unwrap_err();
+        let e =
+            crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc16")], None)
+                .unwrap_err();
         assert_eq!(
             e.to_string(),
-            "filter 'frc256': scene param 'frc256_bluenoise_tex' and asset 'bluenoise' of filter \
-             'frc256' both declare 'frc256_bluenoise_tex'"
+            "filter 'frc16': scene param 'frc16_bluenoise_tex' and asset 'bluenoise' of filter \
+             'frc16' both declare 'frc16_bluenoise_tex'"
         );
         // A layer's names stay out of a filter pass.
         let doc = named(json!({"params": {"bluenoise": f}}), json!({}));
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
-        crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc256")], None)
+        crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc16")], None)
             .unwrap();
     }
 
@@ -5700,7 +5697,7 @@ mod tests {
                         "layers": [{"name": "i", "image": "pic"}]}],
         });
         let mut sc = Scene::from_dict(&doc, None, None).unwrap();
-        crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc256")], None)
+        crate::filters::apply_filters(&mut sc, &[crate::filters::Filter::named("frc16")], None)
             .unwrap();
         let filter = sc.assets.iter().find(|a| !a.from_filter.is_empty());
         let filter = filter.unwrap().name.clone();

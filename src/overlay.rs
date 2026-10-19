@@ -601,7 +601,7 @@ const SSD1322_COL_OFFSET: i64 = 28;
 /// The config.txt line that hands an SSD1322 to ssd130x on SPI bus 0, and
 /// the overlay named in it. `solomon,col-offset` counts column addresses,
 /// four pixels each. A display clock divided by 1 redraws the glass twice
-/// as often as the driver's default of 2, and frc256 needs a redraw for
+/// as often as the driver's default of 2, and frc16 needs a redraw for
 /// each of its frames.
 fn ssd1322(opts: &Opts) -> Result<Setup> {
     let width = int_opt(opts, "width", SSD1322_WIDTH)?;

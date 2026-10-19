@@ -98,7 +98,7 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Turn the frame with `--rotate`, and set a display's brightness with
   `--brightness`.
 - Use `--drop` to show the newest frame instead of waiting for the display.
-- Show more greys on small panels with the `frc` and `frc256` filters
+- Show more greys on small panels with the `frc` and `frc16` filters
   ([Filters](docs/filters.md)).
 - Start a filter at settings of your own with an entry such as
   `{"name": "frc", "calm": 8}` in a scene's `filters`, or with

@@ -1279,8 +1279,8 @@ fn layers_survive_a_filter_asset_and_a_built_param() {
     let mut sc = Scene::from_dict(&doc, None, None).unwrap();
     sc.passes[0].layers[0].as_text_mut().unwrap().data = Some(alone(&font(SANS)));
     let layers = sc.passes[0].layers.clone();
-    apply_filters(&mut sc, &[Filter::named("frc256")], None).unwrap();
-    assert!(sc.assets.iter().any(|a| a.name == "frc256_bluenoise"));
+    apply_filters(&mut sc, &[Filter::named("frc16")], None).unwrap();
+    assert!(sc.assets.iter().any(|a| a.name == "frc16_bluenoise"));
     assert_eq!(sc.passes[0].layers, layers);
     let sc = Ok::<_, anyhow::Error>(sc)
         .param(Param::float("gain", 1.0))

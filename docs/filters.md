@@ -2,7 +2,7 @@
 
 A filter is a pass that ghee adds over the finished frame. ghee has three
 built in, to improve the look of 1-bit and 16-level panels: `dither`,
-`frc` and `frc256`.
+`frc` and `frc16`.
 
 To use a filter, add it to the scene's `filters`:
 
@@ -63,16 +63,16 @@ holds still. At 106 frames a second, set `calm` to 8, and at 86, set it to
 Text of 10 pixels roughens, and text of 8 breaks. To blink fewer greys more
 steadily, set `coarse` to 1 for every second grey, or 2 for every fourth.
 
-### frc256
+### frc16
 
 To show about 256 greys on a 16-level panel, such as the SSD1322, add
-`frc256`. It needs the
+`frc16`. It needs the
 panel's full rate, about 200 frames a second on the SSD1322. On a Pi 5,
-`frc256` takes an SSD1322 from 206 to 200 frames a second.
+`frc16` takes an SSD1322 from 206 to 200 frames a second.
 
-| No filter, 16 levels | `frc256`, as the eye sees it |
+| No filter, 16 levels | `frc16`, as the eye sees it |
 | --- | --- |
-| ![the ramp in 16 visible bands](../media/filters/none-16.png) | ![the ramp smooth from black to white](../media/filters/frc256-seen.png) |
+| ![the ramp in 16 visible bands](../media/filters/none-16.png) | ![the ramp smooth from black to white](../media/filters/frc16-seen.png) |
 
 ## Changing a filter's settings
 

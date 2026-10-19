@@ -101,6 +101,6 @@ raw plain16 "$big" 1
 grey plain16 "$big" 4bit
 png plain16-4bit "$big" none-16
 
-raw frc256 "$big" 16 frc256
-grey frc256 "$big" mean
-png frc256-mean "$big" frc256-seen
+raw frc16 "$big" 16 frc16
+grey frc16 "$big" mean
+png frc16-mean "$big" frc16-seen

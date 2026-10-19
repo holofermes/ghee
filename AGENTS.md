@@ -336,8 +336,8 @@ each one for a reader who has never seen ghee.
   `border`, `border_radius`, `stroke_width`, `blend`. An underscore stands for
   CSS's hyphen, so Python takes the name as a keyword.
 - Where CSS has a word for a value, use it too: a colour takes CSS's colour
-  names, such as `navy` and `transparent`, in any case, beside `#rrggbb` and
-  three numbers.
+  names, such as `navy` and `transparent`, in any case, and CSS's hex
+  colours, beside three numbers.
 - Everywhere else, use a plain word: a shape layer holds `shape`, `rect`,
   `line` or `circle`, and a line its `points`. A name never asks a newcomer
   to decode jargon such as pixels per em.

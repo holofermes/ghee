@@ -892,6 +892,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.setattr("_Screen", m.py().get_type::<draw::Screen>())?;
     m.setattr("_LayerWire", m.py().get_type::<wire::LayerWire>())?;
     m.setattr("_colour_name", wrap_pyfunction!(wire::_colour_name, m)?)?;
+    m.setattr("_hex_colour", wrap_pyfunction!(wire::_hex_colour, m)?)?;
     m.setattr("_display_size", wrap_pyfunction!(_display_size, m)?)?;
     m.setattr("_command", wrap_pyfunction!(_command, m)?)?;
     m.setattr("_render_flags", wrap_pyfunction!(_render_flags, m)?)?;

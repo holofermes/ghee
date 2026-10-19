@@ -59,6 +59,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Give `ghee.Layer` a Pillow image or a numpy array as its `image`, as
   `d.image` takes.
 - Change a layer at runtime with `screen.layers`, `ghee.layers` or `/set`.
+- Write a colour as CSS's `#rgb`, `#rgba` or `#rrggbbaa` too. A layer
+  draws the alpha.
 - Name a pass's param in `/set` as `name=main.tile`, as `set_param` takes
   it.
 - Reach a console on loopback through a proxy such as `tailscale serve`:

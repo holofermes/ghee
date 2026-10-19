@@ -1197,7 +1197,7 @@ impl SceneController for SceneProcess {
                     "string" => Ok(ParamValue::Str(text)),
                     "color" => Rgb::from_text(&text).map(ParamValue::Color).ok_or_else(|| {
                         format!(
-                            "color param '{name}' takes '#rrggbb' or a CSS colour name as \
+                            "color param '{name}' takes a hex colour or a CSS colour name as \
                              text, got {}",
                             py_repr(&Value::from(text))
                         )

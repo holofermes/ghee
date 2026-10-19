@@ -377,8 +377,8 @@ fn py_float(raw: &str) -> Result<f64, String> {
 
 /// The value set_param expects, from a /set raw query string.
 ///
-/// A "color" is "#rrggbb" or a CSS colour name, which stays as written, or
-/// "r,g,b", which gives three floats. A "vecK" is K comma-separated floats. A "bool" is true or
+/// A "color" is a CSS hex colour or a CSS colour name, which stays as
+/// written, or "r,g,b", which gives three floats. A "vecK" is K comma-separated floats. A "bool" is true or
 /// false (1 or 0), and the scene model demands a real bool. Anything else is
 /// one float. Malformed input errs.
 pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
@@ -403,7 +403,7 @@ pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
         let rgb = floats(raw).ok().filter(|p| p.len() == 3);
         return rgb.map(Value::from).ok_or_else(|| {
             format!(
-                "color needs '#rrggbb', a CSS colour name or three comma-separated floats, got {}",
+                "color needs a hex colour, a CSS colour name or three comma-separated floats, got {}",
                 py_repr(&Value::from(raw))
             )
         });
@@ -1419,8 +1419,8 @@ pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String>
 }
 
 /// `raw`, a /set value, as the live field `live` takes it: a number, true or
-/// false, a colour as `#rrggbb`, a CSS colour name, three comma-separated
-/// floats or a gradient object in JSON, the name of an image asset, a text
+/// false, a colour as a CSS hex colour, a CSS colour name, three
+/// comma-separated floats or a gradient object in JSON, the name of an image asset, a text
 /// layer's words, a line's points as a JSON list, or `none` for the default
 /// of a field that takes none.
 fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
@@ -1454,13 +1454,13 @@ fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
             }
             let forms = match (gradient, none) {
                 (true, true) => {
-                    "'#rrggbb', a CSS colour name, three comma-separated numbers, a gradient \
+                    "a hex colour, a CSS colour name, three comma-separated numbers, a gradient \
                      object or none"
                 }
                 (false, true) => {
-                    "'#rrggbb', a CSS colour name, three comma-separated numbers or none"
+                    "a hex colour, a CSS colour name, three comma-separated numbers or none"
                 }
-                _ => "'#rrggbb', a CSS colour name or three comma-separated numbers",
+                _ => "a hex colour, a CSS colour name or three comma-separated numbers",
             };
             Err(format!("{what} needs {forms}, got {got}"))
         }
@@ -2213,19 +2213,19 @@ mod tests {
             ),
             (
                 q("words", None, "color", "1,0"),
-                "layer 'words' color needs '#rrggbb', a CSS colour name, three comma-separated \
+                "layer 'words' color needs a hex colour, a CSS colour name, three comma-separated \
                  numbers, a gradient object or none, got '1,0'"
                     .to_string(),
             ),
             (
                 q("icon", None, "color", r#"{"from": [1, 0, 0]}"#),
-                "layer 'icon' color needs '#rrggbb', a CSS colour name, three comma-separated \
+                "layer 'icon' color needs a hex colour, a CSS colour name, three comma-separated \
                  numbers or none, got '{\"from\": [1, 0, 0]}'"
                     .to_string(),
             ),
             (
                 q("words", some, "color", "none"),
-                "layer 'words' karaoke color needs '#rrggbb', a CSS colour name or three \
+                "layer 'words' karaoke color needs a hex colour, a CSS colour name or three \
                  comma-separated numbers, got 'none'"
                     .to_string(),
             ),
@@ -2338,7 +2338,7 @@ mod tests {
             ),
             (
                 vec![("pass", "main"), ("name", "c"), ("value", "1,0")],
-                "color needs '#rrggbb', a CSS colour name or three comma-separated floats, got \
+                "color needs a hex colour, a CSS colour name or three comma-separated floats, got \
                  '1,0'",
             ),
             (
@@ -3114,30 +3114,31 @@ mod tests {
             ("color", " #0A0b0C ", Ok(json!("#0A0b0C"))),
             ("color", " NavY ", Ok(json!("NavY"))),
             ("color", "transparent", Ok(json!("transparent"))),
+            ("color", "#F80c", Ok(json!("#F80c"))),
             (
                 "color",
                 "1,0",
-                Err("color needs '#rrggbb', a CSS colour name or three comma-separated floats, got '1,0'"),
+                Err("color needs a hex colour, a CSS colour name or three comma-separated floats, got '1,0'"),
             ),
             (
                 "color",
                 "1,0,0,0",
-                Err("color needs '#rrggbb', a CSS colour name or three comma-separated floats, got '1,0,0,0'"),
+                Err("color needs a hex colour, a CSS colour name or three comma-separated floats, got '1,0,0,0'"),
             ),
             (
                 "color",
                 "1,x,0",
-                Err("color needs '#rrggbb', a CSS colour name or three comma-separated floats, got '1,x,0'"),
+                Err("color needs a hex colour, a CSS colour name or three comma-separated floats, got '1,x,0'"),
             ),
             (
                 "color",
-                "#ff80",
-                Err("color needs '#rrggbb', a CSS colour name or three comma-separated floats, got '#ff80'"),
+                "#ff80000",
+                Err("color needs a hex colour, a CSS colour name or three comma-separated floats, got '#ff80000'"),
             ),
             (
                 "color",
                 "#ff800g",
-                Err("color needs '#rrggbb', a CSS colour name or three comma-separated floats, got '#ff800g'"),
+                Err("color needs a hex colour, a CSS colour name or three comma-separated floats, got '#ff800g'"),
             ),
             ("vec2", "0.1,0.2", Ok(json!([0.1, 0.2]))),
             ("vec3", "1,0,0.5", Ok(json!([1.0, 0.0, 0.5]))),

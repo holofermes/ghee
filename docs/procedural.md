@@ -270,10 +270,10 @@ names.
 | 1 | `<layer>.color` | floats | 3 values, red, green and blue from 0 to 1. A text's gradient takes 7: 3 for from, 3 for to, and the angle in degrees, 0 up and 90 right |
 | 1 | `<layer>.key`, count 0 | none | puts `x`, `y`, `color`, `width`, `height` or `radius` back to its default |
 | 2 | no name field | none | skips the next frame that it reaches, and a display keeps its last one. A render into files draws every frame |
-| 3 | a param, or `<pass>.param` | UTF-8 text | sets a `string` param, or a colour param as `#rrggbb` or a CSS colour name |
+| 3 | a param, or `<pass>.param` | UTF-8 text | sets a `string` param, or a colour param as a CSS hex colour or a CSS colour name |
 | 3 | `<layer>.text` | UTF-8 text | sets a text layer's words |
 | 3 | `<layer>.image` | UTF-8 text | sets an image layer's picture: an [image asset](layers.md#assets)'s name, or a `.png` or `.jpg` file's path |
-| 3 | `<layer>.color` | UTF-8 text | a colour as `#rrggbb` or a CSS colour name, or a text's gradient as JSON, `{"from": "red", "to": "yellow", "angle": 90}` |
+| 3 | `<layer>.color` | UTF-8 text | a colour as a CSS hex colour or a CSS colour name, or a text's gradient as JSON, `{"from": "red", "to": "yellow", "angle": 90}` |
 | 3 | `<layer>.key` | UTF-8 text | sets any other key of the layer: text, such as `mono` for `render`, or JSON for a list or an effect, such as `{"strength": 0.5}` for `glow` |
 | 4 | an array | bytes | feeds the array, each byte read as byte / 255 |
 | 5 | no name field | none | done with this frame, under [lockstep](#lockstep) |

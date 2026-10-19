@@ -271,8 +271,8 @@ pub(crate) fn number(a: &Arg, ok: fn(f64) -> bool) -> Option<Option<f64>> {
     }
 }
 
-/// `a` as a colour, as Rgb::from_json() reads one: `#rrggbb`, a CSS colour
-/// name or three numbers. None for any other value.
+/// `a` as a colour, as Rgb::from_json() reads one: a CSS hex colour, a CSS
+/// colour name or three numbers. None for any other value.
 pub(crate) fn rgb(a: &Arg) -> Option<Rgb> {
     match a {
         Arg::Str(s) => Rgb::from_text(s),

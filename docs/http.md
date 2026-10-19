@@ -74,7 +74,7 @@ that declares it. To pick a pass, name it in `name`, as in
 | `float` | a number |
 | `int` | a whole number |
 | `bool` | `true`, `false`, `1` or `0` |
-| `color` | `#rrggbb`, a CSS colour name, or 3 numbers from 0 to 1, comma-separated |
+| `color` | a CSS hex colour such as `#f80` or `#ff8800`, a CSS colour name, or 3 numbers from 0 to 1, comma-separated |
 | `vec2`, `vec3`, `vec4` | 2, 3 or 4 numbers, comma-separated |
 | `string` | the text |
 

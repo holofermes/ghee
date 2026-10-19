@@ -115,7 +115,7 @@ fn a_shape_layer_declaration_names_what_is_wrong() {
             .extend(keys.as_object().unwrap().clone());
         scene_err(&shape_scene(json!([d])))
     };
-    let colour = "'#rrggbb', a CSS colour name or three numbers [r, g, b]";
+    let colour = "a hex colour, a CSS colour name or three numbers [r, g, b]";
     let pixels = "a number of pixels, 0 or more";
     let points = "needs two points or more, each [x, y]";
     let rows = [
@@ -450,6 +450,29 @@ fn a_circle_draws_as_the_square_rect_of_its_box_rounded_by_its_radius() {
         let got = render(&mut r, &layer("circle", &circle));
         let want = render(&mut r, &layer("rect", &rect));
         assert_eq!(differ(&got, &want), 0, "{circle}");
+    }
+}
+
+#[test]
+#[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+fn a_hex_colours_alpha_draws_as_the_opacity_of_its_colour() {
+    let (_g, mut r) = gpu(32, 16);
+    let rect = |keys: Value| {
+        let mut l = json!({"name": "s", "shape": "rect", "width": 20, "height": 10});
+        l.as_object_mut()
+            .unwrap()
+            .extend(keys.as_object().unwrap().clone());
+        loaded(&shape_scene(json!([l])))
+    };
+    for (hex, rgb, alpha) in [
+        ("#f008", "#f00", 0x88),
+        ("#ff000080", "#ff0000", 0x80),
+        ("#0f0f", "lime", 0xff),
+    ] {
+        let opacity = f64::from(alpha) / 255.0;
+        let got = render(&mut r, &rect(json!({"color": hex})));
+        let want = render(&mut r, &rect(json!({"color": rgb, "opacity": opacity})));
+        assert_eq!(differ(&got, &want), 0, "{hex}");
     }
 }
 

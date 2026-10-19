@@ -649,17 +649,21 @@ def test_a_param_and_a_clean_tick(monkeypatch):
     assert rest.endswith(b"\x02\x05")
 
 
-def test_a_color_written_hex_goes_out_as_three_floats(monkeypatch):
-    """kind 1: each hex pair is a byte, and the channel is byte / 255."""
+@pytest.mark.parametrize("hex_", ["#ff8000", "#FF8000c0", "#f80", "#f80c"])
+def test_a_color_written_hex_goes_out_as_three_floats(hex_, monkeypatch):
+    """kind 1: each hex pair is a byte, a short form's digit stands for
+    itself twice, and the channel is byte / 255. A color param drops the
+    alpha."""
     shim = load()
 
     @shim.tick
     def hook(tick):
-        shim.set_param("tint", "#ff8000")
+        shim.set_param("tint", hex_)
 
     ticks = [{"frame": 0, "time": 0.0, "dt": 0.0, "params": {}}]
     _, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
-    f32 = struct.unpack("<3f", struct.pack("<3f", 1.0, 128 / 255, 0.0))
+    g = 0x88 if len(hex_) < 6 else 0x80
+    f32 = struct.unpack("<3f", struct.pack("<3f", 1.0, g / 255, 0.0))
     assert messages(rest) == [(1, "tint", list(f32)), END]
 
 
@@ -870,21 +874,21 @@ REFUSED = [
     (
         ("tint", [1.0, 0.0]),
         (
-            "color param 'tint' needs '#rrggbb', a CSS colour name or three numbers "
+            "color param 'tint' needs a hex colour, a CSS colour name or three numbers "
             "[r, g, b], got [1.0, 0.0]"
         ),
     ),
     (
-        ("tint", "#ff80"),
+        ("tint", "#ff800"),
         (
-            "color param 'tint' needs '#rrggbb', a CSS colour name or three numbers "
-            "[r, g, b], got '#ff80'"
+            "color param 'tint' needs a hex colour, a CSS colour name or three numbers "
+            "[r, g, b], got '#ff800'"
         ),
     ),
     (
         ("tint", "navyy"),
         (
-            "color param 'tint' needs '#rrggbb', a CSS colour name or three numbers "
+            "color param 'tint' needs a hex colour, a CSS colour name or three numbers "
             "[r, g, b], got 'navyy'"
         ),
     ),

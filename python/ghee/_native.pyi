@@ -64,7 +64,7 @@ class Handle:
     def __enter__(self) -> Self: ...
     def __exit__(self, *_args: object) -> bool: ...
 
-# A colour as a layer takes it: "#rrggbb", a CSS colour name, or [r, g, b]
+# A colour as a layer takes it: a CSS hex colour, a CSS colour name, or [r, g, b]
 # in 0..1.
 _Colour: TypeAlias = str | Sequence[float]
 
@@ -223,6 +223,9 @@ def _scene_doc(scene: Scene | dict[str, Any] | str | os.PathLike[str]) -> str:
 
 def _colour_name(text: str) -> bool:
     """True for a CSS colour name, in any case, transparent too."""
+
+def _hex_colour(text: str) -> list[float] | None:
+    """The [r, g, b] of a CSS hex colour, each channel 0..1, or None."""
 
 class _LayerWire:
     """A scene that a scene process runs under ghee, to check each live layer

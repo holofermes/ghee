@@ -185,13 +185,13 @@ fn an_image_layer_declaration_names_what_it_takes() {
         ),
         (
             i(json!({"color": {"from": "#000000", "to": "#ffffff"}})),
-            "layer 'i' color takes no gradient on an image layer, only '#rrggbb', a CSS colour \
+            "layer 'i' color takes no gradient on an image layer, only a hex colour, a CSS colour \
              name or three numbers [r, g, b]"
                 .to_string(),
         ),
         (
             i(json!({"color": "rde"})),
-            "layer 'i' color needs '#rrggbb', a CSS colour name or three numbers [r, g, b], got \
+            "layer 'i' color needs a hex colour, a CSS colour name or three numbers [r, g, b], got \
              'rde'"
                 .to_string(),
         ),

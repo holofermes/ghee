@@ -49,7 +49,7 @@ use crate::css;
 use crate::draw::{self, Arg};
 use crate::emoji::{self, EmojiFont};
 use crate::engine::Blend;
-use crate::scene::{hex_colour, keys_on, known_keys, number_list, py_float, py_repr, PASS_KEYS};
+use crate::scene::{keys_on, known_keys, number_list, py_float, py_repr, PASS_KEYS};
 use crate::shape::{self, ShapeLayer};
 use crate::text::{self, Align, Font, Layout};
 
@@ -129,7 +129,7 @@ pub const ATLAS_STEPS: [u32; 5] = [32, 48, 64, 96, 128];
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rgb {
     pub rgb: [f64; 3],
-    /// 1, or 0 for `transparent`.
+    /// 1, the alpha of a hex colour that has one, or 0 for `transparent`.
     pub alpha: f64,
     pub written: Written,
 }
@@ -139,14 +139,15 @@ pub struct Rgb {
 pub enum Written {
     /// `[r, g, b]`.
     Numbers,
-    /// `"#rrggbb"`.
-    Hex,
+    /// A CSS hex colour, `"#rgb"`, `"#rgba"`, `"#rrggbb"` or `"#rrggbbaa"`,
+    /// by its count of digits.
+    Hex(u8),
     /// A CSS colour name, in the case that the scene wrote it in.
     Name(css::Name),
 }
 
 /// What a colour takes, as an error says it.
-pub const COLOUR_FORMS: &str = "'#rrggbb', a CSS colour name or three numbers [r, g, b]";
+pub const COLOUR_FORMS: &str = "a hex colour, a CSS colour name or three numbers [r, g, b]";
 
 impl Rgb {
     pub const WHITE: Rgb = Rgb::numbers([1.0; 3]);
@@ -160,8 +161,8 @@ impl Rgb {
         }
     }
 
-    /// `"#rrggbb"`, a CSS colour name or `[r, g, b]`, None for any other
-    /// value.
+    /// A CSS hex colour, a CSS colour name or `[r, g, b]`, None for any
+    /// other value.
     pub fn from_json(v: &Value) -> Option<Rgb> {
         match v {
             Value::String(s) => Rgb::from_text(s),
@@ -169,29 +170,34 @@ impl Rgb {
         }
     }
 
-    /// `#rrggbb` or a CSS colour name, None for any other text.
+    /// A CSS hex colour or a CSS colour name, None for any other text.
     pub fn from_text(s: &str) -> Option<Rgb> {
-        if let Some(rgb) = hex_colour(s) {
-            return Some(Rgb {
-                written: Written::Hex,
-                ..Rgb::numbers(rgb)
-            });
-        }
-        let (rgb, alpha, name) = css::named(s)?;
+        let (rgb, alpha, written) = match css::hex(s) {
+            Some((rgb, alpha, digits)) => (rgb, alpha, Written::Hex(digits)),
+            None => {
+                let (rgb, alpha, name) = css::named(s)?;
+                (rgb, alpha, Written::Name(name))
+            }
+        };
         Some(Rgb {
             rgb: rgb.map(|c| f64::from(c) / 255.0),
             alpha,
-            written: Written::Name(name),
+            written,
         })
     }
 
     pub fn to_json(self) -> Value {
         match self.written {
-            Written::Hex => {
-                let [r, g, b] = self
-                    .rgb
-                    .map(|c| (c * 255.0).round().clamp(0.0, 255.0) as u8);
-                Value::from(format!("#{r:02x}{g:02x}{b:02x}"))
+            Written::Hex(digits) => {
+                let byte = |c: f64| (c * 255.0).round().clamp(0.0, 255.0) as u8;
+                let [r, g, b, a] = [self.rgb[0], self.rgb[1], self.rgb[2], self.alpha].map(byte);
+                let text = match digits {
+                    3 => format!("#{:x}{:x}{:x}", r / 17, g / 17, b / 17),
+                    4 => format!("#{:x}{:x}{:x}{:x}", r / 17, g / 17, b / 17, a / 17),
+                    8 => format!("#{r:02x}{g:02x}{b:02x}{a:02x}"),
+                    _ => format!("#{r:02x}{g:02x}{b:02x}"),
+                };
+                Value::from(text)
             }
             Written::Name(name) => Value::from(name.as_str()),
             Written::Numbers => Value::from(self.rgb.to_vec()),
@@ -226,7 +232,7 @@ impl Color {
         }
         let Value::Object(o) = v else {
             bail!(
-                "{what} color needs '#rrggbb', a CSS colour name, [r, g, b] or a gradient \
+                "{what} color needs a hex colour, a CSS colour name, [r, g, b] or a gradient \
                  {{\"from\", \"to\", \"angle\"}}, got {}",
                 py_repr(v)
             );
@@ -430,7 +436,7 @@ const fn colour(default: [u8; 3]) -> Field {
     Field {
         name: "color",
         default: FieldValue::Rgb(Rgb {
-            written: Written::Hex,
+            written: Written::Hex(6),
             ..Rgb::numbers([r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0])
         }),
         takes: Takes::Colour,
@@ -2636,8 +2642,8 @@ impl Live {
     }
 
     /// The value of the text `text` that the wire gives the field: the name
-    /// of an image asset, a text layer's words, or a colour, `#rrggbb` or a
-    /// CSS colour name, or a text layer's gradient as its JSON object.
+    /// of an image asset, a text layer's words, or a colour, a CSS hex colour
+    /// or a CSS colour name, or a text layer's gradient as its JSON object.
     pub fn of_text(&self, text: &str) -> Result<Value> {
         match self.form {
             Form::Colour { gradient: true, .. } if text.trim_start().starts_with('{') => {
@@ -2719,7 +2725,7 @@ pub fn format() -> Value {
     )
     .expect("a sample rect parses");
     let color = Rgb {
-        written: Written::Hex,
+        written: Written::Hex(6),
         ..shape::BORDER_COLOR
     };
     let border: Vec<Value> = [

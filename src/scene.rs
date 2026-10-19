@@ -981,19 +981,6 @@ impl Param {
     }
 }
 
-/// The [r, g, b] of a colour written `#rrggbb`, each channel 0..1.
-pub(crate) fn hex_colour(s: &str) -> Option<[f64; 3]> {
-    let hex = s
-        .strip_prefix('#')
-        .filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))?;
-    let channel = |i: usize| {
-        u8::from_str_radix(&hex[i..i + 2], 16)
-            .ok()
-            .map(|v| f64::from(v) / 255.0)
-    };
-    Some([channel(0)?, channel(2)?, channel(4)?])
-}
-
 pub(crate) fn number_list(v: &Value, n: usize) -> Option<Vec<f64>> {
     let Value::Array(a) = v else { return None };
     if a.len() != n || !a.iter().all(is_num) {
@@ -3969,6 +3956,15 @@ mod tests {
                 json!("DarkOrange"),
             ),
             (json!("transparent"), [0.0; 3], json!("transparent")),
+            // CSS's short and alpha forms keep their form, and a vec3 drops
+            // the alpha as it drops transparent's
+            (json!("#F80"), [1.0, 136.0 / 255.0, 0.0], json!("#f80")),
+            (json!("#f808"), [1.0, 136.0 / 255.0, 0.0], json!("#f808")),
+            (
+                json!("#ff880080"),
+                [1.0, 136.0 / 255.0, 0.0],
+                json!("#ff880080"),
+            ),
         ] {
             let d = json!({"type": "color", "value": value});
             let p = Param::from_dict("tint", &d).unwrap();
@@ -4111,31 +4107,31 @@ mod tests {
             // a param
             (
                 param("color", json!([0.1, 0.2])),
-                "pass 'm': color param 'g' needs '#rrggbb', a CSS colour name or three numbers \
+                "pass 'm': color param 'g' needs a hex colour, a CSS colour name or three numbers \
                  [r, g, b], got [0.1, 0.2]"
                     .to_string(),
             ),
             (
                 param("color", json!("rde")),
-                "pass 'm': color param 'g' needs '#rrggbb', a CSS colour name or three numbers \
+                "pass 'm': color param 'g' needs a hex colour, a CSS colour name or three numbers \
                  [r, g, b], got 'rde'"
                     .to_string(),
             ),
             (
                 param("color", json!([0.1, 0.2, "x"])),
-                "pass 'm': color param 'g' needs '#rrggbb', a CSS colour name or three numbers \
+                "pass 'm': color param 'g' needs a hex colour, a CSS colour name or three numbers \
                  [r, g, b], got [0.1, 0.2, 'x']"
                     .to_string(),
             ),
             (
-                param("color", json!("#ff80")),
-                "pass 'm': color param 'g' needs '#rrggbb', a CSS colour name or three numbers \
-                 [r, g, b], got '#ff80'"
+                param("color", json!("#ff800")),
+                "pass 'm': color param 'g' needs a hex colour, a CSS colour name or three numbers \
+                 [r, g, b], got '#ff800'"
                     .to_string(),
             ),
             (
                 param("color", json!("ff8000")),
-                "pass 'm': color param 'g' needs '#rrggbb', a CSS colour name or three numbers \
+                "pass 'm': color param 'g' needs a hex colour, a CSS colour name or three numbers \
                  [r, g, b], got 'ff8000'"
                     .to_string(),
             ),

@@ -2960,15 +2960,18 @@ $("#ren").addEventListener("keydown", e => {
 
 const VEC_ARITY = {vec2:2, vec3:3, vec4:4};
 const VEC_AXES = ["x","y","z","w"];
-// a colour holds "#rrggbb", a CSS colour name or [r,g,b] floats; the native
-// input speaks #rrggbb, and the browser's own canvas reads a name
+// a colour holds a CSS hex colour, a CSS colour name or [r,g,b] floats; the
+// native input speaks #rrggbb, and the browser's own canvas reads the rest,
+// giving rgba() for a colour with alpha
 const cssColour = document.createElement("canvas").getContext("2d");
 function rgbToHex(rgb){
   if (typeof rgb === "string"){
     cssColour.fillStyle = "#000000";
     cssColour.fillStyle = rgb;
     const c = cssColour.fillStyle;
-    return c.startsWith("#") ? c : "#000000";
+    if (c.startsWith("#")) return c;
+    const m = /^rgba\((\d+), (\d+), (\d+)/.exec(c);
+    return m ? "#" + m.slice(1).map(x => (+x).toString(16).padStart(2,"0")).join("") : "#000000";
   }
   const h = x => Math.max(0, Math.min(255, Math.round((+x)*255))).toString(16).padStart(2,"0");
   return "#" + h(rgb[0]) + h(rgb[1]) + h(rgb[2]);

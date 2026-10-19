@@ -842,8 +842,8 @@ fn a_layer_declaration_names_what_it_lacks() {
         one(d)
     };
     let colour =
-        "needs '#rrggbb', a CSS colour name, [r, g, b] or a gradient {\"from\", \"to\", \"angle\"}";
-    let forms = "needs '#rrggbb', a CSS colour name or three numbers [r, g, b]";
+        "needs a hex colour, a CSS colour name, [r, g, b] or a gradient {\"from\", \"to\", \"angle\"}";
+    let forms = "needs a hex colour, a CSS colour name or three numbers [r, g, b]";
     let family =
         "font_family needs the name of a font asset or a .ttf or .otf file, or a list of them";
     let cases = [

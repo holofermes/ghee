@@ -686,7 +686,7 @@ fn a_look_that_the_scene_refuses_is_refused_whole_and_changes_nothing() {
         ),
         (
             json!({"name": "a", "shape": "rect", "color": "navyy"}),
-            "layer 'a' color needs '#rrggbb', a CSS colour name or three numbers [r, g, b], \
+            "layer 'a' color needs a hex colour, a CSS colour name or three numbers [r, g, b], \
              got 'navyy'",
         ),
         (

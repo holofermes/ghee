@@ -314,9 +314,10 @@ scene's own `params` to make it reach every pass.
 
 ### Colours
 
-Write a colour as `"#rrggbb"`, a CSS colour name such as `"navy"`, or
-`[r, g, b]` from 0 to 1. A colour param, a layer's `color` and a border's
-`color` all take it.
+Write a colour as a CSS hex colour, `"#rgb"`, `"#rgba"`, `"#rrggbb"` or
+`"#rrggbbaa"`, a CSS colour name such as `"navy"`, or `[r, g, b]` from 0 to
+1. A colour param, a layer's `color` and a border's `color` all take it. A
+colour param is a `vec3`, and drops the alpha.
 
 ## Arrays
 

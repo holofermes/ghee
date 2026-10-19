@@ -1,6 +1,6 @@
 //! CSS's colour names: the 148 named colors of CSS Color 4, in sRGB, and
 //! `transparent`, transparent black. A scene writes a name in any case, and
-//! the name keeps that case in the scene.
+//! the name keeps that case in the scene. Also CSS's hex colours.
 
 /// The longest name, `lightgoldenrodyellow`.
 const LONGEST: usize = 20;
@@ -198,6 +198,31 @@ pub fn named(text: &str) -> Option<([u8; 3], f64, Name)> {
     Some((rgb, alpha, name))
 }
 
+/// The colour of a CSS hex colour, `#rgb`, `#rgba`, `#rrggbb` or
+/// `#rrggbbaa` in any case: its red, green and blue, its alpha, and its count
+/// of digits. None for any other text.
+pub fn hex(text: &str) -> Option<([u8; 3], f64, u8)> {
+    let digits = text.strip_prefix('#')?;
+    let n = digits.len();
+    if !matches!(n, 3 | 4 | 6 | 8) || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let wide = if n <= 4 { 1 } else { 2 };
+    let byte = |i: usize| {
+        let v = u8::from_str_radix(&digits[i * wide..(i + 1) * wide], 16).unwrap_or(0);
+        if wide == 1 {
+            v * 17
+        } else {
+            v
+        }
+    };
+    let alpha = match n {
+        4 | 8 => f64::from(byte(3)) / 255.0,
+        _ => 1.0,
+    };
+    Some(([byte(0), byte(1), byte(2)], alpha, n as u8))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +246,26 @@ mod tests {
         assert_eq!(&NAMED[..], &spec[..]);
         let longest = spec.iter().map(|(n, _)| n.len()).max().unwrap();
         assert_eq!(longest, LONGEST);
+    }
+
+    #[test]
+    fn a_hex_colour_takes_each_of_css_four_forms() {
+        // CSS Color 4 section 5.2: a digit of the short forms repeats
+        for (text, want) in [
+            ("#f80", Some(([0xff, 0x88, 0x00], 1.0, 3))),
+            ("#F808", Some(([0xff, 0x88, 0x00], 0x88 as f64 / 255.0, 4))),
+            ("#0a0B0c", Some(([0x0a, 0x0b, 0x0c], 1.0, 6))),
+            ("#0a0b0c00", Some(([0x0a, 0x0b, 0x0c], 0.0, 8))),
+            ("#ff80", Some(([0xff, 0xff, 0x88], 0.0, 4))),
+            ("#ff800", None),
+            ("#ff8000ff0", None),
+            ("#ggg", None),
+            ("f80", None),
+            ("#", None),
+            ("#+f8", None),
+        ] {
+            assert_eq!(hex(text), want, "{text:?}");
+        }
     }
 
     #[test]

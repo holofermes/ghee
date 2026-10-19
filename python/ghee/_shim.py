@@ -74,7 +74,7 @@ class Param:
     """A live value.
 
     The scene, the console and the scene process name it the same way.
-    A color is "#rrggbb", a CSS colour name or [r, g, b] in 0..1.
+    A color is a CSS hex colour, a CSS colour name or [r, g, b] in 0..1.
     A vecK is K numbers.
     A string never reaches a shader: the scene process reads it in the tick
     line. A scene Param that shares its name with a layer fails the scene.
@@ -156,8 +156,8 @@ class Layer:
     `name` is required. A key left at None takes ghee's default.
     `visible` False hides the layer. `x` and `y` put the block's top left at
     that pass pixel, y down, and a missing one centres the block on its axis.
-    `color` is "#rrggbb", a CSS colour name such as "navy" or "transparent",
-    or [r, g, b] in 0..1, `opacity` is 0 to 1, and
+    `color` is a CSS hex colour, a CSS colour name such as "navy" or
+    "transparent", or [r, g, b] in 0..1, `opacity` is 0 to 1, and
     `blend` paints the layer over the pass as "normal", "add", "multiply" or
     "screen".
 
@@ -894,8 +894,8 @@ def set_param(
 ) -> None:
     """Set a live param for this tick.
 
-    A float takes one number, a color takes "#rrggbb", a CSS colour name or
-    three numbers, a vecN takes N, and a string takes text.
+    A float takes one number, a color takes a CSS hex colour, a CSS colour
+    name or three numbers, a vecN takes N, and a string takes text.
     `in_pass` addresses the param of one pass, such as a filter param.
     A bare name is the scene param, else the first pass that declares it.
 
@@ -906,7 +906,7 @@ def set_param(
     """
     wire = f"{in_pass}.{name}" if in_pass else name
     _check(wire, value)
-    # The wire carries a color written "#rrggbb" as three floats, and a
+    # The wire carries a hex colour as three floats, and a
     # colour name as text.
     rgb = None if _SCENE and _types().get(wire) == "string" else _hex(value)
     if rgb is not None:
@@ -977,14 +977,13 @@ def _number(v) -> bool:
 
 
 def _hex(v) -> list[float] | None:
-    """The [r, g, b] of a color written "#rrggbb", each channel 0..1, else
-    None."""
-    digits = "0123456789abcdefABCDEF"
-    if not isinstance(v, str) or len(v) != 7 or v[0] != "#":
+    """The [r, g, b] of a CSS hex colour, each channel 0..1, else None. The
+    native half reads it."""
+    if not isinstance(v, str) or not v.startswith("#"):
         return None
-    if not all(c in digits for c in v[1:]):
-        return None
-    return [int(v[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+    from ghee import _ext
+
+    return _ext()._hex_colour(v)
 
 
 def _colour_name(v) -> bool:
@@ -1029,7 +1028,7 @@ def _check(wire: str, value) -> None:
     elif ty == "color":
         if _hex(value) is None and not _numbers(value, n) and not _colour_name(value):
             raise ValueError(
-                f"color param '{wire}' needs '#rrggbb', a CSS colour name or three "
+                f"color param '{wire}' needs a hex colour, a CSS colour name or three "
                 f"numbers [r, g, b], got {value!r}"
             )
     elif n is not None:

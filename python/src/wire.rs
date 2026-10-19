@@ -55,6 +55,12 @@ pub fn _colour_name(text: &str) -> bool {
     ghee::css::named(text).is_some()
 }
 
+/// The [r, g, b] of a CSS hex colour, each channel 0..1, or None.
+#[pyfunction]
+pub fn _hex_colour(text: &str) -> Option<[f64; 3]> {
+    ghee::css::hex(text).map(|(rgb, _, _)| rgb.map(|c| f64::from(c) / 255.0))
+}
+
 /// The body of a message: the floats of kind 1, the text of kind 3, or the
 /// array of kind 0.
 enum Body {

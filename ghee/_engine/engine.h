@@ -148,6 +148,18 @@ bool ghee_mp_set_asset_rows(GheeScene *g, const char *name, const void *data, in
 bool ghee_mp_set_asset_rect(GheeScene *g, const char *name, int level,
                             int x, int y, int w, int h, const void *data);
 void ghee_mp_drop_asset(GheeScene *g, const char *name);
+// Draw the w x h RGBA pixels of dma-buf `fd`, rows of `pitch` bytes, the
+// bottom row first, into asset `name`, which ghee_mp_set_asset makes when it
+// is not set yet. The GPU copies the buffer, and the CPU never touches its
+// pixels. A descriptor imports once: the next call with the same `fd` draws
+// the same buffer again, with what the host wrote into it since. The forget
+// below and the drop of the asset let go of the buffers. false with
+// ghee_last_error set when EGL or GL refuses the buffer.
+bool ghee_mp_set_asset_dmabuf(GheeScene *g, const char *name, int fd, int width, int height,
+                              int pitch);
+// Let go of every dma-buf that asset `name` imported, whose descriptors may
+// then name other buffers.
+void ghee_mp_forget_dmabufs(GheeScene *g, const char *name);
 // Whether a program of the committed scene, a pass's or a batch's, reads the
 // uniform `name`. The compiler drops a uniform that no code it keeps reads.
 bool ghee_mp_reads(GheeScene *g, const char *name);
@@ -391,5 +403,24 @@ void ghee_capture_close(GheeCapture *c);
 // Run the calling thread only while no other thread of the machine wants the
 // CPU (SCHED_IDLE). 0, or -1 with errno set.
 int  ghee_thread_idle(void);
+// The hardware MJPEG decoder of a Pi 0 to 4 (bcm2835-codec), on the caller's
+// thread: the decoder's frames go as dma-bufs into the ISP, which scales them
+// to RGBA, the bottom row first, into dma-bufs that GL reads where they lie.
+typedef struct GheeHwdec GheeHwdec;
+// The decoder for w x h MJPEG frames, and the ISP for frames of ow x oh.
+GheeHwdec *ghee_hwdec_open(int w, int h, int ow, int oh, char *err, int err_len);
+// Queue one MJPEG frame. The decoder hands a frame back once the next one
+// goes in, so the frame queued before this one comes out: through the ISP
+// into output buffer *index when `scale`, else straight back to the decoder.
+// 1 = *index set, 0 = no frame (the first, a frame that the decoder refused,
+// `scale` 0, or every output buffer out), -1 = the hardware failed, or gave
+// nothing within timeout_ms, err set.
+int  ghee_hwdec_push(GheeHwdec *d, const uint8_t *jpg, size_t len, int scale, int timeout_ms,
+                     int *index, char *err, int err_len);
+// Output buffer `index`: its dma-buf, its size and its rows' length in bytes.
+void ghee_hwdec_out(GheeHwdec *d, int index, int *fd, int *w, int *h, int *pitch);
+// Give output buffer `index` back to the ISP.
+void ghee_hwdec_give(GheeHwdec *d, int index);
+void ghee_hwdec_close(GheeHwdec *d);
 
 #endif // GHEE_ENGINE_H

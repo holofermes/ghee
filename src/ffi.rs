@@ -21,6 +21,11 @@ pub struct GheeCapture {
 }
 
 #[repr(C)]
+pub struct GheeHwdec {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GheeCaptureMode {
     pub fourcc: u32,
@@ -167,6 +172,15 @@ extern "C" {
         data: *const c_void,
     ) -> bool;
     pub fn ghee_mp_drop_asset(g: *mut GheeScene, name: *const c_char);
+    pub fn ghee_mp_set_asset_dmabuf(
+        g: *mut GheeScene,
+        name: *const c_char,
+        fd: c_int,
+        width: c_int,
+        height: c_int,
+        pitch: c_int,
+    ) -> bool;
+    pub fn ghee_mp_forget_dmabufs(g: *mut GheeScene, name: *const c_char);
     pub fn ghee_mp_reads(g: *mut GheeScene, name: *const c_char) -> bool;
     pub fn ghee_mp_add_batch(
         g: *mut GheeScene,
@@ -340,4 +354,32 @@ extern "C" {
     pub fn ghee_capture_release(c: *mut GheeCapture);
     pub fn ghee_capture_close(c: *mut GheeCapture);
     pub fn ghee_thread_idle() -> c_int;
+    pub fn ghee_hwdec_open(
+        w: c_int,
+        h: c_int,
+        ow: c_int,
+        oh: c_int,
+        err: *mut c_char,
+        err_len: c_int,
+    ) -> *mut GheeHwdec;
+    pub fn ghee_hwdec_push(
+        d: *mut GheeHwdec,
+        jpg: *const u8,
+        len: usize,
+        scale: c_int,
+        timeout_ms: c_int,
+        index: *mut c_int,
+        err: *mut c_char,
+        err_len: c_int,
+    ) -> c_int;
+    pub fn ghee_hwdec_out(
+        d: *mut GheeHwdec,
+        index: c_int,
+        fd: *mut c_int,
+        w: *mut c_int,
+        h: *mut c_int,
+        pitch: *mut c_int,
+    );
+    pub fn ghee_hwdec_give(d: *mut GheeHwdec, index: c_int);
+    pub fn ghee_hwdec_close(d: *mut GheeHwdec);
 }

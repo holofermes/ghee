@@ -289,3 +289,279 @@ int ghee_thread_idle(void) {
     const struct sched_param p = {.sched_priority = 0};
     return sched_setscheduler((pid_t)syscall(SYS_gettid), SCHED_IDLE, &p);
 }
+
+// ---- the hardware MJPEG decoder of a Pi 0 to 4 ----
+
+#define DEC_IN 2         // compressed buffers
+#define DEC_OUT 3        // decoded YU12 buffers, each the ISP's input in turn
+#define ISP_OUT 5        // scaled buffers: one filling, one waiting, the rest held by GL
+
+struct plane_buf { void *p; size_t len; int fd; };
+
+struct GheeHwdec {
+    int dec, isp;
+    struct plane_buf in[DEC_IN], mid[DEC_OUT], out[ISP_OUT];
+    int nin, nmid, nout;
+    int free_in[DEC_IN], nfree_in;
+    bool out_queued[ISP_OUT];
+    uint32_t mid_size;          // the bytes of one decoded frame
+    int ow, oh, opitch;
+    int queued;                 // compressed frames queued since the start
+};
+
+// The codec node whose card is `card`, opened, or -1.
+static int codec_node(const char *card) {
+    for (int i = 0; i < 64; i++) {
+        char path[32];
+        snprintf(path, sizeof path, "/dev/video%d", i);
+        const int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) continue;
+        struct v4l2_capability c = {0};
+        if (cap_ioctl(fd, VIDIOC_QUERYCAP, &c) == 0 && !strcmp((const char *)c.card, card)) return fd;
+        close(fd);
+    }
+    return -1;
+}
+
+static int mp_fmt(int fd, uint32_t type, uint32_t fourcc, int w, int h, uint32_t bpl, uint32_t size,
+                  struct v4l2_format *got) {
+    memset(got, 0, sizeof *got);
+    got->type = type;
+    got->fmt.pix_mp.width = (uint32_t)w;
+    got->fmt.pix_mp.height = (uint32_t)h;
+    got->fmt.pix_mp.pixelformat = fourcc;
+    got->fmt.pix_mp.field = V4L2_FIELD_NONE;
+    got->fmt.pix_mp.num_planes = 1;
+    got->fmt.pix_mp.plane_fmt[0].bytesperline = bpl;
+    got->fmt.pix_mp.plane_fmt[0].sizeimage = size;
+    if (cap_ioctl(fd, VIDIOC_S_FMT, got) < 0) return -1;
+    if (got->fmt.pix_mp.pixelformat == fourcc) return 0;
+    errno = EINVAL;
+    return -1;
+}
+
+// Request `count` buffers of `memory` on queue `type`, and map and export
+// the MMAP ones. The count that the driver gave, or -1.
+static int mp_bufs(int fd, uint32_t type, uint32_t memory, int count, struct plane_buf *b) {
+    struct v4l2_requestbuffers rq = {.count = (uint32_t)count, .type = type, .memory = memory};
+    if (cap_ioctl(fd, VIDIOC_REQBUFS, &rq) < 0 || rq.count < 1) return -1;
+    const int n = rq.count < (uint32_t)count ? (int)rq.count : count;
+    for (int i = 0; memory == V4L2_MEMORY_MMAP && i < n; i++) {
+        struct v4l2_plane pl = {0};
+        struct v4l2_buffer q = {.type = type, .memory = memory, .index = (uint32_t)i, .length = 1,
+                                .m.planes = &pl};
+        if (cap_ioctl(fd, VIDIOC_QUERYBUF, &q) < 0) return -1;
+        b[i].len = pl.length;
+        b[i].p = mmap(NULL, pl.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, pl.m.mem_offset);
+        if (b[i].p == MAP_FAILED) { b[i].p = NULL; return -1; }
+        struct v4l2_exportbuffer ex = {.type = type, .index = (uint32_t)i, .flags = O_RDWR | O_CLOEXEC};
+        if (cap_ioctl(fd, VIDIOC_EXPBUF, &ex) < 0) return -1;
+        b[i].fd = ex.fd;
+    }
+    return n;
+}
+
+static int mp_qbuf(int fd, uint32_t type, uint32_t memory, int index, int dmafd, uint32_t used,
+                   size_t len) {
+    struct v4l2_plane pl = {.bytesused = used, .length = (uint32_t)len};
+    if (memory == V4L2_MEMORY_DMABUF) pl.m.fd = dmafd;
+    struct v4l2_buffer q = {.type = type, .memory = memory, .index = (uint32_t)index, .length = 1,
+                            .m.planes = &pl, .field = V4L2_FIELD_NONE};
+    return cap_ioctl(fd, VIDIOC_QBUF, &q);
+}
+
+// The index of a buffer done on queue `type`, its flags in *flags, or -1.
+static int mp_dqbuf(int fd, uint32_t type, uint32_t memory, uint32_t *flags) {
+    struct v4l2_plane pl = {0};
+    struct v4l2_buffer q = {.type = type, .memory = memory, .length = 1, .m.planes = &pl};
+    if (cap_ioctl(fd, VIDIOC_DQBUF, &q) < 0) return -1;
+    if (flags) *flags = q.flags;
+    return (int)q.index;
+}
+
+static int mp_stream(int fd, bool on) {
+    int out = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, in = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    const unsigned long r = on ? VIDIOC_STREAMON : VIDIOC_STREAMOFF;
+    return cap_ioctl(fd, r, &out) | cap_ioctl(fd, r, &in);
+}
+
+// Wait up to timeout_ms for `events` on `fd`. 1 when they came.
+static int mp_wait(int fd, short events, int timeout_ms) {
+    struct pollfd p = {.fd = fd, .events = events};
+    int r;
+    do { r = poll(&p, 1, timeout_ms); } while (r < 0 && errno == EINTR);
+    return r > 0 && (p.revents & events);
+}
+
+GheeHwdec *ghee_hwdec_open(int w, int h, int ow, int oh, char *err, int err_len) {
+    GheeHwdec *d = calloc(1, sizeof *d);
+    if (!d) {
+        cap_err(err, err_len, "out of memory", 0);
+        return NULL;
+    }
+    struct plane_buf *all[] = {d->in, d->mid, d->out};
+    const int sizes[] = {DEC_IN, DEC_OUT, ISP_OUT};
+    for (int k = 0; k < 3; k++)
+        for (int i = 0; i < sizes[k]; i++) all[k][i].fd = -1;
+    d->dec = codec_node("bcm2835-codec-decode");
+    d->isp = codec_node("bcm2835-codec-isp");
+    const uint32_t OUT = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, CAP = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    struct v4l2_format f;
+    const char *why = NULL;
+    int e = 0;
+#define FAIL(msg) do { why = msg; e = errno; } while (0)
+    if (d->dec < 0 || d->isp < 0) why = "no hardware MJPEG decoder";
+    // room for a compressed frame of a byte a pixel
+    else if (mp_fmt(d->dec, OUT, V4L2_PIX_FMT_MJPEG, w, h, 0, (uint32_t)(w * h), &f))
+        FAIL("the hardware decoder takes no MJPEG of this size");
+    else if (mp_fmt(d->dec, CAP, V4L2_PIX_FMT_YUV420, w, h, 0, 0, &f))
+        FAIL("the hardware decoder gives no YU12");
+    if (!why) {
+        const uint32_t mw = f.fmt.pix_mp.width, mh = f.fmt.pix_mp.height;
+        const uint32_t mbpl = f.fmt.pix_mp.plane_fmt[0].bytesperline;
+        d->mid_size = f.fmt.pix_mp.plane_fmt[0].sizeimage;
+        struct v4l2_selection crop = {.type = V4L2_BUF_TYPE_VIDEO_OUTPUT, .target = V4L2_SEL_TGT_CROP,
+                                      .r = {0, 0, (uint32_t)w, (uint32_t)h}};
+        struct v4l2_control flip = {.id = V4L2_CID_VFLIP, .value = 1};
+        if (mp_fmt(d->isp, OUT, V4L2_PIX_FMT_YUV420, (int)mw, (int)mh, mbpl, d->mid_size, &f))
+            FAIL("the ISP takes no YU12 of this size");
+        else if (cap_ioctl(d->isp, VIDIOC_S_SELECTION, &crop) < 0)
+            FAIL("the ISP takes no crop");
+        else if (mp_fmt(d->isp, CAP, V4L2_PIX_FMT_RGBA32, ow, oh, 0, 0, &f))
+            FAIL("the ISP gives no RGBA of this size");
+        else if (cap_ioctl(d->isp, VIDIOC_S_CTRL, &flip) < 0)
+            FAIL("the ISP flips no frame");
+        d->ow = (int)f.fmt.pix_mp.width;
+        d->oh = (int)f.fmt.pix_mp.height;
+        d->opitch = (int)f.fmt.pix_mp.plane_fmt[0].bytesperline;
+    }
+    if (!why) {
+        d->nin = mp_bufs(d->dec, OUT, V4L2_MEMORY_MMAP, DEC_IN, d->in);
+        d->nmid = mp_bufs(d->dec, CAP, V4L2_MEMORY_MMAP, DEC_OUT, d->mid);
+        const int nmid_in = mp_bufs(d->isp, OUT, V4L2_MEMORY_DMABUF, DEC_OUT, NULL);
+        d->nout = mp_bufs(d->isp, CAP, V4L2_MEMORY_MMAP, ISP_OUT, d->out);
+        if (d->nin < 1 || d->nmid < 1 || nmid_in < d->nmid || d->nout < 2)
+            FAIL("the codec gave no buffers");
+    }
+    for (int i = 0; !why && i < d->nmid; i++)
+        if (mp_qbuf(d->dec, CAP, V4L2_MEMORY_MMAP, i, -1, 0, d->mid[i].len) < 0)
+            FAIL("the hardware decoder took no buffer");
+    for (int i = 0; !why && i < d->nout; i++) {
+        if (mp_qbuf(d->isp, CAP, V4L2_MEMORY_MMAP, i, -1, 0, d->out[i].len) < 0)
+            FAIL("the ISP took no buffer");
+        d->out_queued[i] = true;
+    }
+    if (!why && (mp_stream(d->dec, true) < 0 || mp_stream(d->isp, true) < 0))
+        FAIL("the codec does not stream");
+#undef FAIL
+    if (why) {
+        cap_err(err, err_len, why, e);
+        ghee_hwdec_close(d);
+        return NULL;
+    }
+    d->nfree_in = d->nin;
+    for (int i = 0; i < d->nin; i++) d->free_in[i] = i;
+    return d;
+}
+int ghee_hwdec_push(GheeHwdec *d, const uint8_t *jpg, size_t len, int scale, int timeout_ms,
+                    int *index, char *err, int err_len) {
+    const uint32_t OUT = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, CAP = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    for (int i; (i = mp_dqbuf(d->dec, OUT, V4L2_MEMORY_MMAP, NULL)) >= 0;)
+        if (d->nfree_in < DEC_IN) d->free_in[d->nfree_in++] = i;
+    if (d->nfree_in == 0) {
+        if (!mp_wait(d->dec, POLLOUT, timeout_ms)) {
+            cap_err(err, err_len, "the hardware decoder kept its input", 0);
+            return -1;
+        }
+        for (int i; (i = mp_dqbuf(d->dec, OUT, V4L2_MEMORY_MMAP, NULL)) >= 0;)
+            if (d->nfree_in < DEC_IN) d->free_in[d->nfree_in++] = i;
+        if (d->nfree_in == 0) {
+            cap_err(err, err_len, "the hardware decoder kept its input", 0);
+            return -1;
+        }
+    }
+    const int k = d->free_in[d->nfree_in - 1];
+    if (len > d->in[k].len) return 0;
+    memcpy(d->in[k].p, jpg, len);
+    if (mp_qbuf(d->dec, OUT, V4L2_MEMORY_MMAP, k, -1, (uint32_t)len, d->in[k].len) < 0) {
+        cap_err(err, err_len, NULL, errno);
+        return -1;
+    }
+    d->nfree_in--;
+    if (++d->queued < 2) return 0;
+    uint32_t flags = 0;
+    int m = -1;
+    while (m < 0) {
+        if (!mp_wait(d->dec, POLLIN, timeout_ms)) {
+            cap_err(err, err_len, "the hardware decoder gave no frame", 0);
+            return -1;
+        }
+        m = mp_dqbuf(d->dec, CAP, V4L2_MEMORY_MMAP, &flags);
+    }
+    int o = 0;
+    while (o < d->nout && !d->out_queued[o]) o++;
+    if (!scale || (flags & V4L2_BUF_FLAG_ERROR) || o == d->nout) {
+        mp_qbuf(d->dec, CAP, V4L2_MEMORY_MMAP, m, -1, 0, d->mid[m].len);
+        return 0;
+    }
+    if (mp_qbuf(d->isp, OUT, V4L2_MEMORY_DMABUF, m, d->mid[m].fd, d->mid_size, d->mid[m].len) < 0) {
+        cap_err(err, err_len, NULL, errno);
+        mp_qbuf(d->dec, CAP, V4L2_MEMORY_MMAP, m, -1, 0, d->mid[m].len);
+        return -1;
+    }
+    int got = -1;
+    while (got < 0) {
+        if (!mp_wait(d->isp, POLLIN, timeout_ms)) {
+            cap_err(err, err_len, "the ISP gave no frame", 0);
+            return -1;
+        }
+        got = mp_dqbuf(d->isp, CAP, V4L2_MEMORY_MMAP, NULL);
+    }
+    // The ISP is done with the decoder's frame once it gave its own.
+    while (mp_dqbuf(d->isp, OUT, V4L2_MEMORY_DMABUF, NULL) < 0)
+        if (!mp_wait(d->isp, POLLOUT, timeout_ms)) {
+            cap_err(err, err_len, "the ISP kept its input", 0);
+            return -1;
+        }
+    mp_qbuf(d->dec, CAP, V4L2_MEMORY_MMAP, m, -1, 0, d->mid[m].len);
+    d->out_queued[got] = false;
+    *index = got;
+    return 1;
+}
+
+void ghee_hwdec_out(GheeHwdec *d, int index, int *fd, int *w, int *h, int *pitch) {
+    *fd = d->out[index].fd;
+    *w = d->ow;
+    *h = d->oh;
+    *pitch = d->opitch;
+}
+
+void ghee_hwdec_give(GheeHwdec *d, int index) {
+    if (index < 0 || index >= d->nout || d->out_queued[index]) return;
+    if (mp_qbuf(d->isp, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, V4L2_MEMORY_MMAP, index, -1, 0,
+                d->out[index].len) == 0)
+        d->out_queued[index] = true;
+}
+
+static void release_bufs(struct plane_buf *b, int n) {
+    for (int i = 0; i < n; i++) {
+        if (b[i].p) munmap(b[i].p, b[i].len);
+        if (b[i].fd >= 0) close(b[i].fd);
+    }
+}
+
+void ghee_hwdec_close(GheeHwdec *d) {
+    if (!d) return;
+    if (d->isp >= 0) {
+        mp_stream(d->isp, false);
+        close(d->isp);
+    }
+    if (d->dec >= 0) {
+        mp_stream(d->dec, false);
+        close(d->dec);
+    }
+    release_bufs(d->in, d->nin > 0 ? d->nin : 0);
+    release_bufs(d->mid, d->nmid > 0 ? d->nmid : 0);
+    release_bufs(d->out, d->nout > 0 ? d->nout : 0);
+    free(d);
+}

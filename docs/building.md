@@ -55,7 +55,8 @@ On such a host, `RUSTFLAGS="--cfg ghee_no_gpu" cargo test --release` reports
 them as ignored, `--cfg ghee_no_ffmpeg` does the same for the tests that
 need ffmpeg, and `--cfg ghee_no_gpu_memory` for the test that reads the GL
 driver's buffer memory, which vc4 and NVIDIA's driver do not report. The
-tests of a connected display and of the hardware H264 encoder run on a host
-that has one, under `--cfg ghee_display` and `--cfg ghee_hw_h264`. The
+tests of a connected display, of the hardware H264 encoder and of the
+hardware MJPEG decoder run on a host that has one, under `--cfg
+ghee_display`, `--cfg ghee_hw_h264` and `--cfg ghee_hw_mjpeg`. The
 golden check renders every scene in the manifest, and compares the sha256 of
 each frame against the pinned reference in `tools/fixtures/golden/`.

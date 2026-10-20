@@ -110,6 +110,15 @@ The GPU takes its buffers from the system's RAM, and CMA can stay as it is.
 `ghee render --stats` prints the scene's GPU memory, `gpu`, in MiB, when the
 render ends.
 
+### For a camera
+
+A [video layer](layers.md#video-layers) on a Pi Zero to Pi 4 decodes in the
+Pi's hardware decoder, which needs `gpu_mem=128` in `config.txt` itself for a
+1920x1080 camera, measured on a Pi Zero W. A file that `config.txt` includes
+can't set it. At the default 64 MB, the first frame hangs the GPU's firmware
+until a reboot, H264 and JPEG encoding with it. Without the memory, pass
+`--video-decoder cpu`.
+
 ## A Pi 5's GPU sleeps
 
 The kernel powers a Pi 5's GPU down 50 ms after its last frame. After a

@@ -559,6 +559,7 @@ fn render(a: &Ns, card: Option<Card>) -> Result<()> {
         }
     }
     report::apply(a);
+    crate::video::decode_on_cpu(a.video_decoder == "cpu");
     // the scene loads first: it owns the tokens after `--` and their --help. A
     // rejected scene fails before a display opens.
     let mut card = card;
@@ -1144,6 +1145,17 @@ struct RenderFlags {
 
     #[arg(
         long,
+        value_name = "DECODER",
+        default_value = "hardware",
+        value_parser = ["hardware", "cpu"],
+        help = "what decodes the MJPEG frames of a video layer: hardware, the Pi \
+                0 to 4's decoder where the machine has one, else the CPU, or cpu. \
+                The Pi's decoder needs gpu_mem=128 in config.txt for 1920x1080"
+    )]
+    video_decoder: String,
+
+    #[arg(
+        long,
         help = "with `-- --help`, list the scenes without asking each one what \
                 it takes"
     )]
@@ -1478,6 +1490,8 @@ pub struct Ns {
     stream_max: i32,
     stream_fps: i32,
     bitrate: i32,
+    /// "hardware" or "cpu", what decodes a video's MJPEG frames.
+    video_decoder: String,
     no_probe: bool,
     pub quiet: bool,
     pub verbose: bool,
@@ -1516,6 +1530,7 @@ impl RenderArgs {
             fps: self.fps,
             filters: self.filters,
             stats: self.stats,
+            video_decoder: self.render.video_decoder,
             no_probe: self.render.no_probe,
             quiet: self.render.quiet,
             verbose: self.render.verbose,
@@ -1558,6 +1573,7 @@ impl ServeArgs {
             output: None,
             h264: None,
             serve: true,
+            video_decoder: self.render.video_decoder,
             no_probe: self.render.no_probe,
             quiet: self.render.quiet,
             verbose: self.render.verbose,
@@ -2069,6 +2085,14 @@ mod tests {
     }
 
     #[test]
+    fn a_render_and_a_console_decode_video_in_hardware_unless_told_cpu() {
+        assert_eq!(ns(&["render", "s"]).video_decoder, "hardware");
+        assert_eq!(ns(&["serve", "d/"]).video_decoder, "hardware");
+        let cpu = ns(&["serve", "d/", "--video-decoder", "cpu"]);
+        assert_eq!(cpu.video_decoder, "cpu");
+    }
+
+    #[test]
     fn a_refused_flag_value_is_named_once() {
         for (flag, value, said) in [
             (
@@ -2085,6 +2109,11 @@ mod tests {
                 "--brightness",
                 "1.5",
                 "error: invalid value '1.5' for '--brightness <LEVEL>': wants a level from 0 to 1",
+            ),
+            (
+                "--video-decoder",
+                "gpu",
+                "error: invalid value 'gpu' for '--video-decoder <DECODER>'",
             ),
         ] {
             let e = Cli::try_parse_from(argv(&["ghee", "render", "s", flag, value]))

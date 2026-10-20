@@ -235,10 +235,20 @@ A path such as `/dev/video0` works too. In the console, `+ layer` offers each
 capture device of the machine by its name.
 
 ghee streams the device's smallest mode that covers the size the video draws
-at, and decodes its frames on the CPU, an MJPEG frame at a half, a quarter or
-an eighth of its size when that still covers it. A camera with a mode near the
-size you draw at costs the least: on a Pi Zero W, one 1920x1080 MJPEG frame
-takes about 110 ms of CPU at an eighth of its size.
+at. On a Pi Zero to Pi 4, the Pi's hardware decoder decodes each MJPEG frame
+and scales it to that size, and the CPU never touches its pixels: on a Pi
+Zero W, a 1920x1080 camera took about 3 ms of CPU a frame. Elsewhere, and
+with `--video-decoder cpu`, the CPU decodes the frames, an MJPEG frame at a
+half, a quarter or an eighth of its size when that still covers it. A camera
+with a mode near the size you draw at costs the least there: on a Pi Zero W,
+one 1920x1080 MJPEG frame takes about 110 ms of CPU at an eighth of its size.
+
+Careful: the Pi's decoder needs GPU memory. Set it in `config.txt` itself,
+`gpu_mem=128` for a 1920x1080 camera, measured on a Pi Zero W: the Pi reads
+`gpu_mem` before it boots, and never from a file that `config.txt` includes.
+At the default 64 MB, the first 1920x1080 frame hangs the GPU's firmware,
+and ghee's H264 and JPEG encoders stop with it until a reboot. Where you
+can't raise it, pass `--video-decoder cpu`.
 
 When the device is missing, or stops, the video shows yellow and black
 stripes, and stderr and `video_errors` in [`/stats`](http.md#stats) say why.

@@ -187,11 +187,13 @@ GPU output:
   passed. A test that needs ffmpeg takes `ghee_no_ffmpeg` the same way, and
   a test that reads the GL driver's buffer memory takes
   `ghee_no_gpu_memory`.
-- A test that needs a connected display or a hardware H264 encoder carries
-  `#[cfg_attr(not(ghee_display), ignore = "needs a connected display")]` or
-  `not(ghee_hw_h264)`, and fails where the host lacks it. A host that has
-  one runs the tests with `RUSTFLAGS="--cfg ghee_display"` or
-  `--cfg ghee_hw_h264`. A test that needs a panel on a bus, a display with
+- A test that needs a connected display, a hardware H264 encoder or a
+  hardware MJPEG decoder carries
+  `#[cfg_attr(not(ghee_display), ignore = "needs a connected display")]`,
+  `not(ghee_hw_h264)` or `not(ghee_hw_mjpeg)`, and fails where the host
+  lacks it. A host that has one runs the tests with
+  `RUSTFLAGS="--cfg ghee_display"`, `--cfg ghee_hw_h264` or
+  `--cfg ghee_hw_mjpeg`. A test that needs a panel on a bus, a display with
   no vblank, takes `ghee_panel` the same way, and a host with such a panel
   passes both. A test never returns early for missing hardware.
 

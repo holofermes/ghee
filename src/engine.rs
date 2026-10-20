@@ -507,6 +507,12 @@ struct Video {
     size: (u32, u32),
     /// True while the asset holds the stripes of a device with a problem.
     striped: bool,
+    /// The hardware decoder whose dma-bufs the asset imported, 0 for none.
+    pipeline: u64,
+    /// The frame that the asset shows, and the one before it, whose copy
+    /// the GPU may still run: a decoder's buffer goes back to it when its
+    /// frame drops.
+    shown: [Option<Arc<video::Frame>>; 2],
 }
 
 impl Video {
@@ -3150,18 +3156,58 @@ impl Renderer {
             seq: 0,
             size: (0, 0),
             striped: false,
+            pipeline: 0,
+            shown: [None, None],
         };
         match v.capture.newer(0) {
-            Some(f) => {
-                self.put_video(&mut v, f.width, f.height, &f.rgba)?;
-                v.seq = f.seq;
-            }
+            Some(f) => self.show_frame(&mut v, f)?,
             None => {
                 let (w, h) = video::FIRST_SIZE;
                 self.put_video(&mut v, w, h, &vec![0; (w * h * 4) as usize])?;
             }
         }
         Ok(v)
+    }
+
+    /// Show frame `f` in the engine asset of `v`, and hold it while it shows
+    /// and for the frame after.
+    fn show_frame(&self, v: &mut Video, f: Arc<video::Frame>) -> Result<()> {
+        match &f.pixels {
+            video::Pixels::Rgba(rgba) => self.put_video(v, f.width, f.height, rgba)?,
+            video::Pixels::Dmabuf {
+                fd,
+                pitch,
+                pipeline,
+                ..
+            } => {
+                let cname = CString::new(v.asset.as_str())?;
+                if v.pipeline != *pipeline {
+                    unsafe { ffi::ghee_mp_forget_dmabufs(self.handle, cname.as_ptr()) };
+                    v.pipeline = *pipeline;
+                }
+                let ok = unsafe {
+                    ffi::ghee_mp_set_asset_dmabuf(
+                        self.handle,
+                        cname.as_ptr(),
+                        *fd,
+                        f.width as c_int,
+                        f.height as c_int,
+                        *pitch as c_int,
+                    )
+                };
+                if !ok {
+                    bail!(
+                        "{}",
+                        or_else(self.last_error(), &format!("asset '{}' refused", v.asset))
+                    );
+                }
+                v.size = (f.width, f.height);
+            }
+        }
+        v.seq = f.seq;
+        v.shown.swap(0, 1);
+        v.shown[0] = Some(f);
+        Ok(())
     }
 
     /// Put `rgba`, RGBA rows of `w` x `h` pixels, the bottom row first, in
@@ -3325,8 +3371,7 @@ impl Renderer {
                     let (w, h) = v.size;
                     reshaped |=
                         u64::from(w) * u64::from(f.height) != u64::from(h) * u64::from(f.width);
-                    self.put_video(v, f.width, f.height, &f.rgba)?;
-                    v.seq = f.seq;
+                    self.show_frame(v, f)?;
                     v.striped = false;
                 } else if problem.is_some() && !v.striped {
                     let (w, h) = v.size;
@@ -12332,5 +12377,40 @@ mod tests {
         assert_eq!(rgb_of(r.render(None).unwrap(), 32, 24), BLUE);
         assert_eq!(a.wanted(), None);
         assert_eq!(b.wanted(), Some((64, 32)));
+    }
+
+    #[test]
+    #[cfg_attr(not(ghee_hw_mjpeg), ignore = "needs a hardware MJPEG decoder")]
+    fn a_hardware_decoded_frame_shows_upright_in_its_colours() {
+        let (w, h) = (256, 144);
+        let mut jpeg = Vec::new();
+        jpeg_encoder::Encoder::new(&mut jpeg, 90)
+            .encode(
+                &halves(w, h, RED, BLUE),
+                w as u16,
+                h as u16,
+                jpeg_encoder::ColorType::Rgb,
+            )
+            .unwrap();
+        let hw = video::Hw::open(w as u32, h as u32, (64, 36)).unwrap();
+        // the decoder hands a frame back once the next one goes in
+        assert!(hw.push(&jpeg, true).unwrap().is_none());
+        let out = hw
+            .push(&jpeg, true)
+            .unwrap()
+            .expect("the second frame pushes the first out");
+        let cam = Capture::fake("/test/hw");
+        cam.show_out(&hw, out);
+        let (_g, mut r) = gpu();
+        let layers = json!([{"name": "v", "video": "/test/hw"}]);
+        r.setup(&scene_of(
+            json!([{"name": "main", "fragment": FLAT, "layers": layers}]),
+        ))
+        .unwrap();
+        let f = r.render(None).unwrap();
+        let near = |c: [u8; 3], want: [u8; 3]| (0..3).all(|i| c[i].abs_diff(want[i]) <= 24);
+        // 16:9 in 64x48: 64x36, from row 6 to row 42
+        assert!(near(rgb_of(f, 32, 10), RED), "{:?}", rgb_of(f, 32, 10));
+        assert!(near(rgb_of(f, 32, 38), BLUE), "{:?}", rgb_of(f, 32, 38));
     }
 }

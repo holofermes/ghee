@@ -186,14 +186,216 @@ fn scale_for(size: (u32, u32), need: (u32, u32)) -> u32 {
         .unwrap_or(1)
 }
 
-/// A decoded frame: RGBA rows of `width` pixels, the bottom row first.
+/// A decoded frame of `width` x `height` pixels.
 #[derive(Debug)]
 pub(crate) struct Frame {
     pub width: u32,
     pub height: u32,
-    pub rgba: Vec<u8>,
+    pub pixels: Pixels,
     /// Counts the frames that the capture decoded, from 1.
     pub seq: u64,
+}
+
+/// The pixels of a frame: RGBA rows, the bottom row first.
+#[derive(Debug)]
+pub(crate) enum Pixels {
+    /// Rows of `width` pixels, decoded on the CPU.
+    Rgba(Vec<u8>),
+    /// Rows of `pitch` bytes in dma-buf `fd`, a buffer of the hardware
+    /// decoder of `pipeline`, whose descriptors name the same buffers while it
+    /// runs. The decoder fills the buffer again once every holder of the
+    /// frame lets it go.
+    Dmabuf {
+        fd: c_int,
+        pitch: u32,
+        pipeline: u64,
+        _lease: Lease,
+    },
+}
+
+/// A buffer of a hardware decoder that a frame holds, which goes back to the
+/// decoder when the frame drops.
+pub(crate) struct Lease {
+    shared: Weak<Shared>,
+    pipeline: u64,
+    index: c_int,
+}
+
+impl std::fmt::Debug for Lease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Lease({}, {})", self.pipeline, self.index)
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        if let Some(s) = self.shared.upgrade() {
+            let mut back = s.returned.lock().unwrap_or_else(|e| e.into_inner());
+            back.push((self.pipeline, self.index));
+        }
+    }
+}
+
+/// How long the hardware decoder may take with a frame before ghee stops
+/// using it: about six times the 76 ms that a Pi Zero W took for its first
+/// 1920x1080 frame, through the decoder and the ISP.
+const HW_WAIT_MS: c_int = 500;
+
+/// True once the hardware decoder failed in this process. The video core may
+/// be stuck then, so no capture tries it again.
+static HW_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// Counts the hardware decoders that the process opened, for their ids.
+static PIPELINES: AtomicU64 = AtomicU64::new(1);
+
+/// True while every video decodes on the CPU, as `--video-decoder cpu` asks.
+static CPU_ONLY: AtomicBool = AtomicBool::new(false);
+
+/// Decode the frames of every video of the process on the CPU when `cpu`,
+/// else in the hardware decoder where the machine has one.
+pub fn decode_on_cpu(cpu: bool) {
+    CPU_ONLY.store(cpu, Ordering::Relaxed);
+}
+
+/// True when frames decode in hardware: decode_on_cpu() asked for no CPU,
+/// and the hardware decoder never failed in this process.
+fn hardware() -> bool {
+    !CPU_ONLY.load(Ordering::Relaxed) && !HW_FAILED.load(Ordering::Relaxed)
+}
+
+/// The size, at the aspect of a `size` frame, that the hardware scales a
+/// frame to for `need`: the smallest that covers it, 16 pixels wide and 2
+/// pixels high a step, and 32 pixels on either side at least, as the ISP
+/// takes, at most the frame's own.
+fn scaled(size: (u32, u32), need: (u32, u32)) -> (u32, u32) {
+    let (fw, fh) = (f64::from(size.0.max(1)), f64::from(size.1.max(1)));
+    let k = (f64::from(need.0) / fw)
+        .max(f64::from(need.1) / fh)
+        .min(1.0);
+    let w = (fw * k).max(32.0).max(32.0 * fw / fh).ceil() as u32;
+    let w = w.next_multiple_of(16).min(size.0.max(32));
+    let h = (f64::from(w) * fh / fw).ceil() as u32;
+    (w, h.next_multiple_of(2))
+}
+
+/// A hardware decoder, closed at its drop.
+pub(crate) struct Hw {
+    dec: *mut ffi::GheeHwdec,
+    pipeline: u64,
+    /// The size that it scales frames to.
+    size: (u32, u32),
+}
+
+impl Hw {
+    /// The decoder for `w` x `h` MJPEG frames, scaling them to `out`. Err
+    /// holds why there is none.
+    pub(crate) fn open(w: u32, h: u32, out: (u32, u32)) -> Result<Hw, String> {
+        let mut err = [0 as c_char; 256];
+        let dec = unsafe {
+            ffi::ghee_hwdec_open(
+                w as c_int,
+                h as c_int,
+                out.0 as c_int,
+                out.1 as c_int,
+                err.as_mut_ptr(),
+                256,
+            )
+        };
+        if dec.is_null() {
+            return Err(text(&err));
+        }
+        Ok(Hw {
+            dec,
+            pipeline: PIPELINES.fetch_add(1, Ordering::Relaxed),
+            size: out,
+        })
+    }
+}
+
+/// A frame that the hardware decoder gave: output buffer `index`, its
+/// dma-buf, its size and its rows' length in bytes.
+pub(crate) struct Out {
+    index: c_int,
+    fd: c_int,
+    width: u32,
+    height: u32,
+    pitch: u32,
+}
+
+impl Hw {
+    /// Queue MJPEG frame `jpg`, and take the frame before it out of the
+    /// decoder, scaled when `scale`. None for no frame, as ghee_hwdec_push
+    /// gives none. Err holds why the hardware failed.
+    pub(crate) fn push(&self, jpg: &[u8], scale: bool) -> Result<Option<Out>, String> {
+        let mut err = [0 as c_char; 256];
+        let mut index = -1;
+        let pushed = unsafe {
+            ffi::ghee_hwdec_push(
+                self.dec,
+                jpg.as_ptr(),
+                jpg.len(),
+                c_int::from(scale),
+                HW_WAIT_MS,
+                &mut index,
+                err.as_mut_ptr(),
+                256,
+            )
+        };
+        match pushed {
+            1 => {
+                let (mut fd, mut w, mut h, mut pitch) = (0, 0, 0, 0);
+                unsafe {
+                    ffi::ghee_hwdec_out(self.dec, index, &mut fd, &mut w, &mut h, &mut pitch)
+                };
+                Ok(Some(Out {
+                    index,
+                    fd,
+                    width: w as u32,
+                    height: h as u32,
+                    pitch: pitch as u32,
+                }))
+            }
+            0 => Ok(None),
+            _ => Err(text(&err)),
+        }
+    }
+
+    /// Frame `seq` of output `out`, whose buffer goes back to this decoder
+    /// through `shared` when the frame drops.
+    fn frame(&self, out: Out, shared: &Arc<Shared>, seq: u64) -> Frame {
+        Frame {
+            width: out.width,
+            height: out.height,
+            pixels: Pixels::Dmabuf {
+                fd: out.fd,
+                pitch: out.pitch,
+                pipeline: self.pipeline,
+                _lease: Lease {
+                    shared: Arc::downgrade(shared),
+                    pipeline: self.pipeline,
+                    index: out.index,
+                },
+            },
+            seq,
+        }
+    }
+
+    /// Give the decoder back the buffers of its own that the frames of
+    /// `shared` let go of.
+    fn take_back(&self, shared: &Shared) {
+        let back = std::mem::take(&mut *shared.returned.lock().unwrap_or_else(|e| e.into_inner()));
+        for (p, i) in back {
+            if p == self.pipeline {
+                unsafe { ffi::ghee_hwdec_give(self.dec, i) };
+            }
+        }
+    }
+}
+
+impl Drop for Hw {
+    fn drop(&mut self) {
+        unsafe { ffi::ghee_hwdec_close(self.dec) };
+    }
 }
 
 /// The pixels of an MJPEG frame, at the smallest scale of 1, 1/2, 1/4 or 1/8
@@ -322,6 +524,9 @@ struct Shared {
     stop: AtomicBool,
     state: Mutex<State>,
     wake: Condvar,
+    /// The buffers of the hardware decoders that the frames let go of, each
+    /// with its decoder's pipeline.
+    returned: Mutex<Vec<(u64, c_int)>>,
 }
 
 impl Shared {
@@ -390,6 +595,7 @@ impl Capture {
                 ..State::default()
             }),
             wake: Condvar::new(),
+            returned: Mutex::new(Vec::new()),
         });
         let (p, s) = (path.to_string(), shared.clone());
         let thread = std::thread::Builder::new()
@@ -447,6 +653,7 @@ impl Capture {
                     ..State::default()
                 }),
                 wake: Condvar::new(),
+                returned: Mutex::new(Vec::new()),
             }),
             thread: None,
         });
@@ -464,11 +671,19 @@ impl Capture {
         s.frame = Some(Arc::new(Frame {
             width: w,
             height: h,
-            rgba: bottom_first(rgb, w as usize * 3, |p: &[u8; 3]| [p[0], p[1], p[2], 255]),
+            pixels: Pixels::Rgba(bottom_first(rgb, w as usize * 3, |p: &[u8; 3]| {
+                [p[0], p[1], p[2], 255]
+            })),
             seq,
         }));
         s.taken = false;
         s.problem = None;
+    }
+
+    /// Show the frame that hardware decoder `hw` gave as `out` as the newest.
+    pub(crate) fn show_out(&self, hw: &Hw, out: Out) {
+        let seq = self.shared.state().frame.as_ref().map_or(0, |f| f.seq) + 1;
+        publish(&self.shared, hw.frame(out, &self.shared, seq));
     }
 
     /// The size that the users draw the frames at, None with no user.
@@ -501,7 +716,7 @@ impl Drop for Open {
 
 /// The thread of a capture: stream the device while it has a user, until
 /// the capture stops, opening it again a second after each failure.
-fn run(path: &str, shared: &Shared) {
+fn run(path: &str, shared: &Arc<Shared>) {
     unsafe { ffi::ghee_thread_idle() };
     let stopped = || shared.stop.load(Ordering::Relaxed);
     while !stopped() {
@@ -526,8 +741,10 @@ fn run(path: &str, shared: &Shared) {
 
 /// Stream the device at `path` in the mode that its users' sizes pick,
 /// until the capture stops, its last user leaves or the users' sizes pick
-/// another mode. Err holds why the device streams no more.
-fn stream(path: &str, shared: &Shared) -> Result<(), String> {
+/// another mode. An MJPEG frame decodes in the hardware decoder where the
+/// machine has one and hardware() allows, else on the CPU. Err holds why the
+/// device streams no more.
+fn stream(path: &str, shared: &Arc<Shared>) -> Result<(), String> {
     let mut err = [0 as c_char; 256];
     let cpath = CString::new(path).map_err(|_| "a path holds a NUL".to_string())?;
     let handle = unsafe { ffi::ghee_capture_open(cpath.as_ptr(), err.as_mut_ptr(), 256) };
@@ -569,6 +786,8 @@ fn stream(path: &str, shared: &Shared) -> Result<(), String> {
     );
     let mut last = Instant::now();
     let mut seq = shared.state().frame.as_ref().map_or(0, |f| f.seq);
+    let mut hw: Option<Hw> = None;
+    let mut hw_tried = false;
     while !shared.stop.load(Ordering::Relaxed) {
         if shared.state().needs.is_empty() {
             return Ok(());
@@ -591,10 +810,53 @@ fn stream(path: &str, shared: &Shared) -> Result<(), String> {
             continue;
         }
         last = Instant::now();
+        let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+        if fourcc == MJPEG && hardware() {
+            let out = scaled((w as u32, h as u32), now_need);
+            if hw.as_ref().is_some_and(|d| d.size != out) || (hw.is_none() && !hw_tried) {
+                hw_tried = true;
+                // the old decoder closes before the new one opens the nodes
+                drop(hw.take());
+                hw = match Hw::open(w as u32, h as u32, out) {
+                    Ok(d) => Some(d),
+                    Err(why) => {
+                        crate::report::detail(
+                            "video",
+                            format!("{}: {why}, frames decode on the CPU", py_str_repr(path)),
+                        );
+                        None
+                    }
+                };
+            }
+        } else {
+            hw = None;
+            hw_tried = false;
+        }
+        if let Some(d) = &hw {
+            d.take_back(shared);
+            let pushed = d.push(bytes, shared.state().taken);
+            unsafe { ffi::ghee_capture_release(cap.0) };
+            match pushed {
+                Ok(Some(out)) => {
+                    seq += 1;
+                    publish(shared, d.frame(out, shared, seq));
+                    shared.set_problem(path, None);
+                }
+                Ok(None) => {}
+                Err(why) => {
+                    HW_FAILED.store(true, Ordering::Relaxed);
+                    crate::report::error(format!(
+                        "video {}: {why}, so frames decode on the CPU from now on",
+                        py_str_repr(path)
+                    ));
+                    hw = None;
+                }
+            }
+            continue;
+        }
         if !shared.state().taken {
             continue;
         }
-        let bytes = unsafe { std::slice::from_raw_parts(data, len) };
         let decoded = match fourcc {
             MJPEG => decode_mjpeg(bytes, now_need),
             _ => decode_yuyv(bytes, w as u32, h as u32, bpl as usize, now_need),
@@ -606,19 +868,27 @@ fn stream(path: &str, shared: &Shared) -> Result<(), String> {
             continue;
         };
         seq += 1;
-        {
-            let mut s = shared.state();
-            s.frame = Some(Arc::new(Frame {
-                width: fw,
-                height: fh,
-                rgba,
-                seq,
-            }));
-            s.taken = false;
-        }
+        let frame = Frame {
+            width: fw,
+            height: fh,
+            pixels: Pixels::Rgba(rgba),
+            seq,
+        };
+        publish(shared, frame);
         shared.set_problem(path, None);
     }
     Ok(())
+}
+
+/// Make `frame` the newest. The frame that it replaces drops outside the
+/// lock, since a frame of a hardware decoder gives its buffer back.
+fn publish(shared: &Shared, frame: Frame) {
+    let was = {
+        let mut s = shared.state();
+        s.taken = false;
+        s.frame.replace(Arc::new(frame))
+    };
+    drop(was);
 }
 
 #[cfg(test)]
@@ -682,6 +952,20 @@ mod tests {
             let (w, h, rgba) = decode_mjpeg(&jpeg, need).unwrap();
             assert_eq!((w, h), size, "{need:?}");
             assert_eq!(rgba.len(), (w * h * 4) as usize);
+        }
+    }
+
+    #[test]
+    fn the_hardware_scales_to_the_smallest_size_that_covers_with_the_frames_aspect() {
+        let cases = [
+            ((1920, 1080), (114, 64), (128, 72)),
+            ((1920, 1080), (128, 64), (128, 72)),
+            ((1920, 1080), (10, 10), (64, 36)),
+            ((1920, 1080), (3840, 2160), (1920, 1080)),
+            ((640, 480), (200, 100), (208, 156)),
+        ];
+        for (size, need, want) in cases {
+            assert_eq!(scaled(size, need), want, "{size:?} {need:?}");
         }
     }
 

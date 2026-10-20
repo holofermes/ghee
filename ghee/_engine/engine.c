@@ -101,6 +101,9 @@ struct mp_locs {
     int nuses, uses_cap;
 };
 
+// The dma-bufs that one asset draws from, at most.
+#define MP_DMABUFS 8
+
 // One image asset: the host hands the pixels over once, they bind as a
 // sampler uniform <name>_tex, with <name>_size a vec2 of (width, height).
 struct mp_asset {
@@ -109,7 +112,15 @@ struct mp_asset {
     int w, h;
     GLenum fmt, type;
     bool mip;                            // every mip level, down to 1x1
+    // The dma-bufs that ghee_mp_set_asset_dmabuf imported, each once, by
+    // the descriptor that the host gave.
+    struct { int fd; EGLImageKHR img; GLuint tex; } dma[MP_DMABUFS];
+    int ndma;
+    GLuint fbo;                          // draws a dma-buf into `tex`
 };
+
+static void mp_forget_dmabufs(GheeScene *g, struct mp_asset *as);
+static bool fade_ready(GheeScene *g);
 
 // A batch's program, compiled for the first batch whose two sources ask for
 // it and shared by every batch after it that asks for the same two. The last
@@ -1259,7 +1270,10 @@ void ghee_destroy(GheeScene *g) {
         ghee_mp_reset(g);   // all pass programs/buffers + the pending scene
         for (int i = 0; i < g->mp_nprog; i++) glDeleteProgram(g->mp_prog[i].program);
         if (g->quad_ibo) glDeleteBuffers(1, &g->quad_ibo);
-        for (int a = 0; a < g->mp_nasset; a++) glDeleteTextures(1, &g->mp_asset[a].tex);
+        for (int a = 0; a < g->mp_nasset; a++) {
+            mp_forget_dmabufs(g, &g->mp_asset[a]);
+            glDeleteTextures(1, &g->mp_asset[a].tex);
+        }
         eglMakeCurrent(g->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     }
     if (g->display != EGL_NO_DISPLAY) {
@@ -2524,6 +2538,142 @@ bool ghee_mp_set_asset_rect(GheeScene *g, const char *name, int level,
     return true;
 }
 
+// The EGL calls that import a dma-buf, looked up once.
+static PFNEGLCREATEIMAGEKHRPROC mp_create_image;
+static PFNEGLDESTROYIMAGEKHRPROC mp_destroy_image;
+static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC mp_image_texture;
+
+// Let go of every dma-buf that asset `as` imported.
+static void mp_forget_dmabufs(GheeScene *g, struct mp_asset *as) {
+    for (int i = 0; i < as->ndma; i++) {
+        glDeleteTextures(1, &as->dma[i].tex);
+        if (mp_destroy_image) mp_destroy_image(g->display, as->dma[i].img);
+    }
+    as->ndma = 0;
+    if (as->fbo) glDeleteFramebuffers(1, &as->fbo);
+    as->fbo = 0;
+}
+
+bool ghee_mp_set_asset_dmabuf(GheeScene *g, const char *name, int fd, int width, int height,
+                              int pitch) {
+    if (width <= 0 || height <= 0 || pitch < width * 4) {
+        set_error(g, "asset '%s': a %dx%d dma-buf with rows of %d bytes", name, width, height, pitch);
+        return false;
+    }
+    make_current(g);
+    if (!mp_create_image) {
+        mp_create_image = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+        mp_destroy_image = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+        mp_image_texture =
+            (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    }
+    if (!mp_create_image || !mp_destroy_image || !mp_image_texture) {
+        set_error(g, "asset '%s': this EGL imports no dma-buf", name);
+        return false;
+    }
+    int idx = mp_asset_index(g, name);
+    if (idx < 0) {
+        if (!ghee_mp_set_asset(g, name, NULL, width, height, 4, 0, GHEE_FILTER_LINEAR)) return false;
+        idx = mp_asset_index(g, name);
+    }
+    struct mp_asset *as = &g->mp_asset[idx];
+    int k = 0;
+    while (k < as->ndma && as->dma[k].fd != fd) k++;
+    if (k == as->ndma) {
+        if (as->ndma == MP_DMABUFS) {
+            set_error(g, "asset '%s' holds %d dma-bufs already", name, MP_DMABUFS);
+            return false;
+        }
+        const EGLint attr[] = {
+            EGL_WIDTH, width,
+            EGL_HEIGHT, height,
+            EGL_LINUX_DRM_FOURCC_EXT, (EGLint)DRM_FORMAT_ABGR8888,
+            EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+            EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT, pitch,
+            EGL_NONE};
+        EGLImageKHR img = mp_create_image(g->display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attr);
+        if (img == EGL_NO_IMAGE_KHR) {
+            set_error(g, "asset '%s': EGL refused the %dx%d dma-buf, error 0x%X", name, width, height,
+                      eglGetError());
+            return false;
+        }
+        GLuint tex;
+        glGenTextures(1, &tex);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        while (glGetError() != GL_NO_ERROR) { }
+        mp_image_texture(GL_TEXTURE_2D, img);
+        const GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            glDeleteTextures(1, &tex);
+            mp_destroy_image(g->display, img);
+            set_error(g, "asset '%s': GL refused the dma-buf as a texture, error 0x%X", name, err);
+            return false;
+        }
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        as->dma[k].fd = fd;
+        as->dma[k].img = img;
+        as->dma[k].tex = tex;
+        as->ndma++;
+    }
+    // The passes sample the asset's texture, which takes the buffer once a
+    // call: VC4 samples no linear texture, and Mesa copies an imported one
+    // into a tiled shadow at each draw that samples it.
+    if (!fade_ready(g)) return false;
+    if (as->w != width || as->h != height || as->fmt != GL_RGBA || as->type != GL_UNSIGNED_BYTE ||
+        !as->fbo) {
+        glBindTexture(GL_TEXTURE_2D, as->tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        if (!as->fbo) glGenFramebuffers(1, &as->fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, as->fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, as->tex, 0);
+        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            set_error(g, "asset '%s': a %dx%d buffer to draw dma-bufs into failed: framebuffer 0x%X",
+                      name, width, height, status);
+            return false;
+        }
+        as->w = width;
+        as->h = height;
+        as->fmt = GL_RGBA;
+        as->type = GL_UNSIGNED_BYTE;
+        g->bind_epoch++;
+    }
+    GLint viewport[4], framebuffer;
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, as->fbo);
+    glViewport(0, 0, width, height);
+    glDisable(GL_BLEND);
+    glUseProgram(g->fade_prog);
+    glUniform1f(g->fade_vflip, 1.0f);
+    glUniform2f(g->fade_scale, 1.0f, 1.0f);
+    glUniform1f(g->fade_opacity, 1.0f);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, as->dma[k].tex);
+    glUniform1i(g->fade_sampler, 0);
+    glBindVertexArray(g->VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, g->VBO);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)framebuffer);
+    glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+    g->changed = true;
+    return true;
+}
+
+void ghee_mp_forget_dmabufs(GheeScene *g, const char *name) {
+    const int idx = mp_asset_index(g, name);
+    if (idx < 0) return;
+    make_current(g);
+    mp_forget_dmabufs(g, &g->mp_asset[idx]);
+}
+
 // Free one named asset and its slot. An unknown name is a no-op.
 void ghee_mp_drop_asset(GheeScene *g, const char *name) {
     const int idx = mp_asset_index(g, name);
@@ -2531,6 +2681,7 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name) {
     make_current(g);
     g->changed = true;
     g->bind_epoch++;
+    mp_forget_dmabufs(g, &g->mp_asset[idx]);
     glDeleteTextures(1, &g->mp_asset[idx].tex);
     free(g->mp_asset[idx].name);
     memmove(&g->mp_asset[idx], &g->mp_asset[idx + 1],
@@ -2715,17 +2866,22 @@ static void mp_draw_quads(struct mp_batch *l) {
     }
 }
 
+// Make fade_prog ready. false with the error set when GL refuses it.
+static bool fade_ready(GheeScene *g) {
+    if (g->fade_prog) return true;
+    g->fade_prog = create_shader_program(g, fade_fragment_source);
+    if (!g->fade_prog) return false;
+    g->fade_sampler = glGetUniformLocation(g->fade_prog, "tex");
+    g->fade_scale = glGetUniformLocation(g->fade_prog, "scale");
+    g->fade_opacity = glGetUniformLocation(g->fade_prog, "opacity");
+    g->fade_vflip = glGetUniformLocation(g->fade_prog, "ghee_vflip");
+    return true;
+}
+
 // Make the fade buffer hold a w x h pass, and fade_prog ready. false with
 // the error set when GL refuses either.
 static bool ensure_fade(GheeScene *g, int w, int h) {
-    if (!g->fade_prog) {
-        g->fade_prog = create_shader_program(g, fade_fragment_source);
-        if (!g->fade_prog) return false;
-        g->fade_sampler = glGetUniformLocation(g->fade_prog, "tex");
-        g->fade_scale = glGetUniformLocation(g->fade_prog, "scale");
-        g->fade_opacity = glGetUniformLocation(g->fade_prog, "opacity");
-        g->fade_vflip = glGetUniformLocation(g->fade_prog, "ghee_vflip");
-    }
+    if (!fade_ready(g)) return false;
     if (g->fade_fbo && g->fade_w >= w && g->fade_h >= h) return true;
     const int fw = w > g->fade_w ? w : g->fade_w, fh = h > g->fade_h ? h : g->fade_h;
     if (g->fade_fbo) {

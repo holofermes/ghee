@@ -1,5 +1,5 @@
-//! Layers: words, a picture or a shape that a pass paints over its buffer
-//! after its own shader, in the order of its `layers`. `crate::shape`
+//! Layers: words, a picture, a video or a shape that a pass paints over its
+//! buffer after its own shader, in the order of its `layers`. `crate::shape`
 //! describes shape layers.
 //!
 //! A text layer owns its words, its font and its look. Its `text` holds the
@@ -13,7 +13,9 @@
 //! An image layer draws an image asset of the scene, or an image file of its
 //! own, as one quad through [`ImageLayer::shaders`]. Its shader samples the
 //! image as `ghee_0_image_tex`, which the engine binds to the image for the
-//! layer's batch alone, so the layer gives the passes no name.
+//! layer's batch alone, so the layer gives the passes no name. A video layer
+//! draws the same quad over the newest frame of a video asset, or of a
+//! capture device of its own, which crate::video streams.
 //!
 //! A layer's own shaders call the layer GLSL_NAME, a name that no layer can
 //! take, so every name that they hold meets no name that ghee gives a pass.
@@ -79,12 +81,16 @@ const TEXT_KEYS: [&str; 12] = [
 /// The keys of an image layer past EVERY_KEYS.
 const IMAGE_KEYS: [&str; 3] = ["image", "width", "height"];
 
+/// The keys of a video layer past EVERY_KEYS.
+const VIDEO_KEYS: [&str; 3] = ["video", "width", "height"];
+
 /// Every key that a layer takes, of any kind.
 pub(crate) fn layer_keys() -> Vec<&'static str> {
     [
         &EVERY_KEYS[..],
         &TEXT_KEYS,
         &IMAGE_KEYS,
+        &VIDEO_KEYS,
         &shape::RECT_KEYS,
         &shape::LINE_KEYS,
         &shape::CIRCLE_KEYS,
@@ -97,6 +103,9 @@ pub(crate) const TEXT_KIND: (&[&str], &str) = (&TEXT_KEYS, "a text layer");
 
 /// An image layer's keys, and the kind of layer in an error.
 pub(crate) const IMAGE_KIND: (&[&str], &str) = (&IMAGE_KEYS, "an image layer");
+
+/// A video layer's keys, and the kind of layer in an error.
+pub(crate) const VIDEO_KIND: (&[&str], &str) = (&VIDEO_KEYS, "a video layer");
 
 /// The keys of every layer that change with no rebuild, as live fields.
 const LIVE_KEYS: [&str; 5] = ["x", "y", "color", "opacity", "visible"];
@@ -989,6 +998,7 @@ impl TextLayer {
             &TEXT_KEYS,
             &[
                 IMAGE_KIND,
+                VIDEO_KIND,
                 shape::RECT_KIND,
                 shape::LINE_KIND,
                 shape::CIRCLE_KIND,
@@ -2156,6 +2166,7 @@ impl ImageLayer {
             &IMAGE_KEYS,
             &[
                 TEXT_KIND,
+                VIDEO_KIND,
                 shape::RECT_KIND,
                 shape::LINE_KIND,
                 shape::CIRCLE_KIND,
@@ -2275,22 +2286,155 @@ impl ImageLayer {
 
     /// The vertex and the fragment shader of the layer's quad.
     pub fn shaders(&self) -> Program {
-        let size = match (self.width, self.height) {
-            (Some(w), Some(h)) => format!("vec2({w:?}, {h:?})"),
-            (Some(w), None) => format!(
-                "vec2({w:?}, {w:?} * ghee_NAME_image_size.y / max(ghee_NAME_image_size.x, 1.0))"
-            ),
-            (None, Some(h)) => format!(
-                "vec2({h:?} * ghee_NAME_image_size.x / max(ghee_NAME_image_size.y, 1.0), {h:?})"
-            ),
-            (None, None) => "ghee_NAME_image_size".to_string(),
+        picture_shaders(self.width, self.height, false)
+    }
+}
+
+/// The shaders of a picture's quad, which spans `width` x `height` pass
+/// pixels. One of them missing keeps the picture's aspect, and both missing
+/// take the picture's own size, or with `fit` the largest size with its
+/// aspect that fits the pass.
+fn picture_shaders(width: Option<f64>, height: Option<f64>, fit: bool) -> Program {
+    let size = match (width, height) {
+        (Some(w), Some(h)) => format!("vec2({w:?}, {h:?})"),
+        (Some(w), None) => format!(
+            "vec2({w:?}, {w:?} * ghee_NAME_image_size.y / max(ghee_NAME_image_size.x, 1.0))"
+        ),
+        (None, Some(h)) => format!(
+            "vec2({h:?} * ghee_NAME_image_size.x / max(ghee_NAME_image_size.y, 1.0), {h:?})"
+        ),
+        (None, None) if fit => "ghee_NAME_image_size * min(iResolution.x / \
+             max(ghee_NAME_image_size.x, 1.0), iResolution.y / max(ghee_NAME_image_size.y, 1.0))"
+            .to_string(),
+        (None, None) => "ghee_NAME_image_size".to_string(),
+    };
+    let vertex = IMAGE_VERTEX.replace("SIZE", &size);
+    let fragment = IMAGE_FRAGMENT.replace("GUARD", GUARD);
+    (
+        vertex.replace("NAME", GLSL_NAME),
+        fragment.replace("NAME", GLSL_NAME),
+    )
+}
+
+/// A video layer of a pass: the frames of a capture device, which
+/// crate::video streams.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VideoLayer {
+    pub name: String,
+    /// False hides the layer.
+    pub visible: bool,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    /// The tint that multiplies the picture. None leaves it as it is.
+    pub color: Option<Rgb>,
+    pub opacity: f64,
+    pub blend: Blend,
+    /// A video asset of the scene, or the path of a capture device.
+    pub video: String,
+    /// The pass pixels that the picture spans. One of them missing keeps the
+    /// video's aspect, and both missing take the largest size with its
+    /// aspect that fits the pass.
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+}
+
+impl VideoLayer {
+    /// `at` names the layer by its place in an error, as "the 2nd layer of
+    /// pass 'main'", until its name is known.
+    pub fn from_dict(at: &str, d: &Value) -> Result<VideoLayer> {
+        let o = object(at, d)?;
+        let e = Every::from_dict(
+            at,
+            o,
+            &VIDEO_KEYS,
+            &[
+                TEXT_KIND,
+                IMAGE_KIND,
+                shape::RECT_KIND,
+                shape::LINE_KIND,
+                shape::CIRCLE_KIND,
+            ],
+        )?;
+        let what = e.what.as_str();
+        let color = match given(o, "color") {
+            None => None,
+            Some(v) => match Rgb::from_json(v) {
+                Some(c) => Some(c),
+                None if v.is_object() => {
+                    bail!("{what} color takes no gradient on a video layer, only {COLOUR_FORMS}")
+                }
+                None => bail!("{what} color needs {COLOUR_FORMS}, got {}", py_repr(v)),
+            },
         };
-        let vertex = IMAGE_VERTEX.replace("SIZE", &size);
-        let fragment = IMAGE_FRAGMENT.replace("GUARD", GUARD);
-        (
-            vertex.replace("NAME", GLSL_NAME),
-            fragment.replace("NAME", GLSL_NAME),
-        )
+        let video = match given(o, "video") {
+            Some(Value::String(s)) if !s.is_empty() => s.clone(),
+            v => bail!(
+                "{what} video needs the name of a video asset or the path of a device, got {}",
+                py_repr(v.unwrap_or(&Value::Null))
+            ),
+        };
+        let px = |k: &str| number(o, what, k, |f| f > 0.0, "a number of pixels above 0");
+        Ok(VideoLayer {
+            name: e.name,
+            visible: e.visible,
+            x: e.x,
+            y: e.y,
+            color,
+            opacity: e.opacity,
+            blend: e.blend,
+            video,
+            width: px("width")?,
+            height: px("height")?,
+        })
+    }
+
+    /// The layer as a scene holds it, a key at its default left out.
+    pub fn to_dict(&self) -> Value {
+        let mut d = every_dict(
+            &self.name,
+            self.visible,
+            self.x,
+            self.y,
+            self.color.map(Rgb::to_json),
+            self.opacity,
+            self.blend,
+        );
+        d.insert("video".to_string(), Value::from(self.video.clone()));
+        for (k, v) in [("width", self.width), ("height", self.height)] {
+            if let Some(v) = v {
+                d.insert(k.to_string(), Value::from(v));
+            }
+        }
+        Value::Object(d)
+    }
+
+    /// True when `video` names a device of the layer's own, not an asset.
+    pub fn is_device(&self) -> bool {
+        crate::video::is_device(&self.video)
+    }
+
+    /// Each uniform of the layer's own at its value from the scene, as an
+    /// image layer's. No tint is white.
+    pub fn uniforms(&self) -> Vec<(String, &'static str, Value)> {
+        let tint = self.color.unwrap_or(Rgb::WHITE);
+        let mut out = placing(self.x, self.y, self.visible, self.opacity);
+        out.push((
+            uniform(GLSL_NAME, "color"),
+            "vec3",
+            Value::from(tint.rgb.to_vec()),
+        ));
+        out.push((
+            uniform(GLSL_NAME, "alpha"),
+            "float",
+            Value::from(tint.alpha),
+        ));
+        out
+    }
+
+    /// The vertex and the fragment shader of the layer's quad, an image
+    /// layer's with the size that fits the pass.
+    pub fn shaders(&self) -> Program {
+        picture_shaders(self.width, self.height, true)
     }
 }
 
@@ -2323,22 +2467,24 @@ pub fn image_label(image: &str) -> String {
 pub enum Layer {
     Text(TextLayer),
     Image(ImageLayer),
+    Video(VideoLayer),
     Shape(ShapeLayer),
 }
 
 impl Layer {
     /// A shape layer when `d` holds a `shape`, else an image layer when it
-    /// holds an `image`, else a text layer. `at` names the layer by its
-    /// place in an error, as "the 2nd layer of pass 'main'", until its name
-    /// is known.
+    /// holds an `image`, else a video layer when it holds a `video`, else a
+    /// text layer. `at` names the layer by its place in an error, as "the 2nd
+    /// layer of pass 'main'", until its name is known.
     pub fn from_dict(at: &str, d: &Value) -> Result<Layer> {
         let o = object(at, d)?;
         if given(o, "shape").is_some() {
             return ShapeLayer::from_dict(at, d).map(Layer::Shape);
         }
-        match given(o, "image") {
-            Some(_) => ImageLayer::from_dict(at, d).map(Layer::Image),
-            None => TextLayer::from_dict(at, d).map(Layer::Text),
+        match (given(o, "image"), given(o, "video")) {
+            (Some(_), _) => ImageLayer::from_dict(at, d).map(Layer::Image),
+            (None, Some(_)) => VideoLayer::from_dict(at, d).map(Layer::Video),
+            (None, None) => TextLayer::from_dict(at, d).map(Layer::Text),
         }
     }
 
@@ -2347,6 +2493,7 @@ impl Layer {
         match self {
             Layer::Text(l) => l.to_dict(),
             Layer::Image(l) => l.to_dict(),
+            Layer::Video(l) => l.to_dict(),
             Layer::Shape(l) => l.to_dict(),
         }
     }
@@ -2355,6 +2502,7 @@ impl Layer {
         match self {
             Layer::Text(l) => &l.name,
             Layer::Image(l) => &l.name,
+            Layer::Video(l) => &l.name,
             Layer::Shape(l) => &l.name,
         }
     }
@@ -2363,6 +2511,7 @@ impl Layer {
         match self {
             Layer::Text(l) => l.blend,
             Layer::Image(l) => l.blend,
+            Layer::Video(l) => l.blend,
             Layer::Shape(l) => l.blend,
         }
     }
@@ -2374,6 +2523,7 @@ impl Layer {
         match self {
             Layer::Text(l) => l.uniforms(),
             Layer::Image(l) => l.uniforms(),
+            Layer::Video(l) => l.uniforms(),
             Layer::Shape(_) => Vec::new(),
         }
     }
@@ -2415,6 +2565,7 @@ impl Layer {
                 true
             }
             (Layer::Image(a), Layer::Image(b)) => a.color == b.color,
+            (Layer::Video(a), Layer::Video(b)) => a.color == b.color,
             (Layer::Shape(_), Layer::Shape(_)) => return Vec::new(),
             _ => false,
         };
@@ -2424,6 +2575,7 @@ impl Layer {
         let placed = |l: &Layer| match l {
             Layer::Text(l) => (l.x, l.y, l.visible, l.opacity),
             Layer::Image(l) => (l.x, l.y, l.visible, l.opacity),
+            Layer::Video(l) => (l.x, l.y, l.visible, l.opacity),
             Layer::Shape(l) => (l.x, l.y, l.visible, l.opacity),
         };
         let ((x, y, visible, opacity), (nx, ny, nvisible, nopacity)) = (placed(self), placed(new));
@@ -2454,7 +2606,8 @@ impl Layer {
     }
 
     /// True when `other`, a new look of this layer, differs from it in live
-    /// fields alone: the words and an image layer's image are live.
+    /// fields alone: the words, an image layer's image and a video layer's
+    /// video are live.
     pub(crate) fn builds_as(&self, other: &Layer) -> bool {
         if self.blend() != other.blend() {
             return false;
@@ -2480,6 +2633,7 @@ impl Layer {
                         .any(|(x, y)| rebuilds(x, y))
             }
             (Layer::Image(a), Layer::Image(b)) => a.width == b.width && a.height == b.height,
+            (Layer::Video(a), Layer::Video(b)) => a.width == b.width && a.height == b.height,
             (Layer::Shape(a), Layer::Shape(b)) => a.same_shape(b),
             _ => false,
         }
@@ -2502,6 +2656,13 @@ impl Layer {
     pub fn as_image(&self) -> Option<&ImageLayer> {
         match self {
             Layer::Image(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    pub fn as_video(&self) -> Option<&VideoLayer> {
+        match self {
+            Layer::Video(l) => Some(l),
             _ => None,
         }
     }
@@ -2556,6 +2717,8 @@ pub enum Form {
     Colour { gradient: bool, none: bool },
     /// The name of an image asset of the scene, or a .png or .jpg file.
     Image,
+    /// The name of a video asset of the scene, or the path of a device.
+    Video,
     /// A line's points, each [x, y], two or more.
     Points,
     /// A text layer's words.
@@ -2578,6 +2741,7 @@ impl Form {
             Form::Flag => "true or false",
             Form::Colour { .. } => COLOUR_FORMS,
             Form::Image => "the name of an image asset or a .png or .jpg file",
+            Form::Video => "the name of a video asset or the path of a device",
             Form::Points => "two points or more, each [x, y]",
             Form::Words => "words in a string",
         }
@@ -2611,7 +2775,9 @@ impl Live {
                 d.insert("angle".to_string(), Value::from(*angle));
                 Value::Object(d)
             }
-            (Form::Image, _) => bail!("{what} takes {}, got numbers", self.form.needs()),
+            (Form::Image | Form::Video, _) => {
+                bail!("{what} takes {}, got numbers", self.form.needs())
+            }
             (Form::Words, _) => bail!("{what} takes text, got numbers"),
             (Form::Points, n) if n.len() >= 4 && n.len() % 2 == 0 => Value::from(
                 n.as_chunks::<2>()
@@ -2642,14 +2808,15 @@ impl Live {
     }
 
     /// The value of the text `text` that the wire gives the field: the name
-    /// of an image asset, a text layer's words, or a colour, a CSS hex colour
-    /// or a CSS colour name, or a text layer's gradient as its JSON object.
+    /// of an image or a video asset, a device's path, a text layer's words,
+    /// or a colour, a CSS hex colour or a CSS colour name, or a text layer's
+    /// gradient as its JSON object.
     pub fn of_text(&self, text: &str) -> Result<Value> {
         match self.form {
             Form::Colour { gradient: true, .. } if text.trim_start().starts_with('{') => {
                 Ok(serde_json::from_str(text).unwrap_or_else(|_| Value::from(text)))
             }
-            Form::Image | Form::Colour { .. } | Form::Words => Ok(Value::from(text)),
+            Form::Image | Form::Video | Form::Colour { .. } | Form::Words => Ok(Value::from(text)),
             _ => bail!("{} takes numbers, got text", self.what),
         }
     }
@@ -2682,6 +2849,10 @@ pub fn format() -> Value {
     let samples = [
         ("text", serde_json::json!({"name": "a", "text": "a"})),
         ("image", serde_json::json!({"name": "a", "image": "a.png"})),
+        (
+            "video",
+            serde_json::json!({"name": "a", "video": "/dev/video0"}),
+        ),
         ("rect", serde_json::json!({"name": "a", "shape": "rect"})),
         (
             "line",
@@ -2714,6 +2885,7 @@ pub fn format() -> Value {
     let empty = serde_json::json!({
         "text": with(serde_json::json!({"font_size": "fit", "render": "auto"})),
         "image": with(serde_json::json!({"width": "auto", "height": "auto"})),
+        "video": with(serde_json::json!({"width": "fit", "height": "fit"})),
         "rect": with(serde_json::json!({"width": "pass", "height": "pass",
                                         "border_radius": shape::BORDER_RADIUS})),
         "line": {"x": 0, "y": 0, "stroke_width": shape::STROKE_WIDTH},
@@ -2826,6 +2998,7 @@ impl Layer {
         let (name, kind, own) = match self {
             Layer::Text(l) => (&l.name, "a text layer", &TEXT_KEYS[..]),
             Layer::Image(l) => (&l.name, "an image layer", &IMAGE_KEYS[..]),
+            Layer::Video(l) => (&l.name, "a video layer", &VIDEO_KEYS[..]),
             Layer::Shape(l) => return l.live(effect, field),
         };
         let layer = format!("layer '{name}'");
@@ -2839,6 +3012,9 @@ impl Layer {
                     Layer::Shape(_) => unreachable!("a shape layer answers for itself"),
                     Layer::Image(_) => {
                         bail!("{layer} has no effect '{key}', and an image layer takes no effects")
+                    }
+                    Layer::Video(_) => {
+                        bail!("{layer} has no effect '{key}', and a video layer takes no effects")
                     }
                 };
                 match effects[..] {
@@ -2884,19 +3060,24 @@ impl Layer {
                 form,
             });
         }
-        let image = self.as_image().is_some();
+        let picture = match self {
+            Layer::Image(_) => Some("image"),
+            Layer::Video(_) => Some("video"),
+            _ => None,
+        };
         let mut live = LIVE_KEYS.to_vec();
-        live.push(if image { "image" } else { "text" });
+        live.push(picture.unwrap_or("text"));
         let form = match field {
             "x" | "y" => Form::Number { none: true },
             "opacity" => Form::Number { none: false },
             "visible" => Form::Flag,
             "color" => Form::Colour {
-                gradient: !image,
+                gradient: picture.is_none(),
                 none: true,
             },
-            "image" if image => Form::Image,
-            "text" if !image => Form::Words,
+            "image" if picture == Some("image") => Form::Image,
+            "video" if picture == Some("video") => Form::Video,
+            "text" if picture.is_none() => Form::Words,
             "name" => bail!("{layer} keeps its name"),
             _ if EVERY_KEYS.contains(&field) || own.contains(&field) => {
                 return Err(Rebuild(format!(
@@ -2933,6 +3114,7 @@ impl Layer {
         let mut d = match self {
             Layer::Text(l) => l.to_dict(),
             Layer::Image(l) => l.to_dict(),
+            Layer::Video(l) => l.to_dict(),
             Layer::Shape(l) => return l.set_live(effect, field, value),
         };
         match effect {
@@ -2953,20 +3135,22 @@ impl Layer {
                 }
                 *l = new;
             }
+            Layer::Video(l) => *l = VideoLayer::from_dict(&at, &d)?,
             Layer::Shape(_) => unreachable!("a shape layer sets its own fields"),
         }
         Ok(())
     }
 
-    /// Set a field of a text or an image layer that sets a uniform alone, or
-    /// a live field of a text's effect, to `v`, read as a drawing's call
-    /// reads its keyword. False for any other field, and for a value that
+    /// Set a field of a text, an image or a video layer that sets a uniform
+    /// alone, or a live field of a text's effect, to `v`, read as a drawing's
+    /// call reads its keyword. False for any other field, and for a value that
     /// the call refuses, which leave the layer as it was: from_dict() then
     /// takes the value, or says why it refuses it.
     fn set_uniform(&mut self, effect: Option<&str>, field: &str, v: &Arg) -> bool {
         let (visible, x, y, opacity) = match self {
             Layer::Text(l) => (&mut l.visible, &mut l.x, &mut l.y, &mut l.opacity),
             Layer::Image(l) => (&mut l.visible, &mut l.x, &mut l.y, &mut l.opacity),
+            Layer::Video(l) => (&mut l.visible, &mut l.x, &mut l.y, &mut l.opacity),
             Layer::Shape(_) => return false,
         };
         let set = |slot: &mut Option<f64>| match draw::number(v, |_| true) {
@@ -3009,19 +3193,8 @@ impl Layer {
                     }
                     None => false,
                 },
-                Layer::Image(l) => match v {
-                    Arg::None => {
-                        l.color = None;
-                        true
-                    }
-                    c => match draw::rgb(c) {
-                        Some(c) => {
-                            l.color = Some(c);
-                            true
-                        }
-                        None => false,
-                    },
-                },
+                Layer::Image(l) => tint(&mut l.color, v),
+                Layer::Video(l) => tint(&mut l.color, v),
                 Layer::Shape(_) => false,
             },
             _ => false,
@@ -3062,8 +3235,28 @@ impl Layer {
                 height: l.height,
                 data: None,
             }),
+            Layer::Video(l) => Layer::Video(l.clone()),
             Layer::Shape(l) => Layer::Shape(l.clone()),
         }
+    }
+}
+
+/// Set the tint `color` of a picture to `v`, read as a drawing's call reads
+/// its keyword, None for no tint. False for a value that the call refuses,
+/// which leaves the tint as it was.
+fn tint(color: &mut Option<Rgb>, v: &Arg) -> bool {
+    match v {
+        Arg::None => {
+            *color = None;
+            true
+        }
+        c => match draw::rgb(c) {
+            Some(c) => {
+                *color = Some(c);
+                true
+            }
+            None => false,
+        },
     }
 }
 

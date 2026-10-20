@@ -1,9 +1,10 @@
 # Layers
 
-Layers let you add text, images and shapes on top of a [scene](scenes.md).
-You write layers in the scene's JSON, from Python, or in the console. You can
-also read a text layer's words, or an image, in the scene's shaders, and draw
-them your own way ([Layers in a shader](#layers-in-a-shader)).
+Layers let you add text, images, video and shapes on top of a
+[scene](scenes.md). You write layers in the scene's JSON, from Python, or in
+the console. You can also read a text layer's words, an image, or a camera's
+frames in the scene's shaders, and draw them your own way ([Layers in a
+shader](#layers-in-a-shader)).
 
 For example, this scene's shader paints the frame black. A text layer writes
 `hello` to fit the available space, and a shape layer lays an orange bar
@@ -47,7 +48,7 @@ screen.save("hello.png")
 
 ## Every layer
 
-There are three kinds of layer: text, image and shape. A pass draws its
+There are four kinds of layer: text, image, video and shape. A pass draws its
 layers in order, the last on top.
 
 Positions and sizes are pixels of the pass, from its top left corner, y down.
@@ -57,7 +58,7 @@ Positions and sizes are pixels of the pass, from its top left corner, y down.
 | `name` | letters, digits and `_`, a letter first ([Names](scenes.md#names) has the rules) | required | the layer's name, to change it later and to read it in a shader |
 | `visible` | `true`, `false` | `true` | whether the layer draws |
 | `x`, `y` | pixels | centred (0 for a line) | where the layer's top left sits, and a circle's centre. A line's points move by `x`, `y` |
-| `color` | a colour | white (no tint on an image) | the layer's colour |
+| `color` | a colour | white (no tint on an image or a video) | the layer's colour |
 | `opacity` | 0 to 1 | 1 | how much of the layer shows |
 | `blend` | `normal`, `add`, `multiply`, `screen` | `normal` | how the layer mixes with what's under it |
 
@@ -75,18 +76,20 @@ layer over a black-to-white gradient:
 
 ### Assets
 
-An asset is a file on disk that you declare in the scene's `assets`, to use in
-its layers and shaders. For example, these declare a bold font and a picture:
+An asset is a file on disk, or a capture device, that you declare in the
+scene's `assets`, to use in its layers and shaders. For example, these declare
+a bold font, a picture and a camera:
 
 ```json
 "assets": {
   "bold": { "file": "DejaVuSans-Bold.ttf" },
-  "wifi": { "file": "wifi.png", "sampling": "linear" }
+  "wifi": { "file": "wifi.png", "sampling": "linear" },
+  "cam": { "device": "/dev/video0" }
 }
 ```
 
-Then use `"font_family": "bold"` on a text layer, and `"image": "wifi"` on an
-image layer.
+Then use `"font_family": "bold"` on a text layer, `"image": "wifi"` on an
+image layer, and `"video": "cam"` on a video layer.
 
 ghee looks a relative path up in the scene's folder, or in the working
 directory for `ghee.open` with no scene file. Set `$GHEE_ASSETS` to a
@@ -210,6 +213,36 @@ block, like pixel art. For smooth scaling, declare the image as an asset with
 | --- | --- |
 | ![the icon scaled up in crisp blocks](../media/layers/scale-nearest.png) | ![the icon scaled up smoothly](../media/layers/scale-linear.png) |
 
+## Video layers
+
+Use a video layer to show a camera, or any capture device that streams MJPEG
+or YUYV, by its path or as an [asset](#assets). This one shows a USB camera
+as large as fits the pass:
+
+```json
+{ "name": "camera", "video": "/dev/v4l/by-id/usb-Example_Camera-video-index0" }
+```
+
+| Key | Values | Default | What it changes |
+| --- | --- | --- | --- |
+| `video` | the path of a capture device, or a video asset | required | the device |
+| `width`, `height` | pixels | the largest size that fits the pass | its size. Give one and the other keeps the aspect |
+| `color` | a colour | no tint | a tint over every pixel |
+
+Name a device by its link in `/dev/v4l/by-id` where the system makes one: the
+link stays the same across boots, and when the camera moves to another port.
+A path such as `/dev/video0` works too.
+
+ghee streams the device's smallest mode that covers the size the video draws
+at, and decodes its frames on the CPU, an MJPEG frame at a half, a quarter or
+an eighth of its size when that still covers it. A camera with a mode near the
+size you draw at costs the least: on a Pi Zero W, one 1920x1080 MJPEG frame
+takes about 110 ms of CPU at an eighth of its size.
+
+When the device is missing, or stops, the video shows yellow and black
+stripes, and stderr and `video_errors` in [`/stats`](http.md#stats) say why.
+ghee tries the device again every second, and the picture comes back with it.
+
 ## Shape layers
 
 To draw a rect, a line or a circle, use a shape layer with `"shape"` set to
@@ -263,8 +296,8 @@ bring grey back with a [filter](filters.md).
 
 ## Layers in a shader
 
-You can read a text layer's words and any image asset in a pass's shader, and
-draw them your own way.
+You can read a text layer's words, any image asset and any video asset in a
+pass's shader, and draw them your own way.
 
 ### Text in a shader
 
@@ -328,6 +361,26 @@ void main() {
 
 A shader reads an asset in crisp blocks too. To read it smoothly, set
 `"sampling": "linear"` on the asset.
+
+### Videos in a shader
+
+A video asset gives every pass the same two names, `<name>_tex` and
+`<name>_size`, which hold the newest frame of its device the right way up.
+`<name>_size` is the frame's size as ghee decodes it, which can be smaller
+than the device's. A video reads smoothly. This pass shows the `cam` asset in
+grey:
+
+```json
+"assets": { "cam": { "device": "/dev/video0" } },
+"passes": [{ "name": "main", "fragment": { "file": "grey.glsl" } }]
+```
+
+```glsl
+void main() {
+  vec3 c = texture2D(cam_tex, uv).rgb;
+  gl_FragColor = vec4(vec3(dot(c, vec3(0.299, 0.587, 0.114))), 1.0);
+}
+```
 
 ## Changing a layer at runtime
 

@@ -7,13 +7,15 @@
 // ghee_mp_* calls build and draw the scene, mp for multipass: add the passes
 // and their batches, which compile beside the running scene, commit them,
 // hand over the uniforms, arrays and assets, then render a frame at a time.
-// The ghee_encoder_* calls feed the frames to the hardware H264 codec.
+// The ghee_encoder_* calls feed the frames to the hardware H264 codec, and
+// the ghee_capture_* calls read the frames of a camera.
 //
 // Every call makes its renderer's GL context current first, so several
 // renderers live in one process, each used from the thread that created it.
 
 #ifndef GHEE_ENGINE_H
 #define GHEE_ENGINE_H
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <GLES2/gl2.h>
@@ -356,5 +358,38 @@ void ghee_encoder_destroy(GheeScene *g, GheeEncoder *e);
 // gives one JPEG of the last frame at w x h, quality 1 to 100, and destroy
 // ends it. create returns NULL and sets err on boards without /dev/video31.
 GheeEncoder *ghee_jpeg_create(GheeScene *g, int w, int h, int quality, char **err);
+
+// V4L2 capture (video.c) for video layers and video assets, on a thread of
+// the caller's with no GL. Each call that fails writes why into err, up to
+// err_len bytes.
+typedef struct GheeCapture GheeCapture;
+// One mode that a capture device streams in: a fourcc that ghee decodes,
+// MJPEG or YUYV, a size, and its highest frame rate, 0 when unknown.
+typedef struct {
+    uint32_t fourcc;
+    int width, height;
+    double fps;
+} GheeCaptureMode;
+// 1 with the device's name in `name` when `path` is a capture node that
+// streams MJPEG or YUYV, and no memory-to-memory codec, else 0.
+int  ghee_capture_probe(const char *path, char *name, int name_len);
+GheeCapture *ghee_capture_open(const char *path, char *err, int err_len);
+// Up to `max` modes of the device, in the order that it lists them.
+int  ghee_capture_modes(GheeCapture *c, GheeCaptureMode *out, int max);
+// Stream in a mode that ghee_capture_modes gave. 0, or -1 with err set.
+int  ghee_capture_start(GheeCapture *c, uint32_t fourcc, int w, int h, double fps,
+                        char *err, int err_len);
+// The stream's format as the device set it.
+void ghee_capture_format(GheeCapture *c, uint32_t *fourcc, int *w, int *h, int *bytesperline);
+// Wait up to timeout_ms for a frame, and hand out the newest one that the
+// device holds, until the next call or ghee_capture_release. 1 = *data and
+// *len set, 0 = no frame yet, -1 = the device failed, err set.
+int  ghee_capture_next(GheeCapture *c, int timeout_ms, const uint8_t **data, size_t *len,
+                       char *err, int err_len);
+void ghee_capture_release(GheeCapture *c);
+void ghee_capture_close(GheeCapture *c);
+// Run the calling thread only while no other thread of the machine wants the
+// CPU (SCHED_IDLE). 0, or -1 with errno set.
+int  ghee_thread_idle(void);
 
 #endif // GHEE_ENGINE_H

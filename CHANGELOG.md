@@ -75,6 +75,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Draw text, images, rects, lines and circles over any pass with layers and
   their effects ([Layers](docs/layers.md)). Text takes DejaVu Sans, Pixel
   Operator 8, any `.ttf` or `.otf`, a list of fonts, and colour emoji.
+- Show a camera, or any capture device that streams MJPEG or YUYV, with a
+  video layer, and read its frames in a shader through a video asset ([Video
+  layers](docs/layers.md#video-layers)). `GET /devices` lists the devices.
 - Draw from Python with no GLSL, in a `with screen.draw() as d:` block
   ([Python](docs/python.md)).
 - Give `ghee.Layer` a Pillow image or a numpy array as its `image`, as

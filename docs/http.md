@@ -104,6 +104,7 @@ runtime](layers.md#changing-a-layer-at-runtime)), take these values:
 | `x`, `y`, `opacity`, and a shape's sizes | a number |
 | `color` | a colour, written as for a param, or a text's gradient as JSON, such as `{"from":"red","to":"yellow","angle":90}` |
 | `image` | the name of an [image asset](layers.md#assets), or a `.png` or `.jpg` file in the scene's folder or in `$GHEE_ASSETS`, such as a file that `/upload` added |
+| `video` | the name of a [video asset](layers.md#assets), or the path of a capture device, as `/devices` lists it |
 | `points` | JSON, `[[x, y], ...]` |
 
 To put `x`, `y`, `color`, a rect's `width` or `height`, or a circle's
@@ -168,6 +169,7 @@ curl http://127.0.0.1:8090/stats
 | `/format` | what a layer takes: each kind's keys, the keys that change at runtime, each effect's keys and defaults, and the fonts that ghee carries |
 | `/filters` | the filters, by name |
 | `/hwinfo` | the machine: `model`, `gpu`, `ram`, `ram_free`, and on a Pi `gpu_mem` and `temp` |
+| `/devices` | `devices`, the capture devices that a [video layer](layers.md#video-layers) can show, each with its `device`, the path that a layer's `video` takes, and its `name` |
 
 ### Stats
 
@@ -181,6 +183,7 @@ curl http://127.0.0.1:8090/stats
 | `error` | the compile error, if any. ghee keeps drawing the last code that compiled |
 | `error_pass`, `error_line` | the index of the pass that holds the error, or `"common"`, and its line in that GLSL |
 | `text_errors` | one line for each text layer's problem |
+| `video_errors` | one line for each problem of a device that the scene shows, such as a device that is missing |
 | `stale` | `true` when the scene's files changed since it loaded |
 | `layer_changes` | how many times the scene's program changed its layers. Read `/scene` again when it moves |
 | `locked` | what the scene's program sets: `params` and `fields`. In a [Python console](#from-python), `scene` is `true` too: the program owns the passes, the params' settings and the assets |

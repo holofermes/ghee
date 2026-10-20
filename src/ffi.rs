@@ -15,6 +15,20 @@ pub struct GheeEncoder {
     _opaque: [u8; 0],
 }
 
+#[repr(C)]
+pub struct GheeCapture {
+    _opaque: [u8; 0],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GheeCaptureMode {
+    pub fourcc: u32,
+    pub width: c_int,
+    pub height: c_int,
+    pub fps: f64,
+}
+
 pub const PARAM_TYPE_FLOAT: c_int = 0;
 pub const PARAM_TYPE_INT: c_int = 1;
 pub const PARAM_TYPE_VEC2: c_int = 2;
@@ -292,4 +306,38 @@ extern "C" {
         quality: c_int,
         err: *mut *mut c_char,
     ) -> *mut GheeEncoder;
+    pub fn ghee_capture_probe(path: *const c_char, name: *mut c_char, name_len: c_int) -> c_int;
+    pub fn ghee_capture_open(
+        path: *const c_char,
+        err: *mut c_char,
+        err_len: c_int,
+    ) -> *mut GheeCapture;
+    pub fn ghee_capture_modes(c: *mut GheeCapture, out: *mut GheeCaptureMode, max: c_int) -> c_int;
+    pub fn ghee_capture_start(
+        c: *mut GheeCapture,
+        fourcc: u32,
+        w: c_int,
+        h: c_int,
+        fps: f64,
+        err: *mut c_char,
+        err_len: c_int,
+    ) -> c_int;
+    pub fn ghee_capture_format(
+        c: *mut GheeCapture,
+        fourcc: *mut u32,
+        w: *mut c_int,
+        h: *mut c_int,
+        bytesperline: *mut c_int,
+    );
+    pub fn ghee_capture_next(
+        c: *mut GheeCapture,
+        timeout_ms: c_int,
+        data: *mut *const u8,
+        len: *mut usize,
+        err: *mut c_char,
+        err_len: c_int,
+    ) -> c_int;
+    pub fn ghee_capture_release(c: *mut GheeCapture);
+    pub fn ghee_capture_close(c: *mut GheeCapture);
+    pub fn ghee_thread_idle() -> c_int;
 }

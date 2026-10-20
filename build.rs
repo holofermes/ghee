@@ -7,6 +7,7 @@ fn main() {
     let mut b = cc::Build::new();
     b.file("ghee/_engine/engine.c")
         .file("ghee/_engine/encoder.c")
+        .file("ghee/_engine/video.c")
         .include("ghee/_engine")
         .opt_level(3)
         .flag_if_supported("-funroll-loops");

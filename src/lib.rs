@@ -71,6 +71,7 @@ pub mod stats;
 pub(crate) mod testing;
 pub mod text;
 pub(crate) mod usage;
+pub mod video;
 
 /// The examples of docs/rust.md, built as doc tests.
 #[cfg(doctest)]

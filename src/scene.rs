@@ -315,9 +315,11 @@ pub(crate) const PASS_KEYS: [&str; 11] = [
     "layers", "visible",
 ];
 
-/// The keys of an asset. Only a .raw file takes the four after `sampling`.
-pub(crate) const ASSET_KEYS: [&str; 6] = [
+/// The keys of an asset. Only a .raw file takes the four after `sampling`,
+/// and a video asset takes `device` alone.
+pub(crate) const ASSET_KEYS: [&str; 7] = [
     "file",
+    "device",
     "sampling",
     "width",
     "height",
@@ -1160,7 +1162,8 @@ fn array_lines(a: &ArrayInput) -> Vec<String> {
     l
 }
 
-/// The preamble declarations of one image asset: its sampler and its size.
+/// The preamble declarations of one image or video asset: its sampler and
+/// its size.
 fn asset_lines(a: &Asset) -> Vec<String> {
     vec![
         format!("uniform sampler2D {}_tex;", a.name),
@@ -1257,16 +1260,21 @@ fn array_reader_lines(a: &ArrayInput, hw_linear: bool) -> Vec<String> {
     ]
 }
 
-/// A named image or font file. Every pass samples an image as
-/// `uniform sampler2D <name>_tex` and reads a `vec2 <name>_size` of (width,
-/// height). A text names a font, and only the text reads it.
+/// A named image or font file, or a capture device. Every pass samples an
+/// image, and a device's frames, as `uniform sampler2D <name>_tex` and reads
+/// a `vec2 <name>_size` of (width, height). A text names a font, and only
+/// the text reads it.
 ///
 /// A .raw file is bare pixels and declares its layout. A .png or .jpg file
-/// carries its own. A .ttf or .otf file is a font.
+/// carries its own. A .ttf or .otf file is a font. A device's frames come
+/// through crate::video.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Asset {
     pub name: String,
+    /// The file, empty for a video asset.
     pub file: String,
+    /// The path of a video asset's capture device, None for a file.
+    pub device: Option<String>,
     /// The asset's `sampling`: GL_LINEAR when true, nearest by default.
     pub linear: bool,
     /// The declared layout of a .raw file. None for a decoded format.
@@ -1307,7 +1315,12 @@ impl Asset {
 
     /// A .ttf or .otf file.
     pub fn is_font(&self) -> bool {
-        crate::text::is_font_file(&self.file)
+        self.device.is_none() && crate::text::is_font_file(&self.file)
+    }
+
+    /// A capture device's frames.
+    pub fn is_video(&self) -> bool {
+        self.device.is_some()
     }
 
     /// Decode `bytes` as this asset's declared format. `what` names the source
@@ -1344,8 +1357,34 @@ impl Asset {
             bail!("asset '{name}' needs an object, got {}", py_repr(d));
         };
         known_keys(o, &format!("asset '{name}'"), &ASSET_KEYS, &[])?;
+        if let Some(device) = o.get("device") {
+            let device = match device {
+                Value::String(s) if crate::video::is_device(s) => s.clone(),
+                v => bail!(
+                    "asset '{name}' device needs the path of a device, such as \
+                     '/dev/video0', got {}",
+                    py_repr(v)
+                ),
+            };
+            if let Some(k) = ASSET_KEYS
+                .iter()
+                .find(|k| **k != "device" && o.contains_key(**k))
+            {
+                bail!("asset '{name}' takes no '{k}', a device is a video");
+            }
+            return Ok(Asset {
+                name: name.to_string(),
+                file: String::new(),
+                device: Some(device),
+                linear: true,
+                raw: None,
+                image: None,
+                font: None,
+                from_filter: String::new(),
+            });
+        }
         let file = match o.get("file") {
-            None => bail!("asset '{name}' has no 'file'"),
+            None => bail!("asset '{name}' has no 'file' and no 'device'"),
             Some(Value::String(s)) => s.clone(),
             Some(v) => bail!("asset '{name}' 'file' needs a filename, got {}", py_repr(v)),
         };
@@ -1432,6 +1471,7 @@ impl Asset {
         Ok(Asset {
             name: name.to_string(),
             file,
+            device: None,
             linear,
             raw,
             image: None,
@@ -1442,6 +1482,10 @@ impl Asset {
 
     pub fn to_dict(&self) -> Value {
         let mut d = Map::new();
+        if let Some(device) = &self.device {
+            d.insert("device".to_string(), Value::from(device.clone()));
+            return Value::Object(d);
+        }
         d.insert("file".to_string(), Value::from(self.file.clone()));
         if let Some(r) = &self.raw {
             d.insert("width".to_string(), Value::from(r.width));
@@ -2223,6 +2267,15 @@ pub(crate) fn not_an_image(what: &str, value: &Value) -> String {
     )
 }
 
+/// The error for `value`, which the live video `what` takes when it names a
+/// video asset of the scene's own.
+pub(crate) fn not_a_video(what: &str, value: &Value) -> String {
+    format!(
+        "{what} needs a video asset of the scene or the path of a device, got {}",
+        py_repr(value)
+    )
+}
+
 /// A new look of a layer of the scene, as Scene::look() finds it.
 pub struct Look {
     /// The layer as the scene holds it.
@@ -2235,11 +2288,12 @@ pub struct Look {
     pub rebuild: bool,
 }
 
-/// The kind of `layer`: text, image, or its shape for a shape layer.
+/// The kind of `layer`: text, image, video, or its shape for a shape layer.
 fn kind_of(layer: &Layer) -> &'static str {
     match layer {
         Layer::Text(_) => "text",
         Layer::Image(_) => "image",
+        Layer::Video(_) => "video",
         Layer::Shape(l) => match l.shape {
             Shape::Rect { .. } => "rect",
             Shape::Line { .. } => "line",
@@ -2458,15 +2512,20 @@ impl Scene {
         for l in scene.layers().filter(|l| l.as_image().is_some()) {
             scene.check_file(l)?;
         }
+        for l in scene.layers().filter(|l| l.as_video().is_some()) {
+            scene.check_file(l)?;
+        }
         Ok(())
     }
 
-    /// The error for the font of text layer `l` or the image of image layer
-    /// `l`, when it names no asset of the right kind.
+    /// The error for the font of text layer `l`, the image of image layer
+    /// `l` or the video of video layer `l`, when it names no asset of the
+    /// right kind.
     fn check_file(&self, l: &Layer) -> Result<()> {
         let fault = match l {
             Layer::Text(t) => t.font_family.iter().find_map(|f| self.font_fault(f)),
             Layer::Image(i) => self.image_fault(&i.image),
+            Layer::Video(v) => self.video_fault(&v.video),
             Layer::Shape(_) => None,
         };
         match fault {
@@ -2517,6 +2576,12 @@ impl Scene {
                 "image '{image}' is the font {}, an image is a .png or .jpg file",
                 py_str_repr(&a.file)
             )),
+            Some(Asset {
+                device: Some(d), ..
+            }) => Some(format!(
+                "image '{image}' is the device {}, an image is a .png or .jpg file",
+                py_str_repr(d)
+            )),
             Some(_) => None,
             None => Some(format!(
                 "image '{image}' is no asset of the scene and no .png or .jpg file"
@@ -2524,15 +2589,37 @@ impl Scene {
         }
     }
 
+    /// Why a video layer of the scene cannot take `video`, or None when it
+    /// can: the path of a device, or a video asset of the scene's own.
+    fn video_fault(&self, video: &str) -> Option<String> {
+        if crate::video::is_device(video) {
+            return None;
+        }
+        let own = |a: &&Asset| a.name == video && a.from_filter.is_empty();
+        match self.assets.iter().find(own) {
+            Some(a) if a.is_video() => None,
+            Some(a) => Some(format!(
+                "video '{video}' is the file {}, a video is a device",
+                py_str_repr(&a.file)
+            )),
+            None => Some(format!(
+                "video '{video}' is no asset of the scene and no path of a device"
+            )),
+        }
+    }
+
     /// Put `layer` in the place of the layer of its name, which it differs
     /// from in live fields alone, through the checks of a live set: an image
-    /// layer's image.
+    /// layer's image, a video layer's video.
     pub(crate) fn swap_live(&mut self, layer: Layer) -> Result<()> {
         let name = layer.name().to_string();
         let Some((at, index)) = self.place_of(&name) else {
             bail!("the scene has no layer '{name}'");
         };
         if let Some(e) = layer.as_image().and_then(|l| self.image_fault(&l.image)) {
+            bail!("layer '{name}' {e}");
+        }
+        if let Some(e) = layer.as_video().and_then(|l| self.video_fault(&l.video)) {
             bail!("layer '{name}' {e}");
         }
         self.passes[at].layers[index] = layer;
@@ -2847,7 +2934,8 @@ impl Scene {
 
     /// Set the live field at `at` to `value`, written as the scene format
     /// writes the key, as Layer::set_live() does. A live image is an image
-    /// asset of the scene's own, or a .png or .jpg file.
+    /// asset of the scene's own, or a .png or .jpg file, and a live video a
+    /// video asset of the scene's own, or the path of a device.
     pub fn set_layer(&mut self, at: &Address, value: &Value) -> Result<()> {
         let Some(layer) = self.layer(at.layer) else {
             bail!("the scene has no layer '{}'", at.layer);
@@ -2855,10 +2943,21 @@ impl Scene {
         let live = layer.live(at.effect, at.field)?;
         if live.form == Form::Image && !value.as_str().is_some_and(is_image_file) {
             let image = |a: &Asset| {
-                a.from_filter.is_empty() && !a.is_font() && value.as_str() == Some(a.name.as_str())
+                a.from_filter.is_empty()
+                    && !a.is_font()
+                    && !a.is_video()
+                    && value.as_str() == Some(a.name.as_str())
             };
             if !self.assets.iter().any(image) {
                 bail!("{}", not_an_image(&live.what, value));
+            }
+        }
+        if live.form == Form::Video && !value.as_str().is_some_and(crate::video::is_device) {
+            let video = |a: &Asset| {
+                a.from_filter.is_empty() && a.is_video() && value.as_str() == Some(a.name.as_str())
+            };
+            if !self.assets.iter().any(video) {
+                bail!("{}", not_a_video(&live.what, value));
             }
         }
         self.passes
@@ -3350,8 +3449,8 @@ impl Scene {
             None => None,
         };
         for a in &mut self.assets {
-            if !a.from_filter.is_empty() {
-                continue; // the filter decoded it
+            if !a.from_filter.is_empty() || a.is_video() {
+                continue; // the filter decoded it, or crate::video streams it
             }
             if root.outside(&a.file) {
                 bail!(
@@ -3408,7 +3507,7 @@ fn load_layer(
             l.data = Some(std::sync::Arc::new(root.image(&l.name, &l.image)?));
             return Ok(());
         }
-        Layer::Image(_) | Layer::Shape(_) => return Ok(()),
+        Layer::Image(_) | Layer::Video(_) | Layer::Shape(_) => return Ok(()),
     };
     l.emoji = emoji.clone();
     if l.font_family.is_empty() {
@@ -3615,6 +3714,65 @@ mod tests {
 
     fn asset_scene(assets: Value) -> Value {
         json!({"version": 1, "passes": [{"name": "m", "fragment": GOOD}], "assets": assets})
+    }
+
+    /// A scene of the image asset `pic`, the video asset `cam` and pass `m`
+    /// with the one layer `layer`.
+    fn video_scene(layer: Value) -> Value {
+        json!({"version": 1,
+               "assets": {"pic": {"file": "pic.png"}, "cam": {"device": "/dev/video0"}},
+               "passes": [{"name": "m", "fragment": GOOD, "layers": [layer]}]})
+    }
+
+    #[test]
+    fn a_video_layer_and_a_video_asset_read_back_as_written() {
+        for layer in [
+            json!({"name": "v", "video": "cam"}),
+            json!({"name": "v", "video": "/dev/v4l/by-id/usb-cam-video-index0", "x": 4.0,
+                   "width": 32.0, "color": "#ff8000", "opacity": 0.5, "blend": "screen"}),
+        ] {
+            let doc = video_scene(layer);
+            let sc = Scene::from_dict(&doc, None, None).unwrap();
+            assert_eq!(
+                sc.to_dict()["passes"][0]["layers"],
+                doc["passes"][0]["layers"]
+            );
+            assert_eq!(sc.to_dict()["assets"], doc["assets"]);
+        }
+    }
+
+    #[test]
+    fn a_video_or_an_image_that_names_the_wrong_thing_is_refused() {
+        let err = |doc: Value| Scene::from_dict(&doc, None, None).unwrap_err().to_string();
+        let cases = [
+            (
+                video_scene(json!({"name": "v", "video": "nope"})),
+                "layer 'v' video 'nope' is no asset of the scene and no path of a device",
+            ),
+            (
+                video_scene(json!({"name": "v", "video": "pic"})),
+                "layer 'v' video 'pic' is the file 'pic.png', a video is a device",
+            ),
+            (
+                video_scene(json!({"name": "i", "image": "cam"})),
+                "layer 'i' image 'cam' is the device '/dev/video0', an image is a .png or .jpg file",
+            ),
+            (
+                video_scene(json!({"name": "v", "video": ""})),
+                "layer 'v' video needs the name of a video asset or the path of a device, got ''",
+            ),
+            (
+                asset_scene(json!({"cam": {"device": "video0"}})),
+                "asset 'cam' device needs the path of a device, such as '/dev/video0', got 'video0'",
+            ),
+            (
+                asset_scene(json!({"cam": {"device": "/dev/video0", "sampling": "linear"}})),
+                "asset 'cam' takes no 'sampling', a device is a video",
+            ),
+        ];
+        for (doc, want) in cases {
+            assert_eq!(err(doc), format!("scene: {want}"));
+        }
     }
 
     fn common_scene(common: Option<Value>, passes: Option<Vec<Value>>) -> Value {

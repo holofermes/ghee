@@ -52,12 +52,13 @@ use crate::ffi;
 use crate::hinted;
 use crate::layer::{
     image_label, is_image_data, is_image_file, Address, Detail, ImageLayer, Kind, Layer, Render,
-    TextLayer, GLSL_NAME,
+    TextLayer, VideoLayer, GLSL_NAME,
 };
 use crate::run::{Candidate, Class, Mode, Open};
 use crate::scene::{ArraySize, Glsl, Look, ParamValue, Pass, Sampling, Scene};
 use crate::shape::ShapeLayer;
 use crate::text::{self, Fault, Layout};
+use crate::video::{self, Capture};
 
 /// The passes that the engine holds, filter passes included. engine.c holds
 /// the same number as MP_MAX_PASSES.
@@ -483,7 +484,40 @@ fn joins_runs(l: &Layer) -> bool {
     match l {
         Layer::Shape(_) => true,
         Layer::Text(t) => t.render == Render::Slug && t.effects.is_empty(),
-        Layer::Image(_) => false,
+        Layer::Image(_) | Layer::Video(_) => false,
+    }
+}
+
+/// A capture device whose frames an engine asset holds: a video asset of
+/// the scene, under its name, or the device that video layers name by its
+/// path, under an asset of its own.
+struct Video {
+    /// The engine asset.
+    asset: String,
+    /// The device's path.
+    device: String,
+    /// The video asset, None for a device that layers name.
+    declared: Option<String>,
+    capture: Arc<Capture>,
+    /// The user that the capture knows the renderer by.
+    user: u64,
+    /// The frame that the asset holds, 0 before the first.
+    seq: u64,
+    /// The size of the asset's pixels.
+    size: (u32, u32),
+    /// True while the asset holds the stripes of a device with a problem.
+    striped: bool,
+}
+
+impl Video {
+    fn device(&self) -> &str {
+        &self.device
+    }
+}
+
+impl Drop for Video {
+    fn drop(&mut self) {
+        self.capture.need(self.user, None);
     }
 }
 
@@ -713,6 +747,21 @@ fn drawn_files(drawn: &[Pass]) -> impl Iterator<Item = &ImageLayer> {
         .flat_map(|p| &p.layers)
         .filter_map(Layer::as_image)
         .filter(|l| l.is_file())
+}
+
+/// The pass pixels that video layer `l` spans in a pass of `pass` pixels,
+/// for frames of width / height `aspect`, rounded up.
+fn drawn_size(l: &VideoLayer, pass: [f64; 2], aspect: f64) -> (u32, u32) {
+    let (w, h) = match (l.width, l.height) {
+        (Some(w), Some(h)) => (w, h),
+        (Some(w), None) => (w, w / aspect),
+        (None, Some(h)) => (h * aspect, h),
+        (None, None) => {
+            let h = (pass[0] / aspect).min(pass[1]);
+            (h * aspect, h)
+        }
+    };
+    (w.ceil().max(1.0) as u32, h.ceil().max(1.0) as u32)
 }
 
 /// Whether a pass whose fragment an edit changed goes on from its buffers.
@@ -1271,6 +1320,15 @@ pub struct Renderer {
     files: std::cell::RefCell<Vec<(String, String)>>,
     /// The files that the renderer loaded since it was created.
     file_count: std::cell::Cell<usize>,
+    /// The capture devices whose frames the scene shows.
+    videos: std::cell::RefCell<Vec<Video>>,
+    /// The engine assets that the renderer made for devices since it was
+    /// created.
+    video_count: std::cell::Cell<usize>,
+    /// The problems of the devices that the scene shows, a line each.
+    video_errors: std::cell::RefCell<Vec<String>>,
+    /// Counts the changes to video_errors.
+    video_errors_seq: std::cell::Cell<u64>,
     /// True once the engine holds the shape program for the renderer's life.
     shapes_kept: std::cell::Cell<bool>,
     /// True once the engine holds crate::run::program for the renderer's
@@ -1473,6 +1531,10 @@ impl Renderer {
             words: std::cell::RefCell::new(HashMap::new()),
             files: std::cell::RefCell::new(Vec::new()),
             file_count: std::cell::Cell::new(0),
+            videos: std::cell::RefCell::new(Vec::new()),
+            video_count: std::cell::Cell::new(0),
+            video_errors: std::cell::RefCell::new(Vec::new()),
+            video_errors_seq: std::cell::Cell::new(0),
             shapes_kept: std::cell::Cell::new(false),
             mixed_kept: std::cell::Cell::new(false),
             curves: HashSet::new(),
@@ -1927,7 +1989,9 @@ impl Renderer {
                                 _ => Class::Joins,
                             }
                         }
-                        Layer::Image(_) => unreachable!("a run takes no image"),
+                        Layer::Image(_) | Layer::Video(_) => {
+                            unreachable!("a run takes no picture")
+                        }
                     };
                     Some(Candidate {
                         text: l.as_text().is_some(),
@@ -1991,6 +2055,9 @@ impl Renderer {
                         b
                     }
                     (None, Layer::Image(l), _) => {
+                        self.add_batch(idx, &name, &l.shaders(), l.blend)?
+                    }
+                    (None, Layer::Video(l), _) => {
                         self.add_batch(idx, &name, &l.shaders(), l.blend)?
                     }
                     (None, _, Some(sh)) => self.add_batch(idx, &name, &sh.glyphs, l.blend())?,
@@ -2202,7 +2269,11 @@ impl Renderer {
         }
         // Assets go in before the channels and the arrays, so the engine's
         // texture-unit budget counts them.
-        for a in scene.assets.iter().filter(|a| !a.is_font()) {
+        for a in scene
+            .assets
+            .iter()
+            .filter(|a| !a.is_font() && !a.is_video())
+        {
             let Some(img) = &a.image else {
                 self.error = format!(
                     "asset '{}': '{}' was never loaded, the scene was built without a directory",
@@ -2229,6 +2300,10 @@ impl Renderer {
             }
             self.scene_asset(&a.name);
         }
+        if let Err(e) = self.video_assets(scene) {
+            self.error = e.to_string();
+            return Ok(self.error.clone());
+        }
         // An image layer's file goes in as an engine asset, one for each
         // file.
         for l in drawn_files(&drawn) {
@@ -2251,6 +2326,19 @@ impl Renderer {
         for (dl, l) in self.layers.iter().zip(drawn.iter().flat_map(|p| &p.layers)) {
             for (name, ty, value) in l.uniforms() {
                 self.set_layer_uniform(dl, &name, ty, value)?;
+            }
+            if let Layer::Video(l) = l {
+                let video = self.video_asset(l);
+                let shown = video
+                    .and_then(|v| self.bind_image(dl.batch, &v))
+                    .and_then(|()| {
+                        self.batch_quads(dl.batch, &format!("layer '{}'", l.name), &IMAGE_QUAD, 1)
+                    });
+                if let Err(e) = shown {
+                    self.error = e.to_string();
+                    return Ok(self.error.clone());
+                }
+                continue;
             }
             let Layer::Image(l) = l else { continue };
             let image = self.image_asset(l)?;
@@ -2303,6 +2391,7 @@ impl Renderer {
         if let Err(e) = self
             .tick_texts(true)
             .and_then(|()| self.regroup())
+            .and_then(|()| self.sync_videos())
             .and_then(|()| self.settle())
         {
             self.error = e.to_string();
@@ -2450,13 +2539,14 @@ impl Renderer {
         Ok(())
     }
 
-    /// Upload each declared array for this frame, once per unique name, and
-    /// the glyphs that the atlases gained.
+    /// Upload each declared array for this frame, once per unique name, the
+    /// newest frame of each video, and the glyphs that the atlases gained.
     ///
     /// A render uploads what the provider returns. An Unchanged answer states
     /// that the texture already holds this array, and the upload is skipped.
     /// The engine never caches or compares data.
     fn feed(&self, provider: Option<Provider<'_>>) -> Result<()> {
+        self.pump_videos()?;
         self.tick_texts(false)?;
         self.advance()?;
         self.settle()?;
@@ -2869,6 +2959,7 @@ impl Renderer {
             let image = layer.as_image().map(|l| l.image.clone());
             (layer.lean(), shown, image, value)
         };
+        let video = before.as_video().map(|l| l.video.clone());
         if let (Some(_), Some(file)) = (&image, value.as_str().filter(|v| is_image_file(v))) {
             if self.layers.iter().any(|d| d.name == at.layer) {
                 self.load_file(at.layer, file).map_err(refused)?;
@@ -2896,6 +2987,11 @@ impl Renderer {
                     self.bind_image(dl.batch, &self.image_asset(l)?)?;
                 }
             }
+            if let Layer::Video(l) = layer {
+                if video.as_ref() != Some(&l.video) {
+                    self.bind_image(dl.batch, &self.video_asset(l)?)?;
+                }
+            }
             if let Layer::Shape(l) = layer {
                 self.reshape(l);
             }
@@ -2903,6 +2999,9 @@ impl Renderer {
         };
         if now_shown && !shown {
             self.first_shown(at.layer)?;
+        }
+        if video.is_some() {
+            self.sync_videos()?;
         }
         self.drop_unshown_data();
         self.settle()
@@ -3002,6 +3101,265 @@ impl Renderer {
             .borrow_mut()
             .push((file.to_string(), name.clone()));
         Ok(name)
+    }
+
+    /// The engine asset that video layer `l` draws: its video asset's, or
+    /// the one of its device.
+    fn video_asset(&self, l: &VideoLayer) -> Result<String> {
+        if l.is_device() {
+            return self.device_asset(&l.video);
+        }
+        let videos = self.videos.borrow();
+        match videos
+            .iter()
+            .find(|v| v.declared.as_deref() == Some(l.video.as_str()))
+        {
+            Some(v) => Ok(v.asset.clone()),
+            None => bail!("layer '{}': video '{}' was never set", l.name, l.video),
+        }
+    }
+
+    /// The engine asset that holds the frames of `device`: a video asset's
+    /// of that device, else one of the device's own, made now when no layer
+    /// showed the device before.
+    fn device_asset(&self, device: &str) -> Result<String> {
+        if let Some(v) = self.videos.borrow().iter().find(|v| v.device() == device) {
+            return Ok(v.asset.clone());
+        }
+        let n = self.video_count.get();
+        self.video_count.set(n + 1);
+        // A layer's name starts with a letter, so no program reads
+        // `<name>_tex` of this asset, and it binds to the batches given it
+        // alone.
+        let v = self.new_video(text::internal(&n.to_string(), "_video"), None, device)?;
+        let asset = v.asset.clone();
+        self.videos.borrow_mut().push(v);
+        Ok(asset)
+    }
+
+    /// A video of `device` under the engine asset `asset`, which holds the
+    /// newest frame that the device's capture holds, or nothing at
+    /// video::FIRST_SIZE before its first frame.
+    fn new_video(&self, asset: String, declared: Option<&str>, device: &str) -> Result<Video> {
+        let mut v = Video {
+            asset,
+            device: device.to_string(),
+            declared: declared.map(str::to_string),
+            capture: Capture::of(device),
+            user: Capture::user(),
+            seq: 0,
+            size: (0, 0),
+            striped: false,
+        };
+        match v.capture.newer(0) {
+            Some(f) => {
+                self.put_video(&mut v, f.width, f.height, &f.rgba)?;
+                v.seq = f.seq;
+            }
+            None => {
+                let (w, h) = video::FIRST_SIZE;
+                self.put_video(&mut v, w, h, &vec![0; (w * h * 4) as usize])?;
+            }
+        }
+        Ok(v)
+    }
+
+    /// Put `rgba`, RGBA rows of `w` x `h` pixels, the bottom row first, in
+    /// the engine asset of `v`: in place at the size that it holds, else as a
+    /// new texture.
+    fn put_video(&self, v: &mut Video, w: u32, h: u32, rgba: &[u8]) -> Result<()> {
+        if v.size == (w, h) {
+            let cname = CString::new(v.asset.as_str())?;
+            let ok = unsafe {
+                ffi::ghee_mp_set_asset_rows(
+                    self.handle,
+                    cname.as_ptr(),
+                    rgba.as_ptr().cast::<c_void>(),
+                    0,
+                    h as c_int,
+                )
+            };
+            if !ok {
+                bail!(
+                    "{}",
+                    or_else(self.last_error(), &format!("asset '{}' refused", v.asset))
+                );
+            }
+            return Ok(());
+        }
+        self.put_asset(
+            &v.asset,
+            w,
+            h,
+            4,
+            ffi::GHEE_FILTER_LINEAR,
+            AssetData::U8(rgba),
+        )?;
+        v.size = (w, h);
+        Ok(())
+    }
+
+    /// Give the video assets of `scene` their engine assets, which a pass
+    /// samples as `<name>_tex`, and drop the video assets that `scene` no
+    /// longer declares. A video asset of the
+    /// same device as before keeps its capture and its frame.
+    fn video_assets(&self, scene: &Scene) -> Result<()> {
+        let declared: Vec<(&str, &str)> = scene
+            .assets
+            .iter()
+            .filter(|a| a.from_filter.is_empty())
+            .filter_map(|a| Some((a.name.as_str(), a.device.as_deref()?)))
+            .collect();
+        let mut gone = Vec::new();
+        self.videos.borrow_mut().retain(|v| {
+            let keep = match &v.declared {
+                Some(name) => declared.contains(&(name.as_str(), v.device())),
+                None => true,
+            };
+            if !keep {
+                gone.push(v.asset.clone());
+            }
+            keep
+        });
+        self.drop_assets(&gone);
+        for (name, device) in declared {
+            if self
+                .videos
+                .borrow()
+                .iter()
+                .any(|v| v.declared.as_deref() == Some(name))
+            {
+                continue;
+            }
+            let v = self.new_video(name.to_string(), Some(name), device)?;
+            self.videos.borrow_mut().push(v);
+        }
+        Ok(())
+    }
+
+    /// Drop the videos of devices that no drawn layer of the scene names by
+    /// its path, and tell each capture the size that the scene draws its
+    /// frames at.
+    fn sync_videos(&self) -> Result<()> {
+        let named: Vec<String> = {
+            let scene = self.scene.borrow();
+            scene
+                .as_ref()
+                .map(|s| {
+                    s.layers()
+                        .filter_map(Layer::as_video)
+                        .filter(|l| l.is_device() && self.drawn(&l.name).is_some())
+                        .map(|l| l.video.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut gone = Vec::new();
+        self.videos.borrow_mut().retain(|v| {
+            let keep = v.declared.is_some() || named.iter().any(|d| d == v.device());
+            if !keep {
+                gone.push(v.asset.clone());
+            }
+            keep
+        });
+        self.drop_assets(&gone);
+        self.video_needs();
+        Ok(())
+    }
+
+    /// Free the engine assets `names`.
+    fn drop_assets(&self, names: &[String]) {
+        for name in names {
+            if let Ok(cname) = CString::new(name.as_str()) {
+                unsafe { ffi::ghee_mp_drop_asset(self.handle, cname.as_ptr()) };
+            }
+        }
+    }
+
+    /// Tell each capture the size that the scene draws its frames at: the
+    /// largest that a drawn video layer spans, and the frame's size when a
+    /// program samples its video asset. A video that nothing draws needs
+    /// none, and its capture closes the device.
+    fn video_needs(&self) {
+        let scene = self.scene.borrow();
+        let (sw, sh) = self.scene_size();
+        for v in self.videos.borrow().iter() {
+            let aspect = f64::from(v.size.0.max(1)) / f64::from(v.size.1.max(1));
+            let mut need: Option<(u32, u32)> = None;
+            let mut take = |(w, h): (u32, u32)| {
+                need = Some(need.map_or((w, h), |(nw, nh)| (nw.max(w), nh.max(h))));
+            };
+            for p in scene.iter().flat_map(|s| &s.passes) {
+                for l in p.layers.iter().filter_map(Layer::as_video) {
+                    let shows = match &v.declared {
+                        Some(name) if *name == l.video => true,
+                        _ => l.is_device() && l.video == v.device(),
+                    };
+                    if shows && self.drawn(&l.name).is_some() {
+                        take(drawn_size(l, self.pass_size(&p.name), aspect));
+                    }
+                }
+            }
+            if let Some(name) = &v.declared {
+                let tex = CString::new(format!("{name}_tex")).unwrap_or_default();
+                if unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
+                    take((sw.max(1) as u32, sh.max(1) as u32));
+                }
+            }
+            v.capture.need(v.user, need);
+        }
+    }
+
+    /// Put the newest frame of each video in its engine asset, or the
+    /// stripes of a device with a problem, and note the problems for
+    /// video_errors(). A frame of another aspect tells the captures their
+    /// sizes again.
+    fn pump_videos(&self) -> Result<()> {
+        let mut problems = Vec::new();
+        let mut reshaped = false;
+        {
+            let mut videos = self.videos.borrow_mut();
+            for v in videos.iter_mut() {
+                let problem = v.capture.problem();
+                if let Some(f) = v.capture.newer(v.seq) {
+                    let (w, h) = v.size;
+                    reshaped |=
+                        u64::from(w) * u64::from(f.height) != u64::from(h) * u64::from(f.width);
+                    self.put_video(v, f.width, f.height, &f.rgba)?;
+                    v.seq = f.seq;
+                    v.striped = false;
+                } else if problem.is_some() && !v.striped {
+                    let (w, h) = v.size;
+                    self.put_video(v, w, h, &video::stripes(w, h))?;
+                    v.striped = true;
+                }
+                if let Some(p) = problem {
+                    let line = format!("video {}: {p}", crate::scene::py_str_repr(v.device()));
+                    if !problems.contains(&line) {
+                        problems.push(line);
+                    }
+                }
+            }
+        }
+        if *self.video_errors.borrow() != problems {
+            *self.video_errors.borrow_mut() = problems;
+            self.video_errors_seq.set(self.video_errors_seq.get() + 1);
+        }
+        if reshaped {
+            self.video_needs();
+        }
+        Ok(())
+    }
+
+    /// The problems of the devices that the scene shows, a line each: a
+    /// device that is missing, that failed, or that sends no frame.
+    pub fn video_errors(&self) -> Vec<String> {
+        self.video_errors.borrow().clone()
+    }
+
+    /// A count that changes whenever video_errors() does.
+    pub fn video_errors_seq(&self) -> u64 {
+        self.video_errors_seq.get()
     }
 
     /// Free the engine asset of each PNG data URI that no image layer of the
@@ -3185,6 +3543,7 @@ impl Renderer {
             let scene = self.scene.borrow();
             match scene.as_ref().and_then(|s| s.layer(name)) {
                 Some(Layer::Image(l)) => vec![l.shaders()],
+                Some(Layer::Video(l)) => vec![l.shaders()],
                 Some(Layer::Text(l)) => {
                     let l = self.concrete(l);
                     let sh = self.text_shaders(&l, self.detail(&l));
@@ -3240,6 +3599,11 @@ impl Renderer {
                 self.file_asset(&l.name, &l.image, img).map_err(refused)?;
             }
         }
+        if let Layer::Video(l) = &*new {
+            if drawn && l.is_device() {
+                self.device_asset(&l.video)?;
+            }
+        }
         Ok(drawn)
     }
 
@@ -3249,6 +3613,7 @@ impl Renderer {
         match new {
             Layer::Shape(l) => self.add_shape(pass, index, l),
             Layer::Image(l) => self.add_image(pass, idx, index, l),
+            Layer::Video(l) => self.add_video(pass, idx, index, l),
             Layer::Text(l) => self.add_text(pass, idx, index, l),
         }
     }
@@ -3384,6 +3749,11 @@ impl Renderer {
                 self.load_file(&name, &n.image).map_err(refused)?;
             }
         }
+        if let (Layer::Video(n), Layer::Video(o)) = (&new, &old) {
+            if drawn && n.video != o.video && n.is_device() {
+                self.device_asset(&n.video)?;
+            }
+        }
         self.scene
             .borrow_mut()
             .as_mut()
@@ -3402,10 +3772,10 @@ impl Renderer {
     }
 
     /// Draw the live fields of `new`, which the scene holds now in place of
-    /// `old`, its look before: the layer's uniforms that changed, its image,
-    /// its shape's quads and its new words `words`, which the runs take at
-    /// the next settle(). A text layer that shows for the first time since
-    /// the setup builds its atlas.
+    /// `old`, its look before: the layer's uniforms that changed, its image
+    /// or its video, its shape's quads and its new words `words`, which the
+    /// runs take at the next settle(). A text layer that shows for the first
+    /// time since the setup builds its atlas.
     fn show_live(&self, old: &Layer, new: &Layer, words: Option<&str>) -> Result<()> {
         let name = new.name();
         let Some(dl) = self.drawn(name) else {
@@ -3417,6 +3787,11 @@ impl Renderer {
         if let (Layer::Image(n), Layer::Image(o)) = (new, old) {
             if n.image != o.image {
                 self.bind_image(dl.batch, &self.image_asset(n)?)?;
+            }
+        }
+        if let (Layer::Video(n), Layer::Video(o)) = (new, old) {
+            if n.video != o.video {
+                self.bind_image(dl.batch, &self.video_asset(n)?)?;
             }
         }
         if let Layer::Shape(l) = new {
@@ -3956,6 +4331,7 @@ impl Renderer {
     /// regroup(), then settle().
     fn refresh(&mut self) -> Result<()> {
         self.regroup()?;
+        self.sync_videos()?;
         self.settle()
     }
 
@@ -4219,6 +4595,30 @@ impl Renderer {
             self.set_layer_uniform(&dl, &u, ty, value)?;
         }
         self.bind_image(batch, &self.image_asset(l)?)?;
+        self.batch_quads(batch, &name, &IMAGE_QUAD, 1)?;
+        self.put_drawn(pass_name, index, dl);
+        self.rerun(pass_name, Vec::new())
+    }
+
+    /// Draw video layer `l`, new at `index` of drawn pass `pass`.
+    fn add_video(
+        &mut self,
+        pass_name: &str,
+        pass: c_int,
+        index: usize,
+        l: &VideoLayer,
+    ) -> Result<()> {
+        let after = self.after(pass_name, index);
+        let name = format!("layer '{}'", l.name);
+        let batch = self.insert_batch(pass, after, &name, Some(l.shaders()), l.blend)?;
+        let dl = LayerBatches {
+            batch,
+            ..Self::undrawn(&l.name)
+        };
+        for (u, ty, value) in l.uniforms() {
+            self.set_layer_uniform(&dl, &u, ty, value)?;
+        }
+        self.bind_image(batch, &self.video_asset(l)?)?;
         self.batch_quads(batch, &name, &IMAGE_QUAD, 1)?;
         self.put_drawn(pass_name, index, dl);
         self.rerun(pass_name, Vec::new())
@@ -11812,5 +12212,125 @@ mod tests {
             "rotate needs a renderer with no scene yet"
         );
         assert_eq!(r.scene_size(), (W as i32, H as i32));
+    }
+
+    /// RGB rows of `w` x `h` pixels, the top row first: the top half `top`,
+    /// the bottom half `bottom`.
+    fn halves(w: usize, h: usize, top: [u8; 3], bottom: [u8; 3]) -> Vec<u8> {
+        (0..w * h)
+            .flat_map(|i| if i < w * h / 2 { top } else { bottom })
+            .collect()
+    }
+
+    fn rgb_of(frame: &[u8], x: usize, y: usize) -> [u8; 3] {
+        let at = (y * W + x) * COMPONENTS;
+        [frame[at], frame[at + 1], frame[at + 2]]
+    }
+
+    const RED: [u8; 3] = [255, 0, 0];
+    const BLUE: [u8; 3] = [0, 0, 255];
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_video_layer_fits_its_pass_and_shows_the_newest_frame_upright() {
+        let cam = Capture::fake("/test/fit");
+        cam.show(4, 2, &halves(4, 2, RED, BLUE));
+        let (_g, mut r) = gpu();
+        let layers = json!([{"name": "v", "video": "/test/fit"}]);
+        r.setup(&scene_of(
+            json!([{"name": "main", "fragment": FLAT, "layers": layers}]),
+        ))
+        .unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        // 2:1 in 64x48: 64x32, from row 8 to row 40
+        assert_eq!(rgb_of(&f, 32, 10), RED);
+        assert_eq!(rgb_of(&f, 32, 37), BLUE);
+        let flat = [127.5, 63.75, 191.25];
+        assert!((0..3).all(|c| (f64::from(rgb_of(&f, 32, 4)[c]) - flat[c]).abs() <= 1.0));
+        assert_eq!(cam.wanted(), Some((64, 32)));
+        cam.show(4, 2, &halves(4, 2, [0, 255, 0], [255, 255, 255]));
+        let f = r.render(None).unwrap().to_vec();
+        assert_eq!(rgb_of(&f, 32, 10), [0, 255, 0]);
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_video_asset_gives_every_pass_its_frames_and_their_size() {
+        let cam = Capture::fake("/test/asset");
+        cam.show(4, 2, &halves(4, 2, RED, BLUE));
+        let (_g, mut r) = gpu();
+        let fragment = "void main(){ gl_FragColor = uv.x < 0.5 ? texture2D(cam_tex, uv) \
+                        : vec4(cam_size / 255.0, 0.0, 1.0); }";
+        let scene = Scene::from_dict(
+            &json!({"version": 1, "assets": {"cam": {"device": "/test/asset"}},
+                    "passes": [{"name": "main", "fragment": fragment}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        r.setup(&scene).unwrap();
+        let f = r.render(None).unwrap().to_vec();
+        assert_eq!(rgb_of(&f, 8, 2), RED);
+        assert_eq!(rgb_of(&f, 8, 45), BLUE);
+        assert_eq!(rgb_of(&f, 48, 24), [4, 2, 0]);
+        // a pass reads it whole, so it decodes at the frame's size
+        assert_eq!(cam.wanted(), Some((W as u32, H as u32)));
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_missing_device_shows_hazard_stripes_and_says_why() {
+        let (_g, mut r) = gpu();
+        let layers = json!([{"name": "v", "video": "/nonexistent/video7"}]);
+        r.setup(&scene_of(
+            json!([{"name": "main", "fragment": FLAT, "layers": layers}]),
+        ))
+        .unwrap();
+        crate::testing::until(|| {
+            r.render(None).unwrap();
+            !r.video_errors().is_empty()
+        });
+        assert_eq!(
+            r.video_errors(),
+            vec!["video '/nonexistent/video7': No such file or directory".to_string()]
+        );
+        let f = r.render(None).unwrap().to_vec();
+        // 16:9 in 64x48: 64x36, from row 6 to row 42
+        let inside: Vec<[u8; 3]> = (8..40)
+            .flat_map(|y| (0..W).map(move |x| (x, y)))
+            .map(|(x, y)| rgb_of(&f, x, y))
+            .collect();
+        let near = |c: [u8; 3], want: [u8; 3]| (0..3).all(|i| c[i].abs_diff(want[i]) <= 8);
+        let yellow = inside.iter().filter(|c| near(**c, [255, 204, 0])).count();
+        let black = inside.iter().filter(|c| near(**c, [0, 0, 0])).count();
+        assert!(
+            yellow > inside.len() / 3 && black > inside.len() / 3,
+            "{yellow} {black}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_video_layer_takes_another_device_live_and_lets_the_first_go() {
+        let a = Capture::fake("/test/live-a");
+        a.show(2, 1, &[255, 0, 0, 255, 0, 0]);
+        let b = Capture::fake("/test/live-b");
+        b.show(2, 1, &[0, 0, 255, 0, 0, 255]);
+        let (_g, mut r) = gpu();
+        let layers = json!([{"name": "v", "video": "/test/live-a"}]);
+        r.setup(&scene_of(
+            json!([{"name": "main", "fragment": FLAT, "layers": layers}]),
+        ))
+        .unwrap();
+        assert_eq!(rgb_of(r.render(None).unwrap(), 32, 24), RED);
+        let at = Address {
+            layer: "v",
+            effect: None,
+            field: "video",
+        };
+        r.set_layer(&at, Given::Text("/test/live-b")).unwrap();
+        assert_eq!(rgb_of(r.render(None).unwrap(), 32, 24), BLUE);
+        assert_eq!(a.wanted(), None);
+        assert_eq!(b.wanted(), Some((64, 32)));
     }
 }

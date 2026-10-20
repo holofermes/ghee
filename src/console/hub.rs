@@ -152,6 +152,8 @@ struct Stat {
     apply_error: String,
     /// The renderer's text_errors(), a line each.
     texts: Vec<String>,
+    /// The renderer's video_errors(), a line each.
+    videos: Vec<String>,
     display: Value,
     error_line: Option<i64>,
     error_pass: Option<ErrorPass>,
@@ -407,6 +409,7 @@ impl Hub {
             d.insert("frame_ms".to_string(), Value::from(stat.frame_ms));
             d.insert("error".to_string(), Value::from(error.clone()));
             d.insert("text_errors".to_string(), Value::from(stat.texts.clone()));
+            d.insert("video_errors".to_string(), Value::from(stat.videos.clone()));
             d.insert("display".to_string(), stat.display.clone());
             d.insert(
                 "error_line".to_string(),
@@ -497,6 +500,11 @@ impl Hub {
     /// The problems of the scene's text layers, a line each.
     pub fn set_text_errors(&self, lines: Vec<String>) {
         lock(&self.stat).texts = lines;
+    }
+
+    /// The problems of the devices that the scene shows, a line each.
+    pub fn set_video_errors(&self, lines: Vec<String>) {
+        lock(&self.stat).videos = lines;
     }
 
     /// A failure that the host can't draw through. /frame.png answers with it.

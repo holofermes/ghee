@@ -87,7 +87,7 @@ Both run y up, with y = 0 at the bottom, as in GL.
 | `passes` | a list of [passes](#passes) | required | the shaders, in the order that they draw |
 | `params` | `{"<name>": <param>}` | none | [params](#params) that every pass reads |
 | `common` | GLSL, or `{"file": "common.glsl"}` | none | GLSL that ghee puts at the top of every pass, such as a function that two passes share |
-| `assets` | `{"<name>": <asset>}` | none | image, font and [data](#data-files) files ([Assets](layers.md#assets)) |
+| `assets` | `{"<name>": <asset>}` | none | image, font and [data](#data-files) files, and capture devices ([Assets](layers.md#assets)) |
 | `filters` | a list of filter names, or of objects with a `name` and the filter's settings | none | passes that ghee adds after the scene's own, such as `dither` ([Filters](filters.md)) |
 | `version` | `1` | `1` | the scene format's version |
 

@@ -24,7 +24,7 @@ use crate::draw::{self, Arg, CallKind};
 use crate::engine::Blend;
 use crate::layer::{
     every_dict, given, number, object, spoken, Every, Form, Live, Rebuild, Rgb, COLOUR_FORMS,
-    IMAGE_KIND, TEXT_KIND,
+    IMAGE_KIND, TEXT_KIND, VIDEO_KIND,
 };
 use crate::scene::{known_keys, py_repr};
 
@@ -149,9 +149,18 @@ impl ShapeLayer {
             }
         };
         let (own, others): (&[&str], _) = match kind {
-            "line" => (&LINE_KEYS, [RECT_KIND, CIRCLE_KIND, TEXT_KIND, IMAGE_KIND]),
-            "circle" => (&CIRCLE_KEYS, [RECT_KIND, LINE_KIND, TEXT_KIND, IMAGE_KIND]),
-            _ => (&RECT_KEYS, [LINE_KIND, CIRCLE_KIND, TEXT_KIND, IMAGE_KIND]),
+            "line" => (
+                &LINE_KEYS,
+                [RECT_KIND, CIRCLE_KIND, TEXT_KIND, IMAGE_KIND, VIDEO_KIND],
+            ),
+            "circle" => (
+                &CIRCLE_KEYS,
+                [RECT_KIND, LINE_KIND, TEXT_KIND, IMAGE_KIND, VIDEO_KIND],
+            ),
+            _ => (
+                &RECT_KEYS,
+                [LINE_KIND, CIRCLE_KIND, TEXT_KIND, IMAGE_KIND, VIDEO_KIND],
+            ),
         };
         let e = Every::from_dict(at, o, own, &others)?;
         let what = e.what.as_str();

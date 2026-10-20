@@ -1353,6 +1353,16 @@ fn publish_text_errors(console: &Console, renderer: &Renderer, seen: &Cell<u64>)
     }
 }
 
+/// Publish the problems of the renderer's devices for /stats, when they
+/// changed since the count `seen`.
+fn publish_video_errors(console: &Console, renderer: &Renderer, seen: &Cell<u64>) {
+    let seq = renderer.video_errors_seq();
+    if seq != seen.get() {
+        seen.set(seq);
+        console.hub.set_video_errors(renderer.video_errors());
+    }
+}
+
 /// Run the console's render loop on this thread. The console adds the command
 /// queue, the published scene and the stale snapshot. A frame error must not
 /// kill the thread.
@@ -1394,6 +1404,7 @@ pub fn render_loop(
     let mut reported = String::new();
     let times: RefCell<Vec<f64>> = RefCell::new(Vec::new());
     let text_errors = Cell::new(renderer.borrow().text_errors_seq());
+    let video_errors = Cell::new(renderer.borrow().video_errors_seq());
     let timed = on_stats.is_some();
     // A display or a sink of the caller's takes every frame. Without one, the
     // frames reach the viewers alone.
@@ -1450,6 +1461,7 @@ pub fn render_loop(
                 publish(console, &renderer, &st, &ctrl, false);
             }
             publish_text_errors(console, &renderer.borrow(), &text_errors);
+            publish_video_errors(console, &renderer.borrow(), &video_errors);
             if timed {
                 times.borrow_mut().push(cost);
             }
@@ -3119,6 +3131,7 @@ mod tests {
             "error_line",
             "error_pass",
             "text_errors",
+            "video_errors",
             "active",
             "display",
             "stale",

@@ -45,7 +45,7 @@ use crate::console::{static_asset, WEB};
 use crate::engine::Given;
 use crate::filters::{filter_defs, rebuild_filters};
 use crate::layer::{Address, Form, Layer, Live, Rgb};
-use crate::scene::{no_layer, no_param, not_an_image, py_repr, Scene};
+use crate::scene::{no_layer, no_param, not_a_video, not_an_image, py_repr, Scene};
 use crate::usage;
 
 /// The console's cap on a request body. A POSTed scene is JSON text.
@@ -64,13 +64,14 @@ pub const POST_ONLY: [&str; 12] = [
 ];
 
 /// The paths that only read. Each takes GET and HEAD.
-pub const GET_ONLY: [&str; 9] = [
+pub const GET_ONLY: [&str; 10] = [
     "/stats",
     "/scenes",
     "/hwinfo",
     "/filters",
     "/edits",
     "/format",
+    "/devices",
     "/stream",
     "/h264",
     "/frame.png",
@@ -490,7 +491,7 @@ pub trait ConsoleHost {
     }
 
     /// {fps, frame_ms, stream_fps, out, error, error_line, error_pass,
-    /// text_errors, active, display, stale, layer_changes, rev}.
+    /// text_errors, video_errors, active, display, stale, layer_changes, rev}.
     ///
     /// fps counts completed render-loop frames per elapsed second, over a
     /// trailing window (stats::FrameRate). frame_ms is one loop iteration, with
@@ -499,7 +500,8 @@ pub trait ConsoleHost {
     /// now (stats::DEST_*). error_pass is the pass index that holds a compile
     /// error, or "common" for the scene's common block, and error_line the line
     /// inside the pass or the block. text_errors holds the problems of the
-    /// scene's text layers, a line each. stale is true when the files behind
+    /// scene's text layers, a line each, and video_errors those of the
+    /// devices that it shows. stale is true when the files behind
     /// the active scene changed since the compile. A host whose scenes have no
     /// files answers false for stale. layer_changes counts the changes that
     /// the program behind the scene made to its layers in scene_def(), so a
@@ -1050,6 +1052,13 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
                 &h.edits(query.get("name").map(String::as_str))?,
             )),
             "/format" => Ok(Response::json(&crate::layer::format())),
+            "/devices" => {
+                let devices: Vec<Value> = crate::video::devices()
+                    .into_iter()
+                    .map(|d| serde_json::json!({"device": d.device, "name": d.name}))
+                    .collect();
+                Ok(Response::json(&serde_json::json!({ "devices": devices })))
+            }
             _ => Ok(self.static_file(path)),
         }
     }
@@ -1522,6 +1531,15 @@ pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String>
             return Err(not_an_image(&live.what, &value));
         }
     }
+    if live.form == Form::Video && !crate::video::is_device(raw) {
+        let device = doc
+            .get("assets")
+            .and_then(|a| a.get(raw))
+            .and_then(|a| a.get("device"));
+        if device.is_none() {
+            return Err(not_a_video(&live.what, &value));
+        }
+    }
     layer
         .set_live(at.effect, at.field, &value)
         .map_err(|e| e.to_string())?;
@@ -1530,9 +1548,9 @@ pub fn live_value(doc: &Value, at: &Address, raw: &str) -> Result<Value, String>
 
 /// `raw`, a /set value, as the live field `live` takes it: a number, true or
 /// false, a colour as a CSS hex colour, a CSS colour name, three
-/// comma-separated floats or a gradient object in JSON, the name of an image asset, a text
-/// layer's words, a line's points as a JSON list, or `null` for the default
-/// of a field that takes one.
+/// comma-separated floats or a gradient object in JSON, the name of an image
+/// or a video asset, a device's path, a text layer's words, a line's points
+/// as a JSON list, or `null` for the default of a field that takes one.
 fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
     let what = &live.what;
     let s = raw.trim();
@@ -1574,7 +1592,7 @@ fn parse_live_value(live: &Live, raw: &str) -> Result<Value, String> {
             };
             Err(format!("{what} needs {forms}, got {got}"))
         }
-        Form::Image | Form::Words => Ok(Value::from(raw)),
+        Form::Image | Form::Video | Form::Words => Ok(Value::from(raw)),
         Form::Points => match serde_json::from_str::<Value>(s) {
             Ok(v @ Value::Array(_)) => Ok(v),
             _ => Err(format!(
@@ -1658,13 +1676,15 @@ mod tests {
     const SCENE: &str = r#"{"version": 1,
         "params": {"tint": {"type": "float", "value": 0.0},
                    "title": {"type": "string", "value": "hi"}},
-        "assets": {"pic": {"file": "pic.png"}, "sans": {"file": "sans.ttf"}},
+        "assets": {"pic": {"file": "pic.png"}, "sans": {"file": "sans.ttf"},
+                   "live": {"device": "/dev/video0"}},
         "passes": [{"name": "main", "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
                     "layers": [{"name": "words", "text": "ho", "font_family": "sans.ttf",
                                 "karaoke": {}},
                                {"name": "icon", "image": "icon.png"},
                                {"name": "frame", "shape": "rect"},
-                               {"name": "scope", "shape": "line", "points": [[0, 0], [1, 1]]}],
+                               {"name": "scope", "shape": "line", "points": [[0, 0], [1, 1]]},
+                               {"name": "cam", "video": "/dev/video0"}],
                     "params": {"k": {"type": "float", "value": 0.0},
                                "on": {"type": "bool", "value": false},
                                "n": {"type": "int", "value": 0},
@@ -2011,6 +2031,20 @@ mod tests {
         assert!(Bare.filters().unwrap().is_object()); // ghee's own filter registry
     }
 
+    #[test]
+    fn devices_answers_the_capture_devices_of_the_machine_as_a_list() {
+        let r = get(&api(), "/devices", &[]);
+        assert_eq!(r.status, 200);
+        let devices = as_json(&r)["devices"].clone();
+        for d in devices.as_array().expect("a list of devices") {
+            assert!(
+                d["device"].as_str().is_some_and(|p| p.starts_with('/')),
+                "{d}"
+            );
+            assert!(d["name"].is_string(), "{d}");
+        }
+    }
+
     /// The effects and their defaults, and the live fields that /set changes.
     #[test]
     fn format_serves_the_effects_and_the_live_fields_that_ghee_draws() {
@@ -2257,6 +2291,14 @@ mod tests {
             ("words", Some("karaoke"), "visible", "0", Value::from(false)),
             ("icon", None, "color", "null", Value::Null),
             ("icon", None, "image", "pic", Value::from("pic")),
+            ("cam", None, "video", "live", Value::from("live")),
+            (
+                "cam",
+                None,
+                "video",
+                "/dev/video1",
+                Value::from("/dev/video1"),
+            ),
             (
                 "scope",
                 None,
@@ -2306,7 +2348,7 @@ mod tests {
             ),
             (
                 q("nope", None, "x", "1"),
-                "layer 'nope' is not a layer this scene declares (words, icon, frame, scope)"
+                "layer 'nope' is not a layer this scene declares (words, icon, frame, scope, cam)"
                     .to_string(),
             ),
             (
@@ -2343,6 +2385,12 @@ mod tests {
                 q("icon", None, "image", "sans"),
                 "layer 'icon' image needs an image asset of the scene or a .png or .jpg file, \
                  got 'sans'"
+                    .to_string(),
+            ),
+            (
+                q("cam", None, "video", "pic"),
+                "layer 'cam' video needs a video asset of the scene or the path of a device, \
+                 got 'pic'"
                     .to_string(),
             ),
             (

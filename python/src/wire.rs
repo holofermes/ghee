@@ -118,9 +118,10 @@ impl LayerWire {
         let live = set.live(effect, field).map_err(scene_fault)?;
         let floats = match (live.form, value) {
             // A colour's text keeps its form, and transparent its alpha.
-            (Form::Image | Form::Colour { .. } | Form::Words, Value::String(text)) => {
-                return Ok((wire, Body::Text(text.clone())))
-            }
+            (
+                Form::Image | Form::Video | Form::Colour { .. } | Form::Words,
+                Value::String(text),
+            ) => return Ok((wire, Body::Text(text.clone()))),
             // A gradient goes as its JSON, so its ends keep theirs.
             (Form::Colour { .. }, v @ Value::Object(_)) => {
                 return Ok((wire, Body::Text(v.to_string())))

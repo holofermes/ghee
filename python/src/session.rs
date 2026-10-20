@@ -206,6 +206,8 @@ pub struct Session {
     drawn: Option<u64>,
     /// The renderer's text_errors_seq() at the console's last look.
     text_errors: u64,
+    /// The renderer's video_errors_seq() at the console's last look.
+    video_errors: u64,
     /// The iteration that begin() opened, for the next frame() or skip().
     opened: Option<Opened>,
 }
@@ -514,6 +516,7 @@ impl Session {
             frame: 0,
             drawn: None,
             text_errors: u64::MAX,
+            video_errors: u64::MAX,
             opened: None,
         })
     }
@@ -601,6 +604,11 @@ impl Session {
             if seq != self.text_errors {
                 self.text_errors = seq;
                 hub.set_text_errors(self.renderer.text_errors());
+            }
+            let seq = self.renderer.video_errors_seq();
+            if seq != self.video_errors {
+                self.video_errors = seq;
+                hub.set_video_errors(self.renderer.video_errors());
             }
             if let Some((width, height)) = read.filter(|_| want.is_some()) {
                 let frame = Frame {

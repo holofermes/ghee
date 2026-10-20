@@ -754,7 +754,7 @@ function refreshInfo(){
   const pv = previewSource();
   const pvRow = row(out, "preview",
       streamMuted ? "muted" : (pv.w ? `${pv.kind} ${pv.w}×${pv.h}` : pv.kind), "off");
-  if (!streamMuted && pv.kind === "mjpeg" && previewWhy) pvRow.title = previewWhy;
+  if (!streamMuted && pv.kind === "mjpeg" && preview.why()) pvRow.title = preview.why();
   const act = el("span", "rotact", `${effectiveRotation()}° · rotate ↻`);
   act.dataset.act = "rotate";
   row(out, "rotation", "", "off").appendChild(act);
@@ -828,9 +828,7 @@ function applyRotation(){
   holdStagePlace(!!pipWin);
 }
 function previewSource(){
-  if (CV.style.display !== "none") return {kind: "h264", w: CV.width, h: CV.height};
-  if (!IMG.src) return {kind: "-", w: 0, h: 0};        // startPreview has not run yet
-  return {kind: "mjpeg", w: IMG.naturalWidth, h: IMG.naturalHeight};
+  return preview ? preview.source() : {kind: "-", w: 0, h: 0};
 }
 
 const PIP_CSS = `html,body{margin:0;height:100%;background:#000;overflow:hidden}
@@ -1441,57 +1439,27 @@ function showEmpty(){
   toast($("#broken"), false);
 }
 
-// H264/WebCodecs preview when the browser can (needs a secure context:
-// https or localhost); MJPEG otherwise, and on any stream/decoder failure.
-//
 // the vid groups this page's streams on the server, and the ping keeps them alive
 const VID = "v" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 const PING_MS = 3000;
 const STREAM_KEY = "ghee:ui:stream";
 const PLAY = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
 const PAUSE = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>';
-let previewWhy = "";
-let mjpegOnly = false;    // a decoder that failed once fails the same way again
-let h264 = null;          // attachH264 handle while the h264 stream is up
-let streaming = false, pingTimer = null;
+let preview = null;       // playPreview's handle while the stream is up
+let pingTimer = null;
 let streamMuted = localStorage.getItem(STREAM_KEY) === "muted";
 
 function ping(){ fetch("/ping?vid=" + VID, {method:"POST"}).catch(()=>{}); }
 function startStream(){
-  if (streamMuted || streaming) return;
-  streaming = true;
+  if (streamMuted || preview) return;
   ping();
   pingTimer = setInterval(ping, PING_MS);
-  startPreview();
+  preview = playPreview(IMG, CV, "", VID, () => { refreshInfo(); applyRotation(); });
 }
 function stopStream(){
-  streaming = false;
   clearInterval(pingTimer); pingTimer = null;
-  if (h264){ h264.stop(); h264 = null; }
-  IMG.removeAttribute("src");   // ends the MJPEG request
+  if (preview){ preview.stop(); preview = null; }
   refreshInfo();
-}
-function fallbackToMjpeg(why){
-  previewWhy = why;
-  mjpegOnly = true;
-  h264 = null;
-  CV.style.display = "none";
-  IMG.style.display = "";
-  if (streaming) IMG.src = "/stream?vid=" + VID;
-  IMG.onload = () => { refreshInfo(); applyRotation(); };
-  refreshInfo();
-}
-function startPreview(){
-  if (!mjpegOnly && typeof attachH264 === "function" && "VideoDecoder" in window && window.isSecureContext) {
-    IMG.style.display = "none";
-    CV.style.display = "";
-    refreshInfo();
-    h264 = attachH264(CV, "/h264?vid=" + VID, {onfail: e => fallbackToMjpeg("h264 preview dropped: " + e)});
-  } else {
-    fallbackToMjpeg(previewWhy || (window.isSecureContext
-      ? "this browser has no WebCodecs VideoDecoder"
-      : "h264 preview needs https or localhost"));
-  }
 }
 function applyMuted(){
   SCREEN.classList.toggle("muted", streamMuted);

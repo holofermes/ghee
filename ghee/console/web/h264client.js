@@ -124,3 +124,50 @@ function attachH264(canvas, url, opts) {
 
   return { stop: teardown };
 }
+
+// playPreview(img, canvas, base, vid, onchange) -> {stop, source, why}
+// Plays a console's preview: its /h264 stream on the canvas when the browser
+// decodes H264 (WebCodecs, in a secure context), its /stream MJPEG on the img
+// otherwise, and when the H264 stream fails. base is the console's origin, ""
+// for the page's own. The page sends the vid's /ping. onchange runs when the
+// preview switches or the img loads. source() gives the kind ("h264", "mjpeg")
+// and the picture's size, why() the reason for MJPEG.
+function playPreview(img, canvas, base, vid, onchange) {
+  const changed = () => { if (onchange) onchange(); };
+  let h264 = null, why = '', stopped = false;
+  function show(el) {
+    img.style.display = el === img ? '' : 'none';
+    canvas.style.display = el === canvas ? '' : 'none';
+  }
+  function mjpeg(reason) {
+    why = reason; h264 = null;
+    show(img);
+    img.onload = changed;
+    img.src = base + '/stream?vid=' + vid;
+    changed();
+  }
+  if ('VideoDecoder' in window && window.isSecureContext) {
+    show(canvas);
+    h264 = attachH264(canvas, base + '/h264?vid=' + vid, {
+      onfail: e => { if (!stopped) mjpeg('h264 preview dropped: ' + e); },
+    });
+    changed();
+  } else {
+    mjpeg(window.isSecureContext ? 'this browser has no WebCodecs VideoDecoder'
+      : 'h264 preview needs https or localhost');
+  }
+  return {
+    // ends the stream's request, which drops this viewer
+    stop() {
+      stopped = true;
+      if (h264) { h264.stop(); h264 = null; }
+      img.onload = null;
+      img.removeAttribute('src');
+    },
+    source() {
+      if (canvas.style.display !== 'none') return { kind: 'h264', w: canvas.width, h: canvas.height };
+      return { kind: 'mjpeg', w: img.naturalWidth, h: img.naturalHeight };
+    },
+    why: () => why,
+  };
+}

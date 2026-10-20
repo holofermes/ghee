@@ -93,7 +93,6 @@ function attachH264(canvas, url, opts) {
       throw new Error('h264 stream: HTTP ' + res.status + (why ? ': ' + why : ''));
     }
     reader = res.body.getReader();
-    // the bytes of a frame that the last read cut short
     let rest = new Uint8Array(0);
     for (;;) {
       const { value, done } = await reader.read();
@@ -160,7 +159,6 @@ function playPreview(img, canvas, base, vid, onchange) {
       : 'h264 preview needs https or localhost');
   }
   return {
-    // ends the stream's request, which drops this viewer
     stop() {
       stopped = true;
       if (h264) { h264.stop(); h264 = null; }

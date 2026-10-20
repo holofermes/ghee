@@ -1819,8 +1819,9 @@ pub fn handle<D: Drawer + ?Sized, H: ConsoleHost>(
 }
 
 /// The headers of a part. They follow each JPEG at once, before the next JPEG
-/// exists, so they carry no Content-Length. A browser shows a part only once
-/// the boundary after it arrives, Chrome only once the next part's headers do.
+/// exists, so they carry no Content-Length. A browser ends a part only when
+/// the boundary after it arrives, and Chrome only when the next part's
+/// headers do.
 const PART_HEAD: &[u8] = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n";
 
 /// One JPEG part for each JPEG that the preview encodes, and the last JPEG

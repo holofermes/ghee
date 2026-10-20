@@ -64,6 +64,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   instead of `pacer`. `Card::size` gives `u32`. When `run` returns, SIGINT
   and SIGTERM go back to their handlers from before `stop_on_signals`, and a
   sink turns on before its first frame instead of after it.
+- Read a JPEG of `/stream` up to the next `--frame` line. A part carries no
+  `Content-Length`.
 
 ### Added
 
@@ -135,6 +137,10 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - The PyPI wheel carries the `ghee` command. It starts in 111 ms on a Pi
   Zero 2 W.
 - Pass `--filters ""` to draw a scene without its own filters.
+- Show a console's preview on a page of your own with `playPreview` from the
+  console's `/h264client.js`, which plays H264 and falls back to MJPEG
+  ([HTTP API](docs/http.md#streams)). A page on another port of the
+  console's host can read `/h264`.
 
 ### Changed
 
@@ -148,6 +154,11 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   stderr line for each.
 - ghee logs a refused message from a scene program, once per mistake. 0.4.0
   dropped it silently.
+- On a Pi 1 to 4, the Pi's codec encodes the console's MJPEG preview from
+  the GPU, with no readback. At 135x240 and 15 frames a second, ghee takes
+  2.6% of a Pi Zero 2 W's core, down from 18.9%.
+- The console's preview tries H264 again each time it starts, instead of
+  keeping MJPEG for the page's life after one failure.
 - After dropped ticks, a tick's `dt` covers the whole gap since the last
   tick that the program got.
 - ghee rounds a half up in an int param, in a scene file, on the wire, in
@@ -252,6 +263,14 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   failed to retrieve device information`.
 - `screen.layers` and `ghee.layers` read a whole number back as an int,
   instead of a float.
+- Firefox shows a still picture in the console's MJPEG preview at once,
+  instead of nothing until the picture changes. Safari shows the last frame
+  when the picture holds still.
+- The console decodes an H264 preview under 360 rows in software, as Chrome
+  does, so a hardware decoder can't stretch the stream's padding into a
+  strip along its edge.
+- A console page in a hidden tab stops its preview in every browser,
+  instead of in Chrome alone.
 
 ## 0.4.0 - 2026-08-06
 

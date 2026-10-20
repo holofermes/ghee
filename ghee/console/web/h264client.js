@@ -23,21 +23,14 @@ function attachH264(canvas, url, opts) {
   const fail = e => { if (!stopped) { teardown(); opts.onfail && opts.onfail(String(e)); } };
   const startTimer = setTimeout(() => fail('no frame in ' + startMs / 1000 + ' s'), startMs);
 
-  function configure(cfg) {
+  async function configure(cfg) {
     // a mid-stream config (a resync, a size change) replaces the decoder;
     // the old one has to be closed or it keeps its hardware slot
     if (decoder && decoder.state !== 'closed') decoder.close();
+    decoder = null;
     canvas.width = cfg.codedWidth; canvas.height = cfg.codedHeight;
     const desc = Uint8Array.from(atob(cfg.description), c => c.charCodeAt(0));
-    decoder = new VideoDecoder({
-      output: f => {
-        decoded++; clearTimeout(startTimer);
-        if (lastFrame) lastFrame.close();
-        lastFrame = f;
-      },
-      error: e => fail('decoder error: ' + e.message),
-    });
-    const dc = {
+    let dc = {
       codec: cfg.codec,
       description: desc,            // avcC: cross-browser AVCC mode
       codedWidth: cfg.codedWidth,
@@ -48,6 +41,23 @@ function attachH264(canvas, url, opts) {
     // the VC4 hardware stream carries no VUI colour description; without the
     // hint browsers guess BT.709 limited
     if (cfg.colorSpace) dc.colorSpace = cfg.colorSpace;
+    // Chrome decodes a stream under 360 rows in software (decoder_selector.cc,
+    // kSoftwareDecoderHeightCutoff). A hardware decoder can scale the padding
+    // of a small stream into the picture (Firefox bug 2054811).
+    if (cfg.codedHeight < 360) {
+      const sw = Object.assign({}, dc, { hardwareAcceleration: 'prefer-software' });
+      const s = await VideoDecoder.isConfigSupported(sw).catch(() => null);
+      if (s && s.supported) dc = sw;
+    }
+    if (stopped) return;
+    decoder = new VideoDecoder({
+      output: f => {
+        decoded++; clearTimeout(startTimer);
+        if (lastFrame) lastFrame.close();
+        lastFrame = f;
+      },
+      error: e => fail('decoder error: ' + e.message),
+    });
     decoder.configure(dc);
     opts.onconfig && opts.onconfig(cfg);
   }
@@ -96,7 +106,7 @@ function attachH264(canvas, url, opts) {
         if (buf.length < 5 + len) break;
         const payload = buf.slice(5, 5 + len);
         buf = buf.slice(5 + len);
-        if (type === 0) configure(JSON.parse(new TextDecoder().decode(payload)));
+        if (type === 0) await configure(JSON.parse(new TextDecoder().decode(payload)));
         else if (type === 3) { fail(new TextDecoder().decode(payload)); return; }
         else if (decoder && decoder.state === 'configured') {
           decoder.decode(new EncodedVideoChunk({

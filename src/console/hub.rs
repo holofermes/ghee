@@ -26,7 +26,7 @@ use serde_json::{Map, Value};
 use tiny_http::{Header, Request, Server, StatusCode};
 
 use crate::console::core::{
-    parse_query, refusal, ConsoleAPI, ConsoleHost, Headers, Query, Response,
+    parse_query, reader_origin, refusal, ConsoleAPI, ConsoleHost, Headers, Query, Response,
 };
 use crate::engine::{ErrorPass, Renderer};
 use crate::h264::{
@@ -1893,28 +1893,31 @@ fn write_chunk(w: &mut dyn Write, blob: &[u8]) -> std::io::Result<()> {
 /// waits for the viewer's first blob, so a stream that cannot start answers
 /// 503 with the reason. A stream that fails later ends on a WIRE_ERROR frame.
 pub fn serve_h264(request: Request, fanout: &H264Fanout, c: &H264Client, alive: &dyn Fn() -> bool) {
+    let reader = reader_origin(&headers_of(&request)).map(str::to_string);
+    let refuse = |request: Request, why: &str| {
+        let mut resp = Response::text(503, why);
+        if let Some(origin) = &reader {
+            resp.headers
+                .push(("Access-Control-Allow-Origin".to_string(), origin.clone()));
+        }
+        send(request, &resp);
+    };
     let first = loop {
         if let Some(why) = fanout.failure() {
-            return send(request, &Response::text(503, &why));
+            return refuse(request, &why);
         }
         if !alive() {
-            return send(
-                request,
-                &Response::text(503, "the stream closed before its first frame"),
-            );
+            return refuse(request, "the stream closed before its first frame");
         }
         if let Some(blob) = c.get(Duration::from_secs(1)) {
             break blob;
         }
     };
     let mut w = request.into_writer();
-    if stream_head(
-        &mut w,
-        "application/octet-stream",
-        &["Cache-Control: no-store", "Transfer-Encoding: chunked"],
-    )
-    .is_err()
-    {
+    let allow = reader.map(|origin| format!("Access-Control-Allow-Origin: {origin}"));
+    let mut head = vec!["Cache-Control: no-store", "Transfer-Encoding: chunked"];
+    head.extend(allow.as_deref());
+    if stream_head(&mut w, "application/octet-stream", &head).is_err() {
         return;
     }
     let mut next = Some(first);
@@ -2300,14 +2303,28 @@ mod tests {
         fanout: Arc<H264Fanout>,
         run: impl FnOnce(&H264Fanout, &H264Client) + Send + 'static,
     ) -> Vec<u8> {
+        h264_exchange_from("", fanout, run)
+    }
+
+    /// h264_exchange() for a page at `origin`, "" for none.
+    fn h264_exchange_from(
+        origin: &str,
+        fanout: Arc<H264Fanout>,
+        run: impl FnOnce(&H264Fanout, &H264Client) + Send + 'static,
+    ) -> Vec<u8> {
         use std::io::Read;
         use std::net::TcpStream;
         let server = Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
+        let origin = match origin {
+            "" => String::new(),
+            o => format!("Origin: {o}\r\n"),
+        };
         let client = thread::spawn(move || {
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            s.write_all(b"GET /h264 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-                .unwrap();
+            let get =
+                format!("GET /h264 HTTP/1.1\r\nHost: x:8090\r\n{origin}Connection: close\r\n\r\n");
+            s.write_all(get.as_bytes()).unwrap();
             let mut out = Vec::new();
             let _ = s.read_to_end(&mut out); // the stream ends on its own terminal chunk
             out
@@ -2388,6 +2405,31 @@ mod tests {
             (Some(256), Some(64))
         );
         assert_eq!(msgs[2].1, why.as_bytes());
+    }
+
+    #[test]
+    fn a_page_on_another_port_reads_the_stream_and_its_refusal() {
+        let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
+        let out = h264_exchange_from("http://x:8096", fanout, |f, _| f.fail("no encoder"));
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.starts_with("HTTP/1.1 503"), "{text}");
+        assert!(
+            text.contains("\r\nAccess-Control-Allow-Origin: http://x:8096\r\n"),
+            "{text}"
+        );
+        let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
+        let out = h264_exchange_from("http://x:8096", fanout, |f, c| {
+            f.opened(256, 64, HW_COLOR);
+            f.push(&key_au());
+            until(|| lock(&c.state).q.is_empty());
+            f.fail("stalled");
+        });
+        let head = String::from_utf8_lossy(&out[..find(&out, b"\r\n\r\n", 0).unwrap()]).to_string();
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(
+            head.contains("\r\nAccess-Control-Allow-Origin: http://x:8096"),
+            "{head}"
+        );
     }
 
     #[test]

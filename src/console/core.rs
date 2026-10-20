@@ -312,6 +312,15 @@ pub fn origin_allowed(origin: &str, host: Option<&str>) -> bool {
     netloc(origin).to_lowercase() == host.unwrap_or("").to_lowercase()
 }
 
+/// The Origin of a page that may read the H264 stream from another port of
+/// the host that the request names. A page of any other host reads nothing.
+pub fn reader_origin(headers: &Headers) -> Option<&str> {
+    let origin = headers.get("Origin")?;
+    let page = host_name(netloc(origin))?;
+    let host = host_name(headers.get("Host")?)?;
+    (!page.is_empty() && page.eq_ignore_ascii_case(host)).then_some(origin)
+}
+
 /// The host part of a URL: what follows "//", up to the path, query or
 /// fragment.
 fn netloc(url: &str) -> &str {
@@ -3197,6 +3206,26 @@ mod tests {
     }
 
     // the pure helpers
+
+    #[test]
+    fn a_page_on_another_port_of_the_host_may_read_the_stream() {
+        let read = |origin: &str, host: &str| {
+            reader_origin(&Headers::from([("Origin", origin), ("Host", host)])).map(str::to_string)
+        };
+        let page = "http://127.0.0.1:8096";
+        assert_eq!(read(page, "127.0.0.1:8090"), Some(page.to_string()));
+        assert_eq!(
+            read("https://pi.example.ts.net", "pi.example.ts.net"),
+            Some("https://pi.example.ts.net".to_string())
+        );
+        assert_eq!(read("http://evil.example:8090", "127.0.0.1:8090"), None);
+        assert_eq!(read("http://localhost:8096", "127.0.0.1:8090"), None);
+        assert_eq!(read("null", "127.0.0.1:8090"), None);
+        assert_eq!(
+            reader_origin(&Headers::from([("Host", "127.0.0.1:8090")])),
+            None
+        );
+    }
 
     #[test]
     fn origin_helper() {

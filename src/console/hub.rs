@@ -493,9 +493,12 @@ impl Hub {
         self.drawn.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// Count a frame skipped.
+    /// Count a frame skipped. The picture holds still, and each MJPEG viewer
+    /// hears of it.
     pub fn skipped(&self) {
         self.skipped.fetch_add(1, Ordering::SeqCst);
+        let _latest = lock(&self.latest);
+        self.latest_ready.notify_all();
     }
 
     // ------------------------------------------------------------ the scene
@@ -1703,7 +1706,14 @@ pub fn handle<D: Drawer + ?Sized, H: ConsoleHost>(
     send(request, &resp);
 }
 
-/// One JPEG part for each JPEG that the preview encodes.
+/// The headers of a part. They follow each JPEG at once, before the next JPEG
+/// exists, so they carry no Content-Length. A browser shows a part only once
+/// the boundary after it arrives, Chrome only once the next part's headers do.
+const PART_HEAD: &[u8] = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n";
+
+/// One JPEG part for each JPEG that the preview encodes, and the last JPEG
+/// once more when the picture holds still: WebKit shows a part only when
+/// another one follows it.
 fn stream<D: Drawer + ?Sized>(drawer: &D, request: Request, query: &Query) {
     let hub = drawer.hub();
     let mut w = request.into_writer();
@@ -1712,6 +1722,8 @@ fn stream<D: Drawer + ?Sized>(drawer: &D, request: Request, query: &Query) {
         "multipart/x-mixed-replace; boundary=frame",
         &["Cache-Control: no-cache"],
     )
+    .and_then(|()| w.write_all(PART_HEAD))
+    .and_then(|()| w.flush())
     .is_err()
     {
         return;
@@ -1720,13 +1732,17 @@ fn stream<D: Drawer + ?Sized>(drawer: &D, request: Request, query: &Query) {
     hub.count_clients(1);
     drawer.wake();
     let mut last_seq = u64::MAX;
+    // the skips counted when the last new JPEG went out, until it goes out again
+    let mut sent_at: Option<u64> = None;
+    let still =
+        |sent_at: Option<u64>| sent_at.is_some_and(|n| hub.skipped.load(Ordering::SeqCst) > n);
     while !hub.stopping() {
         if hub.viewers.gone(&viewer) {
             break;
         }
         let (jpg, seq) = {
             let mut latest = lock(&hub.latest);
-            if latest.seq == last_seq {
+            if latest.seq == last_seq && !still(sent_at) {
                 latest = hub
                     .latest_ready
                     .wait_timeout(latest, Duration::from_secs(1))
@@ -1735,19 +1751,17 @@ fn stream<D: Drawer + ?Sized>(drawer: &D, request: Request, query: &Query) {
             }
             (latest.jpg.clone(), latest.seq)
         };
-        let Some(jpg) = jpg.filter(|_| seq != last_seq) else {
+        let fresh = seq != last_seq;
+        last_seq = seq;
+        let Some(jpg) = jpg.filter(|_| fresh || still(sent_at)) else {
             continue;
         };
-        last_seq = seq;
-        let part = format!(
-            "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-            jpg.len()
-        );
-        if w.write_all(part.as_bytes()).is_err()
-            || w.write_all(&jpg).is_err()
-            || w.write_all(b"\r\n").is_err()
-            || w.flush().is_err()
-        {
+        sent_at = fresh.then(|| hub.skipped.load(Ordering::SeqCst));
+        let mut part = Vec::with_capacity(jpg.len() + 2 + PART_HEAD.len());
+        part.extend_from_slice(&jpg);
+        part.extend_from_slice(b"\r\n");
+        part.extend_from_slice(PART_HEAD);
+        if w.write_all(&part).is_err() || w.flush().is_err() {
             break;
         }
     }
@@ -2268,6 +2282,64 @@ mod tests {
     fn the_page_ends_its_stream_on_the_error_frame() {
         let js = include_str!("../../ghee/console/web/h264client.js");
         assert!(js.contains(&format!("type === {WIRE_ERROR}")));
+    }
+
+    // the MJPEG stream
+
+    struct Host(Hub);
+
+    impl Drawer for Host {
+        fn hub(&self) -> &Hub {
+            &self.0
+        }
+    }
+
+    fn publish_jpeg(hub: &Hub, jpg: &[u8]) {
+        let mut latest = lock(&hub.latest);
+        latest.jpg = Some(Arc::new(jpg.to_vec()));
+        latest.seq += 1;
+        hub.latest_ready.notify_all();
+    }
+
+    /// The next `want.len()` bytes on the socket.
+    fn next_bytes(s: &mut std::net::TcpStream, want: &[u8]) -> Vec<u8> {
+        use std::io::Read;
+        let mut got = vec![0; want.len()];
+        s.read_exact(&mut got).unwrap();
+        got
+    }
+
+    #[test]
+    fn a_jpeg_part_ends_before_the_next_jpeg_and_a_still_picture_comes_twice() {
+        use std::net::TcpStream;
+        let host = Arc::new(Host(Hub::new()));
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        s.write_all(b"GET /stream HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        let request = server.recv().unwrap();
+        let served = {
+            let host = Arc::clone(&host);
+            thread::spawn(move || stream(&*host, request, &Query::new()))
+        };
+        let head =
+            b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n\
+                     Cache-Control: no-cache\r\n\r\n--frame\r\nContent-Type: image/jpeg\r\n\r\n";
+        assert_eq!(next_bytes(&mut s, head), head);
+        let part = |jpg: &[u8]| [jpg, b"\r\n--frame\r\nContent-Type: image/jpeg\r\n\r\n"].concat();
+        let (one, two) = (b"\xFF\xD8one\xFF\xD9", b"\xFF\xD8two\xFF\xD9");
+        until(|| host.0.nclients() == 1);
+        publish_jpeg(&host.0, one);
+        assert_eq!(next_bytes(&mut s, &part(one)), part(one));
+        host.0.skipped();
+        assert_eq!(next_bytes(&mut s, &part(one)), part(one));
+        host.0.skipped();
+        publish_jpeg(&host.0, two);
+        assert_eq!(next_bytes(&mut s, &part(two)), part(two));
+        host.0.stop();
+        served.join().unwrap();
     }
 
     // the still

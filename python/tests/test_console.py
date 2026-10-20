@@ -683,9 +683,12 @@ def jpeg_size(jpg):
 def first_jpeg(port):
     with urllib.request.urlopen(f"http://127.0.0.1:{port}/stream") as r:
         head = b""
-        while not head.endswith(b"\r\n\r\n") or b"Content-Length" not in head:
+        while not head.endswith(b"\r\n\r\n"):
             head += read_exact(r, 1)
-        return read_exact(r, int(head.split(b"Content-Length:")[1].split(b"\r\n")[0]))
+        jpg = b""
+        while not jpg.endswith(b"\r\n--frame"):
+            jpg += read_exact(r, 1)
+        return jpg[: -len(b"\r\n--frame")]
 
 
 @pytest.mark.parametrize("host", ["open", "serve"])
@@ -925,15 +928,7 @@ def test_serve_takes_a_port_or_a_pair():
 def test_the_mjpeg_stream_shows_a_frame_that_holds_alpha(served):
     h, port = served
 
-    def read():
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/stream") as r:
-            head = b""
-            while not head.endswith(b"\r\n\r\n") or b"Content-Length" not in head:
-                head += read_exact(r, 1)
-            size = int(head.split(b"Content-Length:")[1].split(b"\r\n")[0])
-            return read_exact(r, size)
-
-    jpg = watching(h, read)
+    jpg = watching(h, lambda: first_jpeg(port))
     assert jpg[:2] == b"\xff\xd8"
     # the frame's size, from the JPEG's start of frame: its height, its width
     at = 2

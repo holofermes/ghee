@@ -77,7 +77,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   Operator 8, any `.ttf` or `.otf`, a list of fonts, and colour emoji.
 - Show a camera, or any capture device that streams MJPEG or YUYV, with a
   video layer, and read its frames in a shader through a video asset ([Video
-  layers](docs/layers.md#video-layers)). `GET /devices` lists the devices.
+  layers](docs/layers.md#video-layers)). The console's `+ layer` offers each
+  device of the machine, and `GET /devices` lists them.
 - Draw from Python with no GLSL, in a `with screen.draw() as d:` block
   ([Python](docs/python.md)).
 - Give `ghee.Layer` a Pillow image or a numpy array as its `image`, as

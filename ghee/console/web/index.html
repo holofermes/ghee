@@ -1286,9 +1286,21 @@ let FILTERS = {};   // name -> filter def (fragment + params), from /filters
 // defaults in draw order, the live fields of each kind of layer, what an
 // empty field takes, and the fonts that ghee carries.
 let FORMAT = null, FX = {};
+// The capture devices that a video layer can show on this host, from GET
+// /devices, each its path and its name.
+let DEVICES = [];
+// Read the devices again. True when the list changed.
+async function readDevices(){
+  try {
+    const was = JSON.stringify(DEVICES);
+    DEVICES = (await jget("/devices")).devices || [];
+    return JSON.stringify(DEVICES) !== was;
+  } catch (_) { return false; }
+}
 async function boot(){
   FORMAT = await jget("/format");
   FX = FORMAT.effects;
+  await readDevices();
   try { FILTERS = await jget("/filters"); } catch(e) { console.warn("/filters unavailable:", e); FILTERS = {}; }
   // the frame's size, for a pass's size
   try { lastStats = await jget("/stats"); if (lastStats.display) lastDisplay = lastStats.display; } catch (_) {}
@@ -1712,33 +1724,47 @@ function tbtn(icon, title, cls, fn){
 // the button of the open menu
 let menuFrom = null;
 function closeMenus(){ menuFrom = null; document.querySelectorAll(".addmenu.open").forEach(m => { m.classList.remove("open"); m.remove(); }); }
-function addMenu(label, items, trigCls = "addmini", title = ""){
+// `items` is a list, or a function that gives the list each time the menu
+// opens. `refresh`, when given, runs at each open, and an open menu takes the
+// items again when it answers true.
+function addMenu(label, items, trigCls = "addmini", title = "", refresh = null){
   const wrap = el("span", "addwrap"), trig = el("span", trigCls, label), menu = el("div", "addmenu");
   trig.setAttribute("role", "button"); trig.tabIndex = 0;
   if (title) trig.title = title;
+  const fill = () => {
+    menu.innerHTML = "";
+    (typeof items === "function" ? items() : items).forEach(item => {
+      if (!item){ menu.appendChild(el("div", "sep")); return; }
+      const [text, fn, off, why] = item, it = el("div", "it" + (off ? " off" : ""), text);
+      if (off){ it.title = why || ""; it.setAttribute("aria-disabled", "true"); }
+      it.addEventListener("click", e => { e.stopPropagation(); if (off) return; closeMenus(); fn(); });
+      menu.appendChild(it);
+    });
+  };
+  const place = () => {
+    const t = trig.getBoundingClientRect(), m = menu.getBoundingClientRect();
+    menu.style.left = Math.max(4, Math.min(t.left, innerWidth - m.width - 4)) + "px";
+    const below = t.bottom + 4 + m.height <= innerHeight || m.height + 8 > t.top;
+    menu.style.top = (below ? t.bottom + 4 : t.top - 4 - m.height) + "px";
+  };
   const toggle = e => {
     e.stopPropagation();
     if (trig.getAttribute("aria-disabled") === "true") return;
     const open = !menu.classList.contains("open");
     closeMenus();
     if (!open) return;
+    fill();
     document.body.appendChild(menu);
-    const t = trig.getBoundingClientRect(), m = menu.getBoundingClientRect();
-    menu.style.left = Math.max(4, Math.min(t.left, innerWidth - m.width - 4)) + "px";
-    const below = t.bottom + 4 + m.height <= innerHeight || m.height + 8 > t.top;
-    menu.style.top = (below ? t.bottom + 4 : t.top - 4 - m.height) + "px";
+    place();
     menu.classList.add("open");
     menuFrom = trig;
+    if (refresh) refresh().then(changed => {
+      if (changed && menu.classList.contains("open")){ fill(); place(); }
+    });
   };
   trig.addEventListener("click", toggle);
   trig.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); toggle(e); } });
-  items.forEach(item => {
-    if (!item){ menu.appendChild(el("div", "sep")); return; }
-    const [text, fn, off, why] = item, it = el("div", "it" + (off ? " off" : ""), text);
-    if (off){ it.title = why || ""; it.setAttribute("aria-disabled", "true"); }
-    it.addEventListener("click", e => { e.stopPropagation(); if (off) return; closeMenus(); fn(); });
-    menu.appendChild(it);
-  });
+  fill();
   wrap.appendChild(trig);
   return wrap;
 }
@@ -1854,12 +1880,16 @@ function nameError(n, current){
 // ---- the inputs a pass's shader reads ----
 const isGrad = c => !!c && typeof c === "object" && !Array.isArray(c);
 const isImage = d => d.image != null;
+const isVideo = d => d.image == null && d.video != null;
 const isShape = d => d.shape != null;
-const kindOf = d => isImage(d) ? "image" : isShape(d) ? "shape" : "text";
+const kindOf = d => isImage(d) ? "image" : isVideo(d) ? "video" : isShape(d) ? "shape" : "text";
 const textLayers = () => (work.passes || []).flatMap(p => (p.layers || []).filter(d => kindOf(d) === "text"));
 // the scene's image assets: every asset but a font
 const imageAssets = () => Object.entries(work.assets || {})
   .filter(([, a]) => a && typeof a.file === "string" && !/\.(ttf|otf)$/i.test(a.file)).map(([n]) => n);
+// the scene's video assets: each a device
+const videoAssets = () => Object.entries(work.assets || {})
+  .filter(([, a]) => a && typeof a.device === "string").map(([n]) => n);
 function buildInputs(){
   const row = $("#inputs"), was = row.querySelector(".strip"), left = was ? was.scrollLeft : 0;
   row.innerHTML = "";
@@ -1874,6 +1904,7 @@ function buildInputs(){
   if (!p.filter){
     textLayers().forEach(d => chip(d.name + "_cover", `float ${d.name}_cover(vec2 p, float font_size);  layer ${d.name}'s words`));
     imageAssets().forEach(n => chip(n + "_tex", `uniform sampler2D ${n}_tex;  asset ${n}'s picture`));
+    videoAssets().forEach(n => chip(n + "_tex", `uniform sampler2D ${n}_tex;  asset ${n}'s frames`));
   }
   (p.arrays || []).forEach(a => {
     chip(a.name, Array.isArray(a.size)
@@ -2091,7 +2122,7 @@ function syncAddRow(){
 // ---- layers ----
 const BLENDS = ["normal", "add", "multiply", "screen"], RENDERS = ["auto", "hinted", "mono", "mtsdf", "slug"], ALIGNS = ["left", "center", "right"];
 // a layer's kind as GET /format names it: text, image, rect, line or circle
-const formKind = d => isImage(d) ? "image" : isShape(d) ? d.shape : "text";
+const formKind = d => isImage(d) ? "image" : isVideo(d) ? "video" : isShape(d) ? d.shape : "text";
 // a layer's own field that changes with no rebuild
 const isLive = (d, key) => ((FORMAT.live || {})[formKind(d)] || []).includes(key);
 // what layer d's empty field takes: a word such as fit, or a number
@@ -2331,10 +2362,15 @@ function buildLayers(){
   const row = el("div", "lyrow");
   row.appendChild(el("span", null, "layers"));
   // a program owns which layers its scene has, and their order
-  if (!proc) row.appendChild(addMenu("+ layer ▾", [
+  // a video comes from a capture device of this host, each its own entry
+  const videos = () => DEVICES.length
+    ? DEVICES.map(x => ["video " + x.name, () => addLayer(p, "video", x.device)])
+    : [["video", null, true, "this host has no capture device"]];
+  if (!proc) row.appendChild(addMenu("+ layer ▾", () => [
     ["text", () => addLayer(p, "text")],
     ["image", () => addLayer(p, "image"), !imageAssets().length && !isMine(), "the scene has no image asset"],
-    ["shape", () => addLayer(p, "shape")]]));
+    ...videos(),
+    ["shape", () => addLayer(p, "shape")]], "addmini", "", readDevices));
   box.appendChild(row);
   (p.layers || []).slice().reverse().forEach(d => box.appendChild(layerCard(p, d)));
   paintMarks();
@@ -2342,10 +2378,11 @@ function buildLayers(){
 // A pass's layers paint in list order, and the card shows them front first:
 // layer k of the list is card length - 1 - k.
 const cardOf = (list, k) => document.querySelectorAll("#layers .lay")[list.length - 1 - k];
-async function addLayer(p, kind){
+async function addLayer(p, kind, device){
   let d;
   if (kind === "text") d = {name: uniqueName("text"), text: "text"};
   else if (kind === "shape") d = {name: uniqueName("rect"), shape: "rect"};
+  else if (kind === "video") d = {name: uniqueName("video"), video: device};
   else {
     // a scene of my scenes with no image takes one from this computer first
     const imgs = imageAssets(), used = new Set((p.layers || []).map(x => x.image));
@@ -2626,8 +2663,21 @@ function switchShape(p, d, to){
   postScene();
 }
 
+// The device of video layer d, from the scene's video assets and this host's
+// devices. A device shows its name, with its path when two share a name, and
+// a path that this host lacks shows as it stands.
+function pickDevice(p, d){
+  const named = n => DEVICES.filter(x => x.name === n).length > 1;
+  const label = v => {
+    const x = DEVICES.find(x => x.device === v);
+    return !x ? v : named(x.name) ? `${x.name} (${x.device})` : x.name;
+  };
+  const s = pick(videoAssets().concat(DEVICES.map(x => x.device)), d.video, x => setKey(p, d, "video", x));
+  s.querySelectorAll("option").forEach(o => { o.textContent = label(o.value); });
+  return s;
+}
 function layerCard(p, d){
-  const u = ui(d.name), kind = kindOf(d), img = kind === "image", shape = kind === "shape";
+  const u = ui(d.name), kind = kindOf(d), img = kind === "image", vid = kind === "video", shape = kind === "shape";
   const hidden = d.visible === false, proc = isProcedural();
   const card = el("div", "lay" + (hidden ? " hid" : ""));
   card.dataset.name = d.name;
@@ -2666,6 +2716,10 @@ function layerCard(p, d){
       const s = pickFile(images, d.image, x => setKey(p, d, "image", x), IMAGES, n => { d.image = n; postScene(); redo(); });
       s.setAttribute("aria-label", "image");
       st.appendChild(lockIf(s, lockedField(d, "image")));
+    } else if (vid){
+      const s = pickDevice(p, d);
+      s.setAttribute("aria-label", "video");
+      st.appendChild(lockIf(s, lockedField(d, "video")));
     } else {
       const send = wordsTo(p, d), w = el("input", "ctl hword");
       w.type = "text"; w.spellcheck = false; w.value = oneLine(d.text || ""); w.setAttribute("aria-label", "text");
@@ -2708,6 +2762,15 @@ function layerCard(p, d){
     tint.v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x), "#ffffff", null), "color"));
     kvs.append(lockIf(kv, lockedField(d, "image")), pairKV(p, d, "x", "y"), pairKV(p, d, "width", "height"),
       lockIf(tint.kv, lockedField(d, "color")));
+  } else if (vid){
+    const {kv, v} = KV("video");
+    markField(kv.firstChild, p, d, "video");
+    v.appendChild(keyed(pickDevice(p, d), "video"));
+    const tint = KV("color");
+    markField(tint.kv.firstChild, p, d, "color");
+    tint.v.appendChild(keyed(colorCtl(() => d.color, x => setKey(p, d, "color", x), "#ffffff", null), "color"));
+    kvs.append(lockIf(kv, lockedField(d, "video")), pairKV(p, d, "x", "y"), pairKV(p, d, "width", "height"),
+      lockIf(tint.kv, lockedField(d, "color")));
   } else {
     // a text layer's words are content: saved, and back to defaults restores
     // them, and never marked
@@ -2725,7 +2788,7 @@ function layerCard(p, d){
       lockIf(fam.kv, lockedField(d, "font_family")), lockIf(align.kv, lockedField(d, "text_align")));
   }
   body.appendChild(kvs);
-  if (kind === "text") body.appendChild(fxBlock(p, d));   // an image or a shape layer takes no effects
+  if (kind === "text") body.appendChild(fxBlock(p, d));   // an image, a video or a shape layer takes no effects
   card.appendChild(body);
   return card;
 }

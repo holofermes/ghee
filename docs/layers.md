@@ -231,7 +231,8 @@ as large as fits the pass:
 
 Name a device by its link in `/dev/v4l/by-id` where the system makes one: the
 link stays the same across boots, and when the camera moves to another port.
-A path such as `/dev/video0` works too.
+A path such as `/dev/video0` works too. In the console, `+ layer` offers each
+capture device of the machine by its name.
 
 ghee streams the device's smallest mode that covers the size the video draws
 at, and decodes its frames on the CPU, an MJPEG frame at a half, a quarter or

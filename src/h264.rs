@@ -1099,7 +1099,7 @@ mod tests {
         any(ghee_no_gpu, not(ghee_hw_h264)),
         ignore = "needs a GL device and a hardware H264 encoder"
     )]
-    fn a_hardware_jpeg_keeps_red_black_and_white() {
+    fn a_hardware_jpeg_of_any_width_keeps_red_black_and_white() {
         let (_g, mut r) = gpu();
         let scene = crate::scene::Scene::from_dict(
             &serde_json::json!({"version": 1, "passes": [{"name": "main",
@@ -1110,7 +1110,8 @@ mod tests {
         )
         .unwrap();
         r.setup(&scene).unwrap();
-        let mut enc = crate::output::HardwareJpeg::new(&r, 64, 48, 75).unwrap();
+        // rows of 72 pixels, 288 bytes, are no multiple of 64 bytes
+        let mut enc = crate::output::HardwareJpeg::new(&r, 72, 48, 75).unwrap();
         let mut jpg = None;
         for _ in 0..10 {
             r.draw(None).unwrap();
@@ -1124,9 +1125,9 @@ mod tests {
         let mut d = jpeg_decoder::Decoder::new(&jpg[..]);
         let px = d.decode().unwrap();
         let info = d.info().unwrap();
-        assert_eq!((info.width, info.height), (64, 48));
+        assert_eq!((info.width, info.height), (72, 48));
         // each probe sits inside a 16 x 16 block of one colour, y down
-        let at = |x: usize, y: usize| px[(y * 64 + x) * 3..][..3].to_vec();
+        let at = |x: usize, y: usize| px[(y * 72 + x) * 3..][..3].to_vec();
         let near =
             |got: Vec<u8>, want: [u8; 3]| got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 6);
         assert!(near(at(16, 24), [255, 0, 0]), "red {:?}", at(16, 24));

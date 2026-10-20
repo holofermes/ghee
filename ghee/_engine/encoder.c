@@ -427,8 +427,8 @@ fail:
     return NULL;
 }
 
-// The still-image role's input at w x h, in rows of `bytesperline`, 0 for the
-// codec's own.
+// The still-image role's input at w x h, in rows of `bytesperline` bytes or
+// more.
 static int jpeg_input(GheeEncoder *e, struct v4l2_format *f, uint32_t bytesperline) {
     memset(f, 0, sizeof(*f));
     f->type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
@@ -447,10 +447,12 @@ GheeEncoder *ghee_jpeg_create(GheeScene *g, int w, int h, int quality, char **er
     if (!e) return NULL;
     e->jpeg = true;
     e->format = GBM_FORMAT_ABGR8888;
-    // The codec pads each row and rounds the lines up to 16, and its QBUF
-    // refuses a buffer shorter than that, so the buffers take its size.
+    // The firmware refuses to enable an input of 32-bit rows that are not a
+    // multiple of 64 bytes, and some kernels round the rows to 32 bytes. The
+    // codec rounds the lines up to 16, and its QBUF refuses a buffer shorter
+    // than that, so the buffers take its size.
     struct v4l2_format ofmt;
-    if (jpeg_input(e, &ofmt, 0) < 0) {
+    if (jpeg_input(e, &ofmt, ((uint32_t)w * 4 + 63) & ~63u) < 0) {
         snprintf(eb, sizeof(eb), "encoder rejects AB24 input: %s", strerror(errno));
         if (err) *err = eb;
         goto fail;

@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "engine.h"
 
@@ -307,6 +308,7 @@ struct GheeHwdec {
     uint32_t mid_size;          // the bytes of one decoded frame
     int ow, oh, opitch;
     int queued;                 // compressed frames queued since the start
+    struct timespec progress;   // the open, or the last frame out of the decoder
 };
 
 // The codec node whose card is `card`, opened, or -1.
@@ -461,15 +463,23 @@ GheeHwdec *ghee_hwdec_open(int w, int h, int ow, int oh, char *err, int err_len)
     }
     d->nfree_in = d->nin;
     for (int i = 0; i < d->nin; i++) d->free_in[i] = i;
+    clock_gettime(CLOCK_MONOTONIC, &d->progress);
     return d;
 }
-int ghee_hwdec_push(GheeHwdec *d, const uint8_t *jpg, size_t len, int scale, int timeout_ms,
-                    int *index, char *err, int err_len) {
+// Milliseconds since `t`.
+static double ms_since(const struct timespec *t) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)(now.tv_sec - t->tv_sec) * 1e3 + (double)(now.tv_nsec - t->tv_nsec) / 1e6;
+}
+
+int ghee_hwdec_push(GheeHwdec *d, const uint8_t *jpg, size_t len, int scale, int frame_ms,
+                    int stall_ms, int *index, char *err, int err_len) {
     const uint32_t OUT = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, CAP = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     for (int i; (i = mp_dqbuf(d->dec, OUT, V4L2_MEMORY_MMAP, NULL)) >= 0;)
         if (d->nfree_in < DEC_IN) d->free_in[d->nfree_in++] = i;
     if (d->nfree_in == 0) {
-        if (!mp_wait(d->dec, POLLOUT, timeout_ms)) {
+        if (!mp_wait(d->dec, POLLOUT, stall_ms)) {
             cap_err(err, err_len, "the hardware decoder kept its input", 0);
             return -1;
         }
@@ -489,15 +499,25 @@ int ghee_hwdec_push(GheeHwdec *d, const uint8_t *jpg, size_t len, int scale, int
     }
     d->nfree_in--;
     if (++d->queued < 2) return 0;
+    // A frame that the decoder drops gives nothing, so a frame may not come;
+    // none for stall_ms is a failure.
     uint32_t flags = 0;
     int m = -1;
-    while (m < 0) {
-        if (!mp_wait(d->dec, POLLIN, timeout_ms)) {
-            cap_err(err, err_len, "the hardware decoder gave no frame", 0);
-            return -1;
+    if (mp_wait(d->dec, POLLIN, frame_ms)) {
+        uint32_t f;
+        for (int got; (got = mp_dqbuf(d->dec, CAP, V4L2_MEMORY_MMAP, &f)) >= 0;) {
+            if (m >= 0) mp_qbuf(d->dec, CAP, V4L2_MEMORY_MMAP, m, -1, 0, d->mid[m].len);
+            m = got;
+            flags = f;
         }
-        m = mp_dqbuf(d->dec, CAP, V4L2_MEMORY_MMAP, &flags);
     }
+    if (m < 0) {
+        if (ms_since(&d->progress) < stall_ms) return 0;
+        if (err && err_len > 0)
+            snprintf(err, (size_t)err_len, "the hardware decoder gave no frame for %d ms", stall_ms);
+        return -1;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &d->progress);
     int o = 0;
     while (o < d->nout && !d->out_queued[o]) o++;
     if (!scale || (flags & V4L2_BUF_FLAG_ERROR) || o == d->nout) {
@@ -511,7 +531,7 @@ int ghee_hwdec_push(GheeHwdec *d, const uint8_t *jpg, size_t len, int scale, int
     }
     int got = -1;
     while (got < 0) {
-        if (!mp_wait(d->isp, POLLIN, timeout_ms)) {
+        if (!mp_wait(d->isp, POLLIN, stall_ms)) {
             cap_err(err, err_len, "the ISP gave no frame", 0);
             return -1;
         }
@@ -519,7 +539,7 @@ int ghee_hwdec_push(GheeHwdec *d, const uint8_t *jpg, size_t len, int scale, int
     }
     // The ISP is done with the decoder's frame once it gave its own.
     while (mp_dqbuf(d->isp, OUT, V4L2_MEMORY_DMABUF, NULL) < 0)
-        if (!mp_wait(d->isp, POLLOUT, timeout_ms)) {
+        if (!mp_wait(d->isp, POLLOUT, stall_ms)) {
             cap_err(err, err_len, "the ISP kept its input", 0);
             return -1;
         }

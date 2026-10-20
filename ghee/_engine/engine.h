@@ -409,14 +409,15 @@ int  ghee_thread_idle(void);
 typedef struct GheeHwdec GheeHwdec;
 // The decoder for w x h MJPEG frames, and the ISP for frames of ow x oh.
 GheeHwdec *ghee_hwdec_open(int w, int h, int ow, int oh, char *err, int err_len);
-// Queue one MJPEG frame. The decoder hands a frame back once the next one
-// goes in, so the frame queued before this one comes out: through the ISP
-// into output buffer *index when `scale`, else straight back to the decoder.
-// 1 = *index set, 0 = no frame (the first, a frame that the decoder refused,
-// `scale` 0, or every output buffer out), -1 = the hardware failed, or gave
-// nothing within timeout_ms, err set.
-int  ghee_hwdec_push(GheeHwdec *d, const uint8_t *jpg, size_t len, int scale, int timeout_ms,
-                     int *index, char *err, int err_len);
+// Queue one MJPEG frame, and take the newest decoded frame out within
+// frame_ms: through the ISP into output buffer *index when `scale`, else
+// straight back to the decoder. The decoder hands a frame back once the next
+// one goes in, so the frame out is one before this one at the newest.
+// 1 = *index set, 0 = no frame (the first, one that the decoder dropped or
+// refused, `scale` 0, or every output buffer out), -1 = the hardware failed,
+// or gave no frame for stall_ms, err set.
+int  ghee_hwdec_push(GheeHwdec *d, const uint8_t *jpg, size_t len, int scale, int frame_ms,
+                     int stall_ms, int *index, char *err, int err_len);
 // Output buffer `index`: its dma-buf, its size and its rows' length in bytes.
 void ghee_hwdec_out(GheeHwdec *d, int index, int *fd, int *w, int *h, int *pitch);
 // Give output buffer `index` back to the ISP.

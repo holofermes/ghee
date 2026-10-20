@@ -236,14 +236,18 @@ impl Drop for Lease {
     }
 }
 
-/// How long the hardware decoder may take with a frame before ghee stops
-/// using it: about six times the 76 ms that a Pi Zero W took for its first
-/// 1920x1080 frame, through the decoder and the ISP.
-const HW_WAIT_MS: c_int = 500;
+/// How long a push waits for a frame out of the hardware decoder: twice the
+/// 76 ms that a Pi Zero W took for its first 1920x1080 frame, through the
+/// decoder and the ISP.
+const HW_FRAME_MS: c_int = 150;
 
-/// True once the hardware decoder failed in this process. The video core may
-/// be stuck then, so no capture tries it again.
-static HW_FAILED: AtomicBool = AtomicBool::new(false);
+/// How long the hardware decoder may give no frame, while frames go in,
+/// before ghee stops using it: twenty times that first frame.
+const HW_STALL_MS: c_int = 1500;
+
+/// The times that a stream opens the hardware decoder again after it
+/// failed, before its frames decode on the CPU.
+const HW_TRIES: u32 = 3;
 
 /// Counts the hardware decoders that the process opened, for their ids.
 static PIPELINES: AtomicU64 = AtomicU64::new(1);
@@ -257,10 +261,26 @@ pub fn decode_on_cpu(cpu: bool) {
     CPU_ONLY.store(cpu, Ordering::Relaxed);
 }
 
-/// True when frames decode in hardware: decode_on_cpu() asked for no CPU,
-/// and the hardware decoder never failed in this process.
+/// True when frames decode in hardware: decode_on_cpu() asked for no CPU.
 fn hardware() -> bool {
-    !CPU_ONLY.load(Ordering::Relaxed) && !HW_FAILED.load(Ordering::Relaxed)
+    !CPU_ONLY.load(Ordering::Relaxed)
+}
+
+/// The bytes before which a camera's frame `jpg` ends: its JPEG's end
+/// marker, among the last TAIL bytes, which a camera pads, None for a frame
+/// with no start or no end marker there. A camera sends a cut frame now and
+/// then, at the start of a stream above all, which can stall the hardware
+/// decoder.
+fn jpeg_end(jpg: &[u8]) -> Option<usize> {
+    const TAIL: usize = 64;
+    if !jpg.starts_with(&[0xff, 0xd8]) {
+        return None;
+    }
+    let from = jpg.len().saturating_sub(TAIL).max(2);
+    (from..jpg.len())
+        .rev()
+        .find(|&i| jpg[i - 1] == 0xff && jpg[i] == 0xd9)
+        .map(|i| i + 1)
 }
 
 /// The size, at the aspect of a `size` frame, that the hardware scales a
@@ -335,7 +355,8 @@ impl Hw {
                 jpg.as_ptr(),
                 jpg.len(),
                 c_int::from(scale),
-                HW_WAIT_MS,
+                HW_FRAME_MS,
+                HW_STALL_MS,
                 &mut index,
                 err.as_mut_ptr(),
                 256,
@@ -788,6 +809,7 @@ fn stream(path: &str, shared: &Arc<Shared>) -> Result<(), String> {
     let mut seq = shared.state().frame.as_ref().map_or(0, |f| f.seq);
     let mut hw: Option<Hw> = None;
     let mut hw_tried = false;
+    let mut hw_failed = 0;
     while !shared.stop.load(Ordering::Relaxed) {
         if shared.state().needs.is_empty() {
             return Ok(());
@@ -811,7 +833,7 @@ fn stream(path: &str, shared: &Arc<Shared>) -> Result<(), String> {
         }
         last = Instant::now();
         let bytes = unsafe { std::slice::from_raw_parts(data, len) };
-        if fourcc == MJPEG && hardware() {
+        if fourcc == MJPEG && hardware() && hw_failed < HW_TRIES {
             let out = scaled((w as u32, h as u32), now_need);
             if hw.as_ref().is_some_and(|d| d.size != out) || (hw.is_none() && !hw_tried) {
                 hw_tried = true;
@@ -833,8 +855,11 @@ fn stream(path: &str, shared: &Arc<Shared>) -> Result<(), String> {
             hw_tried = false;
         }
         if let Some(d) = &hw {
+            let Some(end) = jpeg_end(bytes) else {
+                continue;
+            };
             d.take_back(shared);
-            let pushed = d.push(bytes, shared.state().taken);
+            let pushed = d.push(&bytes[..end], shared.state().taken);
             unsafe { ffi::ghee_capture_release(cap.0) };
             match pushed {
                 Ok(Some(out)) => {
@@ -844,12 +869,14 @@ fn stream(path: &str, shared: &Arc<Shared>) -> Result<(), String> {
                 }
                 Ok(None) => {}
                 Err(why) => {
-                    HW_FAILED.store(true, Ordering::Relaxed);
-                    crate::report::error(format!(
-                        "video {}: {why}, so frames decode on the CPU from now on",
-                        py_str_repr(path)
-                    ));
+                    hw_failed += 1;
+                    let next = match hw_failed < HW_TRIES {
+                        true => "opening it again",
+                        false => "so frames decode on the CPU",
+                    };
+                    crate::report::error(format!("video {}: {why}, {next}", py_str_repr(path)));
                     hw = None;
+                    hw_tried = false;
                 }
             }
             continue;
@@ -1053,6 +1080,23 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_frame_goes_to_the_hardware_decoder_whole_and_without_its_padding() {
+        let mut long = vec![0xff, 0xd8, 0xff, 0xd9];
+        long.extend([7u8; 100]);
+        let cases: [(&[u8], Option<usize>); 6] = [
+            (&[0xff, 0xd8, 1, 2, 0xff, 0xd9], Some(6)),
+            (&[0xff, 0xd8, 1, 2, 0xff, 0xd9, 0x93, 0x0b, 0], Some(6)),
+            (&[0xff, 0xd8, 1, 2, 3], None),
+            (&[0, 0xd8, 1, 2, 0xff, 0xd9], None),
+            (&long, None),
+            (&[], None),
+        ];
+        for (jpg, end) in cases {
+            assert_eq!(jpeg_end(jpg), end, "{jpg:?}");
+        }
     }
 
     #[test]

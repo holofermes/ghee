@@ -880,7 +880,7 @@ async function openPip(){
   win.document.title = "ghee · " + (active || "preview");
   win.document.body.appendChild(FRAME);
   win.addEventListener("resize", applyRotation);
-  win.addEventListener("pagehide", () => { pipWin = null; homeFrame(); }, {once: true});
+  win.addEventListener("pagehide", () => { pipWin = null; homeFrame(); if (document.hidden) stopStream(); }, {once: true});
   applyRotation(); syncPopOut();
 }
 function toggleFullscreen(){
@@ -1451,7 +1451,7 @@ let streamMuted = localStorage.getItem(STREAM_KEY) === "muted";
 
 function ping(){ fetch("/ping?vid=" + VID, {method:"POST"}).catch(()=>{}); }
 function startStream(){
-  if (streamMuted || preview) return;
+  if (streamMuted || preview || document.hidden) return;
   ping();
   pingTimer = setInterval(ping, PING_MS);
   preview = playPreview(IMG, CV, "", VID, () => { refreshInfo(); applyRotation(); });
@@ -1473,8 +1473,11 @@ function applyMuted(){
 
 addEventListener("pagehide", e => { if (e.persisted) stopStream(); });
 addEventListener("pageshow", e => { if (e.persisted) startStream(); });
-document.addEventListener("freeze", stopStream);
-document.addEventListener("resume", startStream);
+// a hidden page streams only into its pop-out
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) startStream();
+  else if (!pipWin) stopStream();
+});
 
 // The scene, its defaults and its edits, as ghee holds them now. A host that
 // keeps no defaults answers 404 for them.

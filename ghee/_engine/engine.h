@@ -352,5 +352,9 @@ void ghee_encoder_force_keyframe(GheeEncoder *e);   // instant join for a new vi
 // <0 = error. A capture that stops without this ends mid-GOP.
 int  ghee_encoder_flush(GheeScene *g, GheeEncoder *e, const uint8_t **nal, int *len, int *is_key);
 void ghee_encoder_destroy(GheeScene *g, GheeEncoder *e);
+// Zero-copy hardware JPEG on the same codec's still-image role: encode_last
+// gives one JPEG of the last frame at w x h, quality 1 to 100, and destroy
+// ends it. create returns NULL and sets err on boards without /dev/video31.
+GheeEncoder *ghee_jpeg_create(GheeScene *g, int w, int h, int quality, char **err);
 
 #endif // GHEE_ENGINE_H

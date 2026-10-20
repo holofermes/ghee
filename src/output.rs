@@ -3,11 +3,16 @@
 //!
 //! ImageSequence encodes PNG itself and JPEG through the jpeg-encoder crate.
 //! `quality` in save_opts reaches the JPEG encoder. The encoder ignores an
-//! option it has no use for.
+//! option it has no use for. HardwareJpeg encodes the console's preview on a
+//! Pi's codec.
 
+use std::ffi::CStr;
 use std::fs;
 use std::io::Write;
+use std::os::raw::{c_char, c_int};
 use std::path::Path;
+use std::ptr;
+use std::slice;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -16,6 +21,9 @@ use anyhow::{bail, Context, Result};
 use jpeg_encoder::{ColorType, Encoder};
 use serde_json::{Map, Value};
 
+use crate::engine::Renderer;
+use crate::ffi;
+use crate::h264::err_text;
 use crate::looper::{Frame, Output, OwnedFrame, Pacer};
 use crate::stats::{DEST_FILE, DEST_KMS, DEST_PIPE};
 
@@ -515,6 +523,68 @@ pub fn encode_jpeg(frame: Frame<'_>, quality: u8) -> Result<Vec<u8>> {
         color,
     )?;
     Ok(out)
+}
+
+/// JPEGs of the frame just drawn on a Pi 1 to 4, from the still-image role
+/// of the codec that HardwareH264 uses: the GPU copies the final pass into a
+/// buffer that the codec reads, so no frame passes through the CPU. Every
+/// method issues GL calls, so every method runs on the renderer's thread.
+/// The encoder never outlives its renderer.
+pub struct HardwareJpeg {
+    scene: *mut ffi::GheeScene,
+    handle: *mut ffi::GheeEncoder,
+}
+
+impl HardwareJpeg {
+    /// An encoder of w x h JPEGs at `quality`, 1 to 100.
+    pub fn new(renderer: &Renderer, w: i32, h: i32, quality: u8) -> Result<HardwareJpeg> {
+        let mut err: *mut c_char = ptr::null_mut();
+        let handle = unsafe {
+            ffi::ghee_jpeg_create(renderer.handle(), w, h, c_int::from(quality), &mut err)
+        };
+        if handle.is_null() {
+            bail!("{}", err_text(err));
+        }
+        Ok(HardwareJpeg {
+            scene: renderer.handle(),
+            handle,
+        })
+    }
+
+    /// A JPEG of the frame left by the last render() or present(). None
+    /// while the codec has given none back yet.
+    pub fn encode_last(&mut self) -> Result<Option<&[u8]>> {
+        let mut jpg: *const u8 = ptr::null();
+        let (mut len, mut key): (c_int, c_int) = (0, 0);
+        let rc = unsafe {
+            ffi::ghee_encoder_encode_last(self.scene, self.handle, &mut jpg, &mut len, &mut key)
+        };
+        if rc < 0 {
+            let e = unsafe { ffi::ghee_last_error(self.scene) };
+            let why = match e.is_null() {
+                true => String::new(),
+                false => unsafe { CStr::from_ptr(e) }.to_string_lossy().into_owned(),
+            };
+            bail!("hardware JPEG failed: {why}");
+        }
+        if rc > 0 {
+            return Ok(None);
+        }
+        Ok(Some(unsafe { slice::from_raw_parts(jpg, len as usize) }))
+    }
+
+    pub fn close(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { ffi::ghee_encoder_destroy(self.scene, self.handle) };
+            self.handle = ptr::null_mut();
+        }
+    }
+}
+
+impl Drop for HardwareJpeg {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 const CRC32: [u32; 256] = crc32_table();

@@ -285,4 +285,11 @@ extern "C" {
         is_key: *mut c_int,
     ) -> c_int;
     pub fn ghee_encoder_destroy(g: *mut GheeScene, e: *mut GheeEncoder);
+    pub fn ghee_jpeg_create(
+        g: *mut GheeScene,
+        w: c_int,
+        h: c_int,
+        quality: c_int,
+        err: *mut *mut c_char,
+    ) -> *mut GheeEncoder;
 }

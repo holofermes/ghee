@@ -1,10 +1,11 @@
-// encoder.c: zero-copy hardware H264 output (V4L2 M2M, bcm2835-codec).
+// encoder.c: zero-copy hardware H264 and JPEG output (V4L2 M2M, bcm2835-codec).
 //
 // The final pass is blitted into a LINEAR dmabuf-backed FBO and the dmabuf fd
 // is queued straight to the encoder's OUTPUT queue: pixels go GPU -> VPU with
 // no glReadPixels and no CPU copy. The encoder ingests AB24 (RGBA) directly
-// and converts to YUV in hardware. Compressed Annex-B access units come back
-// off the CAPTURE queue.
+// and converts to YUV in hardware. Compressed Annex-B access units, or one
+// JPEG a frame from the codec's still-image role, come back off the CAPTURE
+// queue.
 //
 // The input buffers are allocated on the vc4 KMS node with SCANOUT rather than
 // on the GL device: vc_sm_cma can only import one physically contiguous chunk,
@@ -15,8 +16,8 @@
 // separate v3d node and take the same path.
 //
 // This file is the only V4L2 user in the engine. On boards without a hardware
-// encoder (Pi 5, desktops) ghee_encoder_create fails at open(), and the caller
-// falls back to a software encoder.
+// encoder (Pi 5, desktops) ghee_encoder_create and ghee_jpeg_create fail at
+// open(), and the caller falls back to a software encoder.
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -42,6 +43,9 @@
 #include "engine_internal.h"
 
 #define ENC_DEVICE "/dev/video11"
+// The still-image role. Its video sibling's MJPEG writes limited-range YCbCr
+// into a JFIF file, which every decoder reads as full range.
+#define JPEG_DEVICE "/dev/video31"
 // GL-rendered dmabuf input pool == V4L2 OUTPUT queue depth. Each buffer is
 // w*h*4 of CMA (8.29MB at 1080p, so ~25MB for the pool).
 #define NBUF 3
@@ -60,7 +64,11 @@ struct inbuf {
 };
 
 struct GheeEncoder {
+    const char *device;
     int w, h, fps, bitrate;
+    bool jpeg;                  // the still-image role: one JPEG a frame
+    uint32_t format;            // the input buffers' GBM format
+    int bo_w, bo_h;             // the input buffers' size, the codec's rows and lines
     int vfd;
     int vc4_fd;                 // KMS node that allocates the input BOs
     struct gbm_device *vc4_gbm;
@@ -116,9 +124,11 @@ static int open_vc4_node(void) {
 
 static int make_inbuf(GheeScene *g, GheeEncoder *e, struct inbuf *ib, char **err) {
     EGLDisplay dpy = ghee_i_egl_display(g);
-    // ARGB8888 (B,G,R,A in memory), NOT ABGR8888: the codec reads its AB24
-    // "RGBA" input with byte 0 as blue. GL handles the write-side swizzle.
-    ib->bo = gbm_bo_create(e->vc4_gbm, e->w, e->h, GBM_FORMAT_ARGB8888,
+    // The video role reads its AB24 "RGBA" input with byte 0 as blue, so its
+    // buffers are ARGB8888 (B,G,R,A in memory). The still-image role reads
+    // AB24 R first, as V4L2 defines it: ABGR8888. GL handles the write-side
+    // swizzle.
+    ib->bo = gbm_bo_create(e->vc4_gbm, e->bo_w, e->bo_h, e->format,
                            GBM_BO_USE_LINEAR | GBM_BO_USE_SCANOUT);
     if (!ib->bo) { if (err) *err = "gbm_bo_create(linear|scanout) failed"; return -1; }
     ib->stride = gbm_bo_get_stride(ib->bo);
@@ -126,11 +136,11 @@ static int make_inbuf(GheeScene *g, GheeEncoder *e, struct inbuf *ib, char **err
     if (ib->dmafd < 0) { if (err) *err = "gbm_bo_get_fd failed"; return -1; }
     off_t sz = lseek(ib->dmafd, 0, SEEK_END);
     lseek(ib->dmafd, 0, SEEK_SET);
-    ib->size = (sz > 0) ? (size_t)sz : (size_t)ib->stride * e->h;
+    ib->size = (sz > 0) ? (size_t)sz : (size_t)ib->stride * e->bo_h;
     const EGLint attr[] = {
-        EGL_WIDTH, e->w,
-        EGL_HEIGHT, e->h,
-        EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_ARGB8888,
+        EGL_WIDTH, e->bo_w,
+        EGL_HEIGHT, e->bo_h,
+        EGL_LINUX_DRM_FOURCC_EXT, (EGLint)e->format,
         EGL_DMA_BUF_PLANE0_FD_EXT, ib->dmafd,
         EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
         EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)ib->stride,
@@ -185,7 +195,7 @@ static int probe_import(GheeEncoder *e) {
     b.m.planes = &pl;
     b.field = V4L2_FIELD_NONE;
     pl.m.fd = e->in[idx].dmafd;
-    pl.bytesused = e->in[idx].stride * e->h;
+    pl.bytesused = e->in[idx].stride * e->bo_h;
     pl.length = e->in[idx].size;
     if (enc_ioctl(e->vfd, VIDIOC_QBUF, &b) < 0) {
         e->freeidx[e->nfree++] = idx;
@@ -221,26 +231,40 @@ static int probe_import(GheeEncoder *e) {
         rb.m.planes = &rpl;
         enc_ioctl(e->vfd, VIDIOC_QBUF, &rb);
     }
-    enc_ctrl(e->vfd, V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME, 1);
+    if (!e->jpeg) enc_ctrl(e->vfd, V4L2_CID_MPEG_VIDEO_FORCE_KEY_FRAME, 1);
     return 0;
 }
 
-GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrate,
-                                 char **err) {
+// Open `device` and what the input buffers need. A `card` other than NULL
+// is the name that the device must give: another driver can hold the number.
+// The caller sets the formats and the buffers' size, makes the buffers and
+// calls start().
+static GheeEncoder *encoder_open(GheeScene *g, const char *device, const char *card,
+                                 int w, int h, char **err) {
     static char eb[256];
     GheeEncoder *e = calloc(1, sizeof(GheeEncoder));
     if (!e) { if (err) *err = "out of memory"; return NULL; }
-    e->w = w; e->h = h; e->fps = fps > 0 ? fps : 30; e->bitrate = bitrate;
+    e->device = device;
+    e->w = w; e->h = h; e->bo_w = w; e->bo_h = h;
     e->vfd = -1;
     e->vc4_fd = -1;
     for (int i = 0; i < NBUF; i++) e->in[i].dmafd = -1;   // 0 is a valid fd, calloc is not
 
     // Non-blocking: reclaim() drains consumed buffers with DQBUF until EAGAIN,
     // the waits that matter are explicit poll()s.
-    e->vfd = open(ENC_DEVICE, O_RDWR | O_CLOEXEC | O_NONBLOCK);
+    e->vfd = open(device, O_RDWR | O_CLOEXEC | O_NONBLOCK);
     if (e->vfd < 0) {
-        snprintf(eb, sizeof(eb), "no hardware encoder (%s: %s)", ENC_DEVICE, strerror(errno));
+        snprintf(eb, sizeof(eb), "no hardware encoder (%s: %s)", device, strerror(errno));
         if (err) *err = eb;
+        free(e);
+        return NULL;
+    }
+    struct v4l2_capability cap = {0};
+    if (card && (enc_ioctl(e->vfd, VIDIOC_QUERYCAP, &cap) < 0 || strcmp((char *)cap.card, card))) {
+        snprintf(eb, sizeof(eb), "no hardware encoder (%s is %s)", device,
+                 cap.card[0] ? (char *)cap.card : "a device that gives no name");
+        if (err) *err = eb;
+        close(e->vfd);
         free(e);
         return NULL;
     }
@@ -264,6 +288,78 @@ GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrat
     }
     e->vc4_gbm = gbm_create_device(e->vc4_fd);
     if (!e->vc4_gbm) { if (err) *err = "gbm_create_device(vc4) failed"; goto fail; }
+    return e;
+
+fail:
+    ghee_encoder_destroy(g, e);
+    return NULL;
+}
+
+// Request the buffers, `ncap` compressed ones, start both queues and push
+// the probe frame through.
+static int encoder_start(GheeEncoder *e, int ncap, char **err) {
+    static char eb[256];
+    struct v4l2_requestbuffers orq = {
+        .count = NBUF, .type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, .memory = V4L2_MEMORY_DMABUF};
+    if (enc_ioctl(e->vfd, VIDIOC_REQBUFS, &orq) < 0 || orq.count < 1) {
+        if (err) *err = "REQBUFS OUTPUT DMABUF failed";
+        return -1;
+    }
+    struct v4l2_requestbuffers crq = {
+        .count = ncap, .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, .memory = V4L2_MEMORY_MMAP};
+    if (enc_ioctl(e->vfd, VIDIOC_REQBUFS, &crq) < 0 || crq.count < 1) {
+        if (err) *err = "REQBUFS CAPTURE MMAP failed";
+        return -1;
+    }
+    for (int i = 0; i < (int)crq.count && i < NCAP; i++) {
+        struct v4l2_plane pl = {0};
+        struct v4l2_buffer b = {0};
+        b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        b.memory = V4L2_MEMORY_MMAP;
+        b.index = i;
+        b.length = 1;
+        b.m.planes = &pl;
+        if (enc_ioctl(e->vfd, VIDIOC_QUERYBUF, &b) < 0) { if (err) *err = "QUERYBUF failed"; return -1; }
+        e->cap_len[i] = pl.length;
+        e->cap_ptr[i] = mmap(NULL, pl.length, PROT_READ | PROT_WRITE, MAP_SHARED,
+                             e->vfd, pl.m.mem_offset);
+        if (e->cap_ptr[i] == MAP_FAILED) { if (err) *err = "mmap capture failed"; return -1; }
+        struct v4l2_plane pl2 = {0};
+        struct v4l2_buffer qb = {0};
+        qb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        qb.memory = V4L2_MEMORY_MMAP;
+        qb.index = i;
+        qb.length = 1;
+        qb.m.planes = &pl2;
+        if (enc_ioctl(e->vfd, VIDIOC_QBUF, &qb) < 0) { if (err) *err = "QBUF capture failed"; return -1; }
+    }
+
+    int t1 = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, t2 = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    if (enc_ioctl(e->vfd, VIDIOC_STREAMON, &t1) < 0 ||
+        enc_ioctl(e->vfd, VIDIOC_STREAMON, &t2) < 0) {
+        if (err) *err = "STREAMON failed";
+        return -1;
+    }
+
+    e->nfree = NBUF;
+    for (int i = 0; i < NBUF; i++) e->freeidx[i] = i;
+
+    if (probe_import(e)) {
+        snprintf(eb, sizeof(eb), "%s never returned its first input buffer: the "
+                 "codec cannot import this dmabuf", e->device);
+        if (err) *err = eb;
+        return -1;
+    }
+    return 0;
+}
+
+GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrate,
+                                 char **err) {
+    static char eb[256];
+    GheeEncoder *e = encoder_open(g, ENC_DEVICE, NULL, w, h, err);
+    if (!e) return NULL;
+    e->fps = fps > 0 ? fps : 30; e->bitrate = bitrate;
+    e->format = GBM_FORMAT_ARGB8888;
     for (int i = 0; i < NBUF; i++)
         if (make_inbuf(g, e, &e->in[i], err)) goto fail;
 
@@ -323,57 +419,76 @@ GheeEncoder *ghee_encoder_create(GheeScene *g, int w, int h, int fps, int bitrat
     enc_ctrl(e->vfd, V4L2_CID_MPEG_VIDEO_REPEAT_SEQ_HEADER, 1);   // SPS/PPS on every IDR
     enc_ctrl(e->vfd, V4L2_CID_MPEG_VIDEO_H264_I_PERIOD, e->fps * 2);
 
-    struct v4l2_requestbuffers orq = {
-        .count = NBUF, .type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, .memory = V4L2_MEMORY_DMABUF};
-    if (enc_ioctl(e->vfd, VIDIOC_REQBUFS, &orq) < 0 || orq.count < 1) {
-        if (err) *err = "REQBUFS OUTPUT DMABUF failed";
-        goto fail;
-    }
-    struct v4l2_requestbuffers crq = {
-        .count = NCAP, .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, .memory = V4L2_MEMORY_MMAP};
-    if (enc_ioctl(e->vfd, VIDIOC_REQBUFS, &crq) < 0 || crq.count < 1) {
-        if (err) *err = "REQBUFS CAPTURE MMAP failed";
-        goto fail;
-    }
-    for (int i = 0; i < (int)crq.count && i < NCAP; i++) {
-        struct v4l2_plane pl = {0};
-        struct v4l2_buffer b = {0};
-        b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        b.memory = V4L2_MEMORY_MMAP;
-        b.index = i;
-        b.length = 1;
-        b.m.planes = &pl;
-        if (enc_ioctl(e->vfd, VIDIOC_QUERYBUF, &b) < 0) { if (err) *err = "QUERYBUF failed"; goto fail; }
-        e->cap_len[i] = pl.length;
-        e->cap_ptr[i] = mmap(NULL, pl.length, PROT_READ | PROT_WRITE, MAP_SHARED,
-                             e->vfd, pl.m.mem_offset);
-        if (e->cap_ptr[i] == MAP_FAILED) { if (err) *err = "mmap capture failed"; goto fail; }
-        struct v4l2_plane pl2 = {0};
-        struct v4l2_buffer qb = {0};
-        qb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        qb.memory = V4L2_MEMORY_MMAP;
-        qb.index = i;
-        qb.length = 1;
-        qb.m.planes = &pl2;
-        if (enc_ioctl(e->vfd, VIDIOC_QBUF, &qb) < 0) { if (err) *err = "QBUF capture failed"; goto fail; }
-    }
+    if (encoder_start(e, NCAP, err)) goto fail;
+    return e;
 
-    int t1 = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, t2 = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    if (enc_ioctl(e->vfd, VIDIOC_STREAMON, &t1) < 0 ||
-        enc_ioctl(e->vfd, VIDIOC_STREAMON, &t2) < 0) {
-        if (err) *err = "STREAMON failed";
-        goto fail;
-    }
+fail:
+    ghee_encoder_destroy(g, e);
+    return NULL;
+}
 
-    e->nfree = NBUF;
-    for (int i = 0; i < NBUF; i++) e->freeidx[i] = i;
+// The still-image role's input at w x h, in rows of `bytesperline`, 0 for the
+// codec's own.
+static int jpeg_input(GheeEncoder *e, struct v4l2_format *f, uint32_t bytesperline) {
+    memset(f, 0, sizeof(*f));
+    f->type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+    f->fmt.pix_mp.width = e->w;
+    f->fmt.pix_mp.height = e->h;
+    f->fmt.pix_mp.pixelformat = v4l2_fourcc('A', 'B', '2', '4');
+    f->fmt.pix_mp.field = V4L2_FIELD_NONE;
+    f->fmt.pix_mp.num_planes = 1;
+    f->fmt.pix_mp.plane_fmt[0].bytesperline = bytesperline;
+    return enc_ioctl(e->vfd, VIDIOC_S_FMT, f);
+}
 
-    if (probe_import(e)) {
-        snprintf(eb, sizeof(eb), "%s never returned its first input buffer: the "
-                 "codec cannot import this dmabuf", ENC_DEVICE);
+GheeEncoder *ghee_jpeg_create(GheeScene *g, int w, int h, int quality, char **err) {
+    static char eb[256];
+    GheeEncoder *e = encoder_open(g, JPEG_DEVICE, "bcm2835-codec-encode_image", w, h, err);
+    if (!e) return NULL;
+    e->jpeg = true;
+    e->format = GBM_FORMAT_ABGR8888;
+    // The codec pads each row and rounds the lines up to 16, and its QBUF
+    // refuses a buffer shorter than that, so the buffers take its size.
+    struct v4l2_format ofmt;
+    if (jpeg_input(e, &ofmt, 0) < 0) {
+        snprintf(eb, sizeof(eb), "encoder rejects AB24 input: %s", strerror(errno));
         if (err) *err = eb;
         goto fail;
     }
+    e->bo_w = (int)(ofmt.fmt.pix_mp.plane_fmt[0].bytesperline / 4);
+    e->bo_h = (int)ofmt.fmt.pix_mp.height;
+    for (int i = 0; i < NBUF; i++)
+        if (make_inbuf(g, e, &e->in[i], err)) goto fail;
+    const uint32_t stride = e->in[0].stride;
+    if (stride != ofmt.fmt.pix_mp.plane_fmt[0].bytesperline &&
+        (jpeg_input(e, &ofmt, stride) < 0 || ofmt.fmt.pix_mp.plane_fmt[0].bytesperline != stride)) {
+        snprintf(eb, sizeof(eb), "%s takes no input rows of %u bytes", JPEG_DEVICE, stride);
+        if (err) *err = eb;
+        goto fail;
+    }
+    if (ofmt.fmt.pix_mp.plane_fmt[0].sizeimage > e->in[0].size) {
+        snprintf(eb, sizeof(eb), "%s takes %u bytes a frame, the buffers hold %zu", JPEG_DEVICE,
+                 ofmt.fmt.pix_mp.plane_fmt[0].sizeimage, e->in[0].size);
+        if (err) *err = eb;
+        goto fail;
+    }
+
+    struct v4l2_format cfmt = {0};
+    cfmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    cfmt.fmt.pix_mp.width = w;
+    cfmt.fmt.pix_mp.height = h;
+    cfmt.fmt.pix_mp.pixelformat = v4l2_fourcc('J', 'P', 'E', 'G');
+    cfmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
+    cfmt.fmt.pix_mp.num_planes = 1;
+    if (enc_ioctl(e->vfd, VIDIOC_S_FMT, &cfmt) < 0) {
+        snprintf(eb, sizeof(eb), "encoder rejects JPEG output: %s", strerror(errno));
+        if (err) *err = eb;
+        goto fail;
+    }
+    enc_ctrl(e->vfd, V4L2_CID_JPEG_COMPRESSION_QUALITY, quality);
+
+    // the driver holds each compressed buffer at 4 MiB of CMA
+    if (encoder_start(e, 1, err)) goto fail;
     return e;
 
 fail:
@@ -460,7 +575,7 @@ static int encode_common(GheeScene *g, GheeEncoder *e,
     b.m.planes = &pl;
     b.field = V4L2_FIELD_NONE;
     pl.m.fd = e->in[idx].dmafd;
-    pl.bytesused = e->in[idx].stride * e->h;
+    pl.bytesused = e->in[idx].stride * e->bo_h;
     pl.length = e->in[idx].size;
     if (enc_ioctl(e->vfd, VIDIOC_QBUF, &b) < 0) {
         ghee_i_error(g, "encoder QBUF failed");
@@ -485,7 +600,7 @@ int ghee_encoder_encode_last(GheeScene *g, GheeEncoder *e, const uint8_t **nal,
 // access unit per call. 0 = *nal/*len/*is_key set, 1 = drained, <0 = error.
 int ghee_encoder_flush(GheeScene *g, GheeEncoder *e, const uint8_t **nal,
                        int *len, int *is_key) {
-    if (!e || e->vfd < 0 || e->drained) return 1;
+    if (!e || e->vfd < 0 || e->drained || e->jpeg) return 1;
     if (!e->stopped) {
         struct v4l2_encoder_cmd cmd = { .cmd = V4L2_ENC_CMD_STOP };
         if (enc_ioctl(e->vfd, VIDIOC_ENCODER_CMD, &cmd) < 0) { e->drained = true; return 1; }

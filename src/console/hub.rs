@@ -9,9 +9,10 @@
 //! The hub serves the HTTP transport around the console API: the MJPEG
 //! preview, one JPEG a frame for every viewer, the H264 stream, one encoder
 //! for every viewer, the still that /frame.png answers, and the viewers'
-//! heartbeat. The hardware H264 lane issues GL calls, so it runs on the
-//! host's thread (`HwLane`). The software lane encodes the published frames
-//! on a thread of its own.
+//! heartbeat. The hardware lanes, H264 and the preview's JPEG, issue GL
+//! calls, so they run on the host's thread (`HwLane`). The software H264 lane
+//! and the CPU's JPEG encoder take the published frames on threads of their
+//! own.
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -34,7 +35,7 @@ use crate::h264::{
 };
 use crate::live::{Changes, Live};
 use crate::looper::Frame;
-use crate::output::{encode_jpeg, encode_png};
+use crate::output::{encode_jpeg, encode_png, HardwareJpeg};
 use crate::scene::{short_floats, Scene};
 use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_MJPEG};
 
@@ -263,6 +264,10 @@ pub struct Hub {
     latest_ready: Condvar,
     /// When the preview last took a frame.
     previewed: Mutex<f64>,
+    /// The hardware JPEG lane encodes the preview, with no readback.
+    hw_preview: AtomicBool,
+    /// When the hardware JPEG lane last encoded.
+    hw_previewed: Mutex<f64>,
     nclients: Mutex<i64>,
     /// The frames drawn.
     frame_rate: Mutex<FrameRate>,
@@ -321,6 +326,8 @@ impl Hub {
             latest: Mutex::new(Latest::default()),
             latest_ready: Condvar::new(),
             previewed: Mutex::new(0.0),
+            hw_preview: AtomicBool::new(false),
+            hw_previewed: Mutex::new(0.0),
             nclients: Mutex::new(0),
             frame_rate: Mutex::new(FrameRate::new()),
             fanout: H264Fanout::new(Arc::clone(&stream_rate)),
@@ -647,7 +654,7 @@ impl Hub {
             return false;
         }
         let mut rates: Vec<f64> = Vec::new();
-        if self.nclients() > 0 {
+        if self.nclients() > 0 && !self.hw_preview.load(Ordering::SeqCst) {
             rates.push(self.preview_fps); // <= 0 means every frame
         }
         if self.software_h264() {
@@ -660,9 +667,30 @@ impl Hub {
     }
 
     /// True when any viewer needs the host to draw: the preview, a still, or
-    /// the hardware H264 lane, which encodes on the GPU after a draw.
+    /// a hardware lane, which encodes on the GPU after a draw.
     pub fn wants_draw(&self) -> bool {
-        self.wants_preview() || self.shot.wants() || self.fanout.nclients() > 0
+        self.wants_preview()
+            || self.shot.wants()
+            || self.fanout.nclients() > 0
+            || (self.hw_preview.load(Ordering::SeqCst) && self.hw_preview_due())
+    }
+
+    /// True when an MJPEG viewer watches and the hardware JPEG lane is due
+    /// at the preview's rate.
+    fn hw_preview_due(&self) -> bool {
+        self.nclients() > 0
+            && (self.preview_fps <= 0.0
+                || monotonic() - *lock(&self.hw_previewed) >= 1.0 / self.preview_fps)
+    }
+
+    /// The size of the preview's JPEGs: the frame, fit inside the cap on the
+    /// longest side.
+    pub fn jpeg_size(&self) -> (i32, i32) {
+        let (w, h) = (self.w, self.h);
+        let scale = (f64::from(self.preview_max) / f64::from(w.max(h))).min(1.0);
+        let pw = 1.max(round_half_even(f64::from(w) * scale) as i32);
+        let ph = 1.max(round_half_even(f64::from(h) * scale) as i32);
+        (pw, ph)
     }
 
     /// The size that the preview reads frames back at. One readback feeds
@@ -670,15 +698,22 @@ impl Hub {
     /// The preview downscales a bigger frame. The software encoder can't
     /// recover a smaller one.
     pub fn preview_size(&self) -> (i32, i32) {
-        let (w, h) = (self.w, self.h);
-        let scale = (f64::from(self.preview_max) / f64::from(w.max(h))).min(1.0);
-        let pw = 1.max(round_half_even(f64::from(w) * scale) as i32);
-        let ph = 1.max(round_half_even(f64::from(h) * scale) as i32);
+        let (pw, ph) = self.jpeg_size();
         if self.software_h264() {
             let (sw, sh) = self.stream_size();
             return (pw.max(sw), ph.max(sh));
         }
         (pw, ph)
+    }
+
+    /// Hand a JPEG to every MJPEG viewer.
+    fn publish_jpeg(&self, jpg: Vec<u8>) {
+        let mut latest = lock(&self.latest);
+        latest.jpg = Some(Arc::new(jpg));
+        latest.seq += 1;
+        self.latest_ready.notify_all();
+        drop(latest);
+        lock(&self.stream_rate).tick(None);
     }
 
     /// Hand a frame to the preview and the software encoder.
@@ -925,7 +960,10 @@ pub fn encoder_loop(hub: &Hub) {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .0;
             }
-            let fresh = hub.nclients() > 0 && raw.seq != last_seq;
+            // a frame read back for the software H264 lane, while the
+            // hardware lane encodes the preview, takes no JPEG
+            let fresh =
+                hub.nclients() > 0 && !hub.hw_preview.load(Ordering::SeqCst) && raw.seq != last_seq;
             let rgb = if fresh { raw.rgb.clone() } else { None };
             last_seq = raw.seq;
             rgb
@@ -948,15 +986,12 @@ pub fn encoder_loop(hub: &Hub) {
             components: 3,
         };
         match encode_jpeg(frame, PREVIEW_QUALITY) {
-            Ok(jpg) => {
-                let mut latest = lock(&hub.latest);
-                latest.jpg = Some(Arc::new(jpg));
-                latest.seq += 1;
-                hub.latest_ready.notify_all();
+            Ok(jpg) => hub.publish_jpeg(jpg),
+            Err(e) => {
+                hub.say(&format!("preview: {e}"));
+                lock(&hub.stream_rate).tick(None);
             }
-            Err(e) => hub.say(&format!("preview: {e}")),
         }
-        lock(&hub.stream_rate).tick(None);
     }
 }
 
@@ -1341,8 +1376,9 @@ pub fn h264_sw_loop(hub: &Hub) {
     }
 }
 
-/// The hardware H264 lane: encode each frame just drawn, with no readback.
-/// The engine's keep_last holds the final pass in its FBO while the encoder
+/// The hardware lanes: encode each frame just drawn, with no readback, into
+/// H264 for the /h264 viewers and into JPEG for the MJPEG viewers. The
+/// engine's keep_last holds the final pass in its FBO while an encoder
 /// exists, so encode_last() always has a texture to sample. It issues GL
 /// calls, so it runs on the host's thread.
 #[derive(Default)]
@@ -1351,16 +1387,27 @@ pub struct HwLane {
     /// Encodes since the last access unit. An encoder can open at a size it
     /// never emits for, with no error to catch.
     starved: u32,
+    jpeg: Option<HardwareJpeg>,
+    /// The size that the JPEG encoder encodes at.
+    jpeg_size: (i32, i32),
+    /// Encodes since the last JPEG.
+    jpeg_starved: u32,
+    /// The JPEG lane failed. The CPU encodes the preview until the last
+    /// MJPEG viewer leaves, and the next one tries the hardware again.
+    jpeg_failed: bool,
+    /// The last reason that the JPEG lane failed for, said once.
+    jpeg_said: String,
 }
 
 impl HwLane {
-    /// Encode the frame that `renderer` just drew for the /h264 viewers of
-    /// `hub`. A failure goes to the hub, which hands the stream to the
-    /// software lane or ends it, and never to the frame.
+    /// Encode the frame that `renderer` just drew for the viewers of `hub`.
+    /// A failure goes to the hub, which hands the stream to a software lane
+    /// or ends it, and never to the frame.
     pub fn mirror(&mut self, hub: &Hub, renderer: &Renderer) {
+        self.mirror_jpeg(hub, renderer);
         if hub.fanout.nclients() == 0 || hub.fanout.failure().is_some() {
             // an open encoder costs a display its direct scanout
-            self.close();
+            self.close_h264();
             return;
         }
         if self.enc.is_none() && !hub.hardware_dead() {
@@ -1400,14 +1447,79 @@ impl HwLane {
             Err(e) => Some(e.to_string()),
         };
         if let Some(why) = failed {
-            self.close();
+            self.close_h264();
             hub.hardware_failed(&why);
         }
     }
 
-    pub fn close(&mut self) {
+    /// Encode the frame for the MJPEG viewers, at the preview's rate.
+    fn mirror_jpeg(&mut self, hub: &Hub, renderer: &Renderer) {
+        if hub.nclients() == 0 || self.jpeg_size != hub.jpeg_size() {
+            self.close_jpeg(hub);
+        }
+        if hub.nclients() == 0 {
+            self.jpeg_failed = false;
+            return;
+        }
+        if self.jpeg_failed || (self.jpeg.is_some() && !hub.hw_preview_due()) {
+            return;
+        }
+        if self.jpeg.is_none() {
+            let (w, h) = hub.jpeg_size();
+            match HardwareJpeg::new(renderer, w, h, PREVIEW_QUALITY) {
+                Ok(jpeg) => {
+                    self.jpeg = Some(jpeg);
+                    self.jpeg_size = (w, h);
+                    self.jpeg_starved = 0;
+                    hub.hw_preview.store(true, Ordering::SeqCst);
+                }
+                Err(e) => return self.jpeg_fail(hub, e.to_string()),
+            }
+        }
+        let jpeg = self.jpeg.as_mut().expect("the encoder was just opened");
+        *lock(&hub.hw_previewed) = monotonic();
+        match jpeg.encode_last() {
+            Ok(Some(jpg)) => {
+                self.jpeg_starved = 0;
+                hub.publish_jpeg(jpg.to_vec());
+            }
+            Ok(None) => {
+                self.jpeg_starved += 1;
+                if self.jpeg_starved >= HW_STARVE_LIMIT {
+                    let why = format!("hardware JPEG gave no output in {HW_STARVE_LIMIT} frames");
+                    self.jpeg_fail(hub, why);
+                }
+            }
+            Err(e) => self.jpeg_fail(hub, e.to_string()),
+        }
+    }
+
+    fn jpeg_fail(&mut self, hub: &Hub, why: String) {
+        self.close_jpeg(hub);
+        if self.jpeg_said != why {
+            hub.say(&format!("preview: {why}, encoding JPEG on the CPU"));
+        }
+        self.jpeg_failed = true;
+        self.jpeg_said = why;
+    }
+
+    fn close_jpeg(&mut self, hub: &Hub) {
+        if let Some(mut jpeg) = self.jpeg.take() {
+            jpeg.close();
+        }
+        hub.hw_preview.store(false, Ordering::SeqCst);
+    }
+
+    fn close_h264(&mut self) {
         if let Some(mut enc) = self.enc.take() {
             enc.close();
+        }
+    }
+
+    pub fn close(&mut self) {
+        self.close_h264();
+        if let Some(mut jpeg) = self.jpeg.take() {
+            jpeg.close();
         }
     }
 }

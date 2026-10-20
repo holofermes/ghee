@@ -319,7 +319,8 @@ impl Iterator for HardwareDrain<'_> {
     }
 }
 
-fn err_text(err: *mut c_char) -> String {
+/// The text of an engine error, or a generic one when the engine set none.
+pub(crate) fn err_text(err: *mut c_char) -> String {
     if err.is_null() {
         "encoder create failed".to_string()
     } else {
@@ -1091,6 +1092,46 @@ mod tests {
             "{types:?}"
         );
         enc.close();
+    }
+
+    #[test]
+    #[cfg_attr(
+        any(ghee_no_gpu, not(ghee_hw_h264)),
+        ignore = "needs a GL device and a hardware H264 encoder"
+    )]
+    fn a_hardware_jpeg_keeps_red_black_and_white() {
+        let (_g, mut r) = gpu();
+        let scene = crate::scene::Scene::from_dict(
+            &serde_json::json!({"version": 1, "passes": [{"name": "main",
+                "fragment": "void main(){ gl_FragColor = uv.x < 0.5 ? vec4(1.0, 0.0, 0.0, 1.0) \
+                             : vec4(vec3(step(0.5, uv.y)), 1.0); }"}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        r.setup(&scene).unwrap();
+        let mut enc = crate::output::HardwareJpeg::new(&r, 64, 48, 75).unwrap();
+        let mut jpg = None;
+        for _ in 0..10 {
+            r.draw(None).unwrap();
+            if let Some(j) = enc.encode_last().unwrap() {
+                jpg = Some(j.to_vec());
+                break;
+            }
+        }
+        let jpg = jpg.expect("no JPEG in 10 frames");
+        enc.close();
+        let mut d = jpeg_decoder::Decoder::new(&jpg[..]);
+        let px = d.decode().unwrap();
+        let info = d.info().unwrap();
+        assert_eq!((info.width, info.height), (64, 48));
+        // each probe sits inside a 16 x 16 block of one colour, y down
+        let at = |x: usize, y: usize| px[(y * 64 + x) * 3..][..3].to_vec();
+        let near =
+            |got: Vec<u8>, want: [u8; 3]| got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 6);
+        assert!(near(at(16, 24), [255, 0, 0]), "red {:?}", at(16, 24));
+        assert!(near(at(48, 8), [255, 255, 255]), "white {:?}", at(48, 8));
+        assert!(near(at(48, 40), [0, 0, 0]), "black {:?}", at(48, 40));
     }
 
     #[test]

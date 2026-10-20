@@ -93,19 +93,20 @@ function attachH264(canvas, url, opts) {
       throw new Error('h264 stream: HTTP ' + res.status + (why ? ': ' + why : ''));
     }
     reader = res.body.getReader();
-    let buf = new Uint8Array(0);
-    const cat = (a, b) => { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
+    // the bytes of a frame that the last read cut short
+    let rest = new Uint8Array(0);
     for (;;) {
       const { value, done } = await reader.read();
       if (done || stopped) { if (!stopped) fail('stream ended'); break; }
-      buf = cat(buf, value);
-      for (;;) {
-        if (buf.length < 5) break;
-        const type = buf[0];
-        const len = (buf[1] << 24 | buf[2] << 16 | buf[3] << 8 | buf[4]) >>> 0;
-        if (buf.length < 5 + len) break;
-        const payload = buf.slice(5, 5 + len);
-        buf = buf.slice(5 + len);
+      let buf = value;
+      if (rest.length) { buf = new Uint8Array(rest.length + value.length); buf.set(rest); buf.set(value, rest.length); }
+      let at = 0;
+      while (buf.length - at >= 5) {
+        const type = buf[at];
+        const len = (buf[at + 1] << 24 | buf[at + 2] << 16 | buf[at + 3] << 8 | buf[at + 4]) >>> 0;
+        if (buf.length - at < 5 + len) break;
+        const payload = buf.subarray(at + 5, at + 5 + len);
+        at += 5 + len;
         if (type === 0) await configure(JSON.parse(new TextDecoder().decode(payload)));
         else if (type === 3) { fail(new TextDecoder().decode(payload)); return; }
         else if (decoder && decoder.state === 'configured') {
@@ -115,7 +116,9 @@ function attachH264(canvas, url, opts) {
             data: payload,
           }));
         }
+        if (stopped) return;
       }
+      rest = buf.slice(at);
     }
   })().catch(fail);
 

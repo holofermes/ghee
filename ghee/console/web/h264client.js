@@ -130,8 +130,9 @@ function attachH264(canvas, url, opts) {
 // decodes H264 (WebCodecs, in a secure context), its /stream MJPEG on the img
 // otherwise, and when the H264 stream fails. base is the console's origin, ""
 // for the page's own. The page sends the vid's /ping. onchange runs when the
-// preview switches or the img loads. source() gives the kind ("h264", "mjpeg")
-// and the picture's size, why() the reason for MJPEG.
+// preview switches and when the picture's size arrives. source() gives the
+// kind ("h264", "mjpeg") and the picture's size, 0 x 0 before it arrives,
+// why() the reason for MJPEG.
 function playPreview(img, canvas, base, vid, onchange) {
   const changed = () => { if (onchange) onchange(); };
   let h264 = null, why = '', stopped = false;
@@ -148,7 +149,9 @@ function playPreview(img, canvas, base, vid, onchange) {
   }
   if ('VideoDecoder' in window && window.isSecureContext) {
     show(canvas);
+    canvas.width = canvas.height = 0;
     h264 = attachH264(canvas, base + '/h264?vid=' + vid, {
+      onconfig: changed,
       onfail: e => { if (!stopped) mjpeg('h264 preview dropped: ' + e); },
     });
     changed();

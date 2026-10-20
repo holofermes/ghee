@@ -701,7 +701,7 @@ def test_either_host_gives_its_address_and_serves_the_same_stats_and_preview(
         assert sorted(json_of(port, "/stats")) == sorted(
             ["active", "display", "error", "error_line", "error_pass", "fps"]
             + ["frame_ms", "frames", "gpu", "layer_changes", "locked", "out"]
-            + ["rev", "skipped", "stale", "stream_fps", "text_errors"]
+            + ["rev", "skipped", "stale", "stream_fps", "text_errors", "video_errors"]
         )
         assert jpeg_size(watching(None, lambda: first_jpeg(port), step=step)) == (
             480,

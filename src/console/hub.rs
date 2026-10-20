@@ -32,6 +32,7 @@ use crate::engine::{ErrorPass, Renderer};
 use crate::h264::{
     avcc, build_config, no_encoder, split_annexb, wire_frame, ColorSpace, HardwareH264,
     SoftwareH264, HW_COLOR, NAL_IDR, NAL_PPS, NAL_SEI, NAL_SLICE, NAL_SPS, SW_COLOR, WIRE_ERROR,
+    WIRE_IDLE,
 };
 use crate::live::{Changes, Live};
 use crate::looper::Frame;
@@ -78,6 +79,9 @@ pub const VIEWER_DEADLINE: f64 = 10.0;
 /// document takes time with each layer, and the code may change a layer
 /// every frame.
 pub const LAYERS_PUBLISH_EVERY: f64 = 0.2;
+
+/// The longest time in seconds that a stream sends nothing, by default.
+pub const STREAM_IDLE: f64 = 1.0;
 
 /// Encodes with no output before the hardware lane is declared dead.
 const HW_STARVE_LIMIT: u32 = 90;
@@ -254,6 +258,9 @@ pub struct Hub {
     pub dests: Vec<String>,
     /// Say on stderr why a stream changed lanes or ended.
     pub verbose: bool,
+    /// The longest time in seconds that a stream sends nothing. A browser
+    /// tells a still picture from a dead connection by it.
+    pub stream_idle: f64,
 
     // state
     stat: Mutex<Stat>,
@@ -318,6 +325,7 @@ impl Hub {
             publish_every: LAYERS_PUBLISH_EVERY,
             dests: Vec::new(),
             verbose: true,
+            stream_idle: STREAM_IDLE,
             stat: Mutex::new(Stat {
                 display: Value::Object(Map::new()),
                 gpu: Value::Object(Map::new()),
@@ -1857,20 +1865,21 @@ pub fn handle<D: Drawer + ?Sized, H: ConsoleHost>(
 /// headers do.
 const PART_HEAD: &[u8] = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n";
 
-/// One JPEG part for each JPEG that the preview encodes, and the last JPEG
-/// once more when the picture holds still: WebKit shows a part only when
-/// another one follows it.
+/// One JPEG part for each JPEG that the preview encodes. When the picture
+/// holds still, the last JPEG goes once more at once, since WebKit shows a
+/// part only when another one follows it, and again each time the stream
+/// sent nothing for `stream_idle`.
 fn stream<D: Drawer + ?Sized>(drawer: &D, request: Request, query: &Query) {
     let hub = drawer.hub();
+    let allow = reader_origin(&headers_of(&request))
+        .map(|origin| format!("Access-Control-Allow-Origin: {origin}"));
+    let mut head = vec!["Cache-Control: no-cache"];
+    head.extend(allow.as_deref());
     let mut w = request.into_writer();
-    if stream_head(
-        &mut w,
-        "multipart/x-mixed-replace; boundary=frame",
-        &["Cache-Control: no-cache"],
-    )
-    .and_then(|()| w.write_all(PART_HEAD))
-    .and_then(|()| w.flush())
-    .is_err()
+    if stream_head(&mut w, "multipart/x-mixed-replace; boundary=frame", &head)
+        .and_then(|()| w.write_all(PART_HEAD))
+        .and_then(|()| w.flush())
+        .is_err()
     {
         return;
     }
@@ -1882,16 +1891,20 @@ fn stream<D: Drawer + ?Sized>(drawer: &D, request: Request, query: &Query) {
     let mut sent_at: Option<u64> = None;
     let still =
         |sent_at: Option<u64>| sent_at.is_some_and(|n| hub.skipped.load(Ordering::SeqCst) > n);
+    let mut wrote = monotonic();
+    let idle = |wrote: f64| monotonic() - wrote >= hub.stream_idle;
     while !hub.stopping() {
         if hub.viewers.gone(&viewer) {
             break;
         }
         let (jpg, seq) = {
             let mut latest = lock(&hub.latest);
-            if latest.seq == last_seq && !still(sent_at) {
+            if latest.seq == last_seq && !still(sent_at) && !(latest.jpg.is_some() && idle(wrote)) {
+                let left = hub.stream_idle - (monotonic() - wrote);
+                let wait = if left > 0.0 { left.min(1.0) } else { 1.0 };
                 latest = hub
                     .latest_ready
-                    .wait_timeout(latest, Duration::from_secs(1))
+                    .wait_timeout(latest, Duration::from_secs_f64(wait))
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .0;
             }
@@ -1899,7 +1912,7 @@ fn stream<D: Drawer + ?Sized>(drawer: &D, request: Request, query: &Query) {
         };
         let fresh = seq != last_seq;
         last_seq = seq;
-        let Some(jpg) = jpg.filter(|_| fresh || still(sent_at)) else {
+        let Some(jpg) = jpg.filter(|_| fresh || still(sent_at) || idle(wrote)) else {
             continue;
         };
         sent_at = fresh.then(|| hub.skipped.load(Ordering::SeqCst));
@@ -1910,6 +1923,7 @@ fn stream<D: Drawer + ?Sized>(drawer: &D, request: Request, query: &Query) {
         if w.write_all(&part).is_err() || w.flush().is_err() {
             break;
         }
+        wrote = monotonic();
     }
     hub.count_clients(-1);
     hub.viewers.leave(&viewer);
@@ -1926,7 +1940,14 @@ fn write_chunk(w: &mut dyn Write, blob: &[u8]) -> std::io::Result<()> {
 /// Serve one /h264 viewer from the fanout while `alive` holds. The status line
 /// waits for the viewer's first blob, so a stream that cannot start answers
 /// 503 with the reason. A stream that fails later ends on a WIRE_ERROR frame.
-pub fn serve_h264(request: Request, fanout: &H264Fanout, c: &H264Client, alive: &dyn Fn() -> bool) {
+/// A WIRE_IDLE frame goes each time the stream sent nothing for `idle`.
+pub fn serve_h264(
+    request: Request,
+    fanout: &H264Fanout,
+    c: &H264Client,
+    alive: &dyn Fn() -> bool,
+    idle: Duration,
+) {
     let reader = reader_origin(&headers_of(&request)).map(str::to_string);
     let refuse = |request: Request, why: &str| {
         let mut resp = Response::text(503, why);
@@ -1955,6 +1976,7 @@ pub fn serve_h264(request: Request, fanout: &H264Fanout, c: &H264Client, alive: 
         return;
     }
     let mut next = Some(first);
+    let mut wrote = monotonic();
     loop {
         let blob = match next.take() {
             Some(blob) => blob,
@@ -1966,19 +1988,24 @@ pub fn serve_h264(request: Request, fanout: &H264Fanout, c: &H264Client, alive: 
                 if !alive() {
                     break;
                 }
-                match c.get(Duration::from_secs(1)) {
-                    Some(blob) => blob,
-                    None => continue,
+                let left = idle.as_secs_f64() - (monotonic() - wrote);
+                if left <= 0.0 {
+                    Arc::new(wire_frame(WIRE_IDLE, &[]))
+                } else {
+                    match c.get(Duration::from_secs_f64(left.min(1.0))) {
+                        Some(blob) => blob,
+                        None => continue,
+                    }
                 }
             }
         };
         if write_chunk(&mut w, &blob).is_err() {
             break;
         }
+        wrote = monotonic();
     }
     // The terminal chunk ends the response. Without it, keep-alive parks the
-    // socket and a viewer waits forever on an abandoned stream. A clean end is
-    // what sends the client to its MJPEG fallback.
+    // socket and a viewer waits forever on an abandoned stream.
     let _ = w.write_all(b"0\r\n\r\n");
     let _ = w.flush();
 }
@@ -1991,7 +2018,13 @@ fn h264<D: Drawer + ?Sized>(drawer: &D, request: Request, query: &Query) {
     let viewer = hub.viewers.join(query.get("vid").map(String::as_str));
     drawer.wake();
     let alive = || !hub.stopping() && !hub.viewers.gone(&viewer);
-    serve_h264(request, &hub.fanout, &c, &alive);
+    serve_h264(
+        request,
+        &hub.fanout,
+        &c,
+        &alive,
+        Duration::from_secs_f64(hub.stream_idle),
+    );
     hub.fanout.remove(&c);
     hub.viewers.leave(&viewer);
     // The encoder tears down on the next drawn frame, and a clean scene skips
@@ -2407,7 +2440,7 @@ mod tests {
             let (fanout, c) = (Arc::clone(&fanout), Arc::clone(&c));
             thread::spawn(move || run(&fanout, &c))
         };
-        serve_h264(request, &fanout, &c, &|| true);
+        serve_h264(request, &fanout, &c, &|| true, Duration::from_secs(60));
         fanout.remove(&c);
         driver.join().unwrap();
         client.join().unwrap()
@@ -2480,6 +2513,45 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_with_nothing_to_send_sends_idle_frames() {
+        use std::io::Read;
+        use std::net::TcpStream;
+        let fanout = H264Fanout::new(Arc::new(Mutex::new(FrameRate::new())));
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let client = thread::spawn(move || {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(b"GET /h264 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut out = Vec::new();
+            let _ = s.read_to_end(&mut out);
+            out
+        });
+        let request = server.recv().unwrap();
+        let c = fanout.add();
+        fanout.opened(256, 64, HW_COLOR);
+        fanout.push(&key_au());
+        // the stream ends once the viewer was checked on this many times
+        let checks = AtomicU64::new(0);
+        let alive = || checks.fetch_add(1, Ordering::SeqCst) < 20;
+        serve_h264(request, &fanout, &c, &alive, Duration::from_millis(5));
+        let out = client.join().unwrap();
+        let head_end = find(&out, b"\r\n\r\n", 0).unwrap();
+        let (body, ended) = dechunk(&out[head_end + 4..]);
+        assert!(ended);
+        let mut msgs = Vec::new();
+        let mut at = 0;
+        while at < body.len() {
+            let n = u32::from_be_bytes(body[at + 1..at + 5].try_into().unwrap()) as usize;
+            msgs.push((body[at], n));
+            at += 5 + n;
+        }
+        assert_eq!(msgs[..2].iter().map(|m| m.0).collect::<Vec<_>>(), [0, 1]);
+        assert!(msgs.len() > 2, "{msgs:?}");
+        assert!(msgs[2..].iter().all(|m| *m == (WIRE_IDLE, 0)), "{msgs:?}");
+    }
+
+    #[test]
     fn a_page_on_another_port_reads_the_stream_and_its_refusal() {
         let fanout = Arc::new(H264Fanout::new(Arc::new(Mutex::new(FrameRate::new()))));
         let out = h264_exchange_from("http://x:8096", fanout, |f, _| f.fail("no encoder"));
@@ -2535,26 +2607,44 @@ mod tests {
         got
     }
 
-    #[test]
-    fn a_jpeg_part_ends_before_the_next_jpeg_and_a_still_picture_comes_twice() {
+    /// One GET /stream with the `headers` given, served by a hub whose
+    /// stream sends nothing for at most `idle` seconds, and the viewer's
+    /// socket.
+    fn mjpeg_viewer(
+        idle: f64,
+        headers: &str,
+    ) -> (Arc<Host>, std::net::TcpStream, thread::JoinHandle<()>) {
         use std::net::TcpStream;
-        let host = Arc::new(Host(Hub::new()));
+        let mut hub = Hub::new();
+        hub.stream_idle = idle;
+        let host = Arc::new(Host(hub));
         let server = Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
         let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        s.write_all(b"GET /stream HTTP/1.1\r\nHost: x\r\n\r\n")
+        s.write_all(format!("GET /stream HTTP/1.1\r\n{headers}\r\n").as_bytes())
             .unwrap();
         let request = server.recv().unwrap();
         let served = {
             let host = Arc::clone(&host);
             thread::spawn(move || stream(&*host, request, &Query::new()))
         };
-        let head =
-            b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n\
+        (host, s, served)
+    }
+
+    /// The head of a stream to a page on the console's own origin.
+    const MJPEG_HEAD: &[u8] =
+        b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n\
                      Cache-Control: no-cache\r\n\r\n--frame\r\nContent-Type: image/jpeg\r\n\r\n";
-        assert_eq!(next_bytes(&mut s, head), head);
-        let part = |jpg: &[u8]| [jpg, b"\r\n--frame\r\nContent-Type: image/jpeg\r\n\r\n"].concat();
+
+    fn part(jpg: &[u8]) -> Vec<u8> {
+        [jpg, b"\r\n--frame\r\nContent-Type: image/jpeg\r\n\r\n"].concat()
+    }
+
+    #[test]
+    fn a_jpeg_part_ends_before_the_next_jpeg_and_a_still_picture_comes_twice() {
+        let (host, mut s, served) = mjpeg_viewer(60.0, "Host: x\r\n");
+        assert_eq!(next_bytes(&mut s, MJPEG_HEAD), MJPEG_HEAD);
         let (one, two) = (b"\xFF\xD8one\xFF\xD9", b"\xFF\xD8two\xFF\xD9");
         until(|| host.0.nclients() == 1);
         publish_jpeg(&host.0, one);
@@ -2564,6 +2654,37 @@ mod tests {
         host.0.skipped();
         publish_jpeg(&host.0, two);
         assert_eq!(next_bytes(&mut s, &part(two)), part(two));
+        host.0.stop();
+        served.join().unwrap();
+    }
+
+    #[test]
+    fn a_still_picture_comes_again_each_time_the_stream_idles() {
+        let (host, mut s, served) = mjpeg_viewer(0.01, "Host: x\r\n");
+        assert_eq!(next_bytes(&mut s, MJPEG_HEAD), MJPEG_HEAD);
+        until(|| host.0.nclients() == 1);
+        let one = b"\xFF\xD8one\xFF\xD9";
+        publish_jpeg(&host.0, one);
+        for _ in 0..3 {
+            assert_eq!(next_bytes(&mut s, &part(one)), part(one));
+        }
+        host.0.stop();
+        served.join().unwrap();
+    }
+
+    #[test]
+    fn a_page_on_another_port_reads_the_mjpeg_stream() {
+        let (host, mut s, served) = mjpeg_viewer(60.0, "Host: x:8090\r\nOrigin: http://x:8096\r\n");
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.extend(next_bytes(&mut s, &[0]));
+        }
+        let head = String::from_utf8_lossy(&head);
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(
+            head.contains("\r\nAccess-Control-Allow-Origin: http://x:8096\r\n"),
+            "{head}"
+        );
         host.0.stop();
         served.join().unwrap();
     }

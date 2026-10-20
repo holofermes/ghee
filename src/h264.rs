@@ -147,6 +147,8 @@ pub fn build_config(sps: &[u8], pps: &[u8], w: i32, h: i32, color: Option<ColorS
 
 /// The wire's error type: the payload is the UTF-8 reason the stream ends.
 pub const WIRE_ERROR: u8 = 3;
+/// The wire's idle type, with no payload: the stream had nothing to send.
+pub const WIRE_IDLE: u8 = 4;
 
 /// Browser wire framing: [u8 type][u32 BE len][payload].
 pub fn wire_frame(t: u8, payload: &[u8]) -> Vec<u8> {

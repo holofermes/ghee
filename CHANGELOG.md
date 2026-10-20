@@ -48,7 +48,8 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `SceneController` gives the console its `ghee::live::Live` through
   `live()` instead of taking `on_param`. Set a `Console`'s frame size and
   its preview and stream settings on `console.hub`, and take the stream
-  types from `ghee::console::hub`. Give the preview's rate in
+  types from `ghee::console::hub`. Pass `serve_h264` the longest time that
+  its stream goes without sending. Give the preview's rate in
   `Options.preview_fps` and `Hub::preview_fps` as an `Option`, None for
   ghee's own. Set a `Loop`'s `timestep` and `pacer` on
   its `clock`. Take a `Result` from `Card::open`, pass the display's `Card`
@@ -142,7 +143,7 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - Show a console's preview on a page of your own with `playPreview` from the
   console's `/h264client.js`, which plays H264 and falls back to MJPEG
   ([HTTP API](docs/http.md#streams)). A page on another port of the
-  console's host can read `/h264`.
+  console's host can read `/h264` and `/stream`.
 
 ### Changed
 
@@ -162,6 +163,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   of a Pi Zero 2 W's core, down from 18.9%, and 5.0% at 30.
 - The console's preview tries H264 again each time it starts, instead of
   keeping MJPEG for the page's life after one failure.
+- `/h264` sends a frame of type 4 each second that it has no frame to send,
+  and `/stream` sends the last JPEG again each second while the picture
+  holds still, so a reader tells a still picture from a dead connection.
 - After dropped ticks, a tick's `dt` covers the whole gap since the last
   tick that the program got.
 - ghee rounds a half up in an int param, in a scene file, on the wire, in
@@ -274,6 +278,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   strip along its edge.
 - A console page in a hidden tab stops its preview in every browser,
   instead of in Chrome alone.
+- The console's preview, and `playPreview` on a page of your own, open the
+  stream again when its connection drops or stops sending, instead of
+  freezing on the last picture.
 - Firefox for Android no longer refuses the console's requests under its
   Local Network Access protection, which froze the preview. The console
   registers no service worker, and its page removes the one that an

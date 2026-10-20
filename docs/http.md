@@ -244,7 +244,7 @@ curl -X POST --data-binary @dot.png 'http://127.0.0.1:8090/upload?name=glow&file
 
 To read a JPEG of `/stream`, read up to the next `--frame` line: a part
 carries no `Content-Length`. When the picture holds still, the last JPEG
-comes twice.
+comes twice, then once a second.
 
 Each frame of `/h264` is 1 byte of type, a 4-byte big-endian length, and
 the payload:
@@ -255,15 +255,20 @@ the payload:
 | 1 | a key frame, in AVCC |
 | 2 | a delta frame, in AVCC |
 | 3 | the reason that the stream ends, as UTF-8 text |
+| 4 | nothing: a second passed with no frame to send |
 
 When no encoder can start, `/h264` answers 503.
+
+Both streams send something each second, so a reader that hears nothing
+for a few seconds holds a dead connection.
 
 To show the preview on a page of your own, load the console's
 `/h264client.js` and call `playPreview(img, canvas, base, vid)`. It plays
 `/h264` on the canvas when the browser decodes H264, and `/stream` on the
-img otherwise. `base` is the console's origin, or `""` when the page comes
-from the console's own. A page on another port of the console's host can
-read `/h264`: ghee names the page's `Origin` in
+img otherwise, and opens the stream again when its connection drops.
+`base` is the console's origin, or `""` when the page comes from the
+console's own. A page on another port of the console's host can read
+`/h264` and `/stream`: ghee names the page's `Origin` in
 `Access-Control-Allow-Origin`.
 
 ## From Python

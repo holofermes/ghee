@@ -1,9 +1,11 @@
-// attachH264(canvas, url, {onconfig, onstats, onfail, startMs}) -> {stop}
+// attachH264(canvas, url, {onconfig, onstats, onframe, ondata, onfail, startMs}) -> {stop}
 // Reads the /h264 framed stream ([u8 type][u32 BE len][payload]; type 0 =
 // decoder config JSON, 1 = key AU, 2 = delta AU, AVCC payloads, 3 = the UTF-8
-// reason the stream ends), decodes with WebCodecs VideoDecoder, draws
-// VideoFrames to the canvas. A stream with no decoded frame startMs after the
-// attach (default 5000) counts as failed.
+// reason the stream ends, 4 = idle), decodes with WebCodecs VideoDecoder, draws
+// VideoFrames to the canvas. onframe runs at the first decoded frame, ondata
+// at each read. A stream with no decoded frame startMs after the attach
+// (default 5000) counts as failed. onfail(why, dropped): dropped is true when
+// the connection failed or ended, false when the server or the decoder refused.
 function attachH264(canvas, url, opts) {
   opts = opts || {};
   const startMs = opts.startMs || 5000;
@@ -20,7 +22,7 @@ function attachH264(canvas, url, opts) {
     if (decoder) { if (decoder.state !== 'closed') decoder.close(); decoder = null; }
     if (lastFrame) { lastFrame.close(); lastFrame = null; }
   }
-  const fail = e => { if (!stopped) { teardown(); opts.onfail && opts.onfail(String(e)); } };
+  const fail = (e, dropped) => { if (!stopped) { teardown(); opts.onfail && opts.onfail(String(e), !!dropped); } };
   const startTimer = setTimeout(() => fail('no frame in ' + startMs / 1000 + ' s'), startMs);
 
   async function configure(cfg) {
@@ -28,7 +30,9 @@ function attachH264(canvas, url, opts) {
     // the old one has to be closed or it keeps its hardware slot
     if (decoder && decoder.state !== 'closed') decoder.close();
     decoder = null;
-    canvas.width = cfg.codedWidth; canvas.height = cfg.codedHeight;
+    // a resize clears the canvas, and a restarted stream keeps the last picture
+    if (canvas.width !== cfg.codedWidth) canvas.width = cfg.codedWidth;
+    if (canvas.height !== cfg.codedHeight) canvas.height = cfg.codedHeight;
     const desc = Uint8Array.from(atob(cfg.description), c => c.charCodeAt(0));
     let dc = {
       codec: cfg.codec,
@@ -53,6 +57,7 @@ function attachH264(canvas, url, opts) {
     decoder = new VideoDecoder({
       output: f => {
         decoded++; clearTimeout(startTimer);
+        if (decoded === 1 && opts.onframe) opts.onframe();
         if (lastFrame) lastFrame.close();
         lastFrame = f;
       },
@@ -87,7 +92,8 @@ function attachH264(canvas, url, opts) {
   requestAnimationFrame(draw);
 
   (async () => {
-    const res = await fetch(url, { signal: abort.signal });
+    let res;
+    try { res = await fetch(url, { signal: abort.signal }); } catch (e) { return fail(e, true); }
     if (!res.ok) {
       const why = await res.text().catch(() => '');
       throw new Error('h264 stream: HTTP ' + res.status + (why ? ': ' + why : ''));
@@ -95,8 +101,11 @@ function attachH264(canvas, url, opts) {
     reader = res.body.getReader();
     let rest = new Uint8Array(0);
     for (;;) {
-      const { value, done } = await reader.read();
-      if (done || stopped) { if (!stopped) fail('stream ended'); break; }
+      let got;
+      try { got = await reader.read(); } catch (e) { return fail(e, true); }
+      const { value, done } = got;
+      if (done || stopped) { if (!stopped) fail('stream ended', true); break; }
+      if (opts.ondata) opts.ondata();
       let buf = value;
       if (rest.length) { buf = new Uint8Array(rest.length + value.length); buf.set(rest); buf.set(value, rest.length); }
       let at = 0;
@@ -108,7 +117,7 @@ function attachH264(canvas, url, opts) {
         at += 5 + len;
         if (type === 0) await configure(JSON.parse(new TextDecoder().decode(payload)));
         else if (type === 3) { fail(new TextDecoder().decode(payload)); return; }
-        else if (decoder && decoder.state === 'configured') {
+        else if ((type === 1 || type === 2) && decoder && decoder.state === 'configured') {
           decoder.decode(new EncodedVideoChunk({
             type: type === 1 ? 'key' : 'delta',
             timestamp: (ts++) * 33333,
@@ -124,35 +133,144 @@ function attachH264(canvas, url, opts) {
   return { stop: teardown };
 }
 
+// The index of the bytes pat in buf at or after from, -1 when absent.
+function findBytes(buf, pat, from) {
+  for (let i = buf.indexOf(pat[0], from); i >= 0 && i + pat.length <= buf.length; i = buf.indexOf(pat[0], i + 1)) {
+    let k = 1;
+    while (k < pat.length && buf[i + k] === pat[k]) k++;
+    if (k === pat.length) return i;
+  }
+  return -1;
+}
+
+// attachMjpeg(url, {onjpeg, ondata, onfail}) -> {stop}
+// Reads the multipart /stream and hands each JPEG to onjpeg as bytes. ondata
+// runs at each read, onfail(why) when the stream fails or ends.
+function attachMjpeg(url, opts) {
+  const abort = new AbortController();
+  let stopped = false;
+  const stop = () => { stopped = true; abort.abort(); };
+  const fail = e => { if (!stopped) { stop(); opts.onfail(String(e)); } };
+  (async () => {
+    const res = await fetch(url, { signal: abort.signal });
+    if (!res.ok) throw new Error('mjpeg stream: HTTP ' + res.status);
+    const b = /boundary="?([^";]+)/.exec(res.headers.get('Content-Type') || '');
+    if (!b) throw new Error('mjpeg stream: no multipart boundary');
+    const enc = new TextEncoder(), gap = enc.encode('\r\n\r\n'), end = enc.encode('\r\n--' + b[1]);
+    const reader = res.body.getReader();
+    // body: where the part's JPEG starts, -1 while its headers come
+    let buf = new Uint8Array(0), body = -1, from = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (stopped) return;
+      if (done) throw new Error('stream ended');
+      opts.ondata();
+      const joined = new Uint8Array(buf.length + value.length);
+      joined.set(buf); joined.set(value, buf.length); buf = joined;
+      for (;;) {
+        if (body < 0) {
+          const i = findBytes(buf, gap, from);
+          if (i < 0) { from = Math.max(0, buf.length - gap.length + 1); break; }
+          body = from = i + gap.length;
+        }
+        const i = findBytes(buf, end, from);
+        if (i < 0) { from = Math.max(body, buf.length - end.length + 1); break; }
+        opts.onjpeg(buf.slice(body, i));
+        buf = buf.slice(i + 2); body = -1; from = 0;
+      }
+    }
+  })().catch(fail);
+  return { stop };
+}
+
 // playPreview(img, canvas, base, vid, onchange) -> {stop, source, why}
 // Plays a console's preview: its /h264 stream on the canvas when the browser
 // decodes H264 (WebCodecs, in a secure context), its /stream MJPEG on the img
-// otherwise, and when the H264 stream fails. base is the console's origin, ""
-// for the page's own. The page sends the vid's /ping. onchange runs when the
-// preview switches and when the picture's size arrives. source() gives the
-// kind ("h264", "mjpeg") and the picture's size, 0 x 0 before it arrives,
-// why() the reason for MJPEG.
+// otherwise, and when an H264 stream fails before its first frame. A stream
+// that drops, ends or goes quiet after a frame opens again. base is the
+// console's origin, "" for the page's own. The page sends the vid's /ping.
+// onchange runs when the preview switches and when the picture's size
+// arrives. source() gives the kind ("h264", "mjpeg") and the picture's size,
+// 0 x 0 before it arrives, why() the reason for MJPEG.
 function playPreview(img, canvas, base, vid, onchange) {
   const changed = () => { if (onchange) onchange(); };
-  let h264 = null, why = '', stopped = false;
+  // both streams send something each second
+  const QUIET_MS = 3000;
+  let lane = null, h264 = false, why = '', stopped = false;
+  // shown: the lane drew a frame. tries: the restarts since the last frame.
+  let shown = false, tries = 0, retry = 0, quiet = 0;
+  // the img's object URLs: the one it shows, the one it decodes
+  let url = '', pending = '', next = null, w = 0, h = 0;
   function show(el) {
     img.style.display = el === img ? '' : 'none';
     canvas.style.display = el === canvas ? '' : 'none';
   }
+  function drop() {
+    clearTimeout(quiet);
+    if (lane) { lane.stop(); lane = null; }
+  }
+  function heard() {
+    clearTimeout(quiet);
+    if (shown) quiet = setTimeout(restart, QUIET_MS);
+  }
+  function drew() { shown = true; tries = 0; heard(); }
+  function restart() {
+    drop();
+    clearTimeout(retry);
+    if (!stopped) retry = setTimeout(h264 ? playH264 : playMjpeg, Math.min(8000, 250 * 2 ** tries++));
+  }
+  function playH264() {
+    let first = false;
+    lane = attachH264(canvas, base + '/h264?vid=' + vid, {
+      onconfig: changed,
+      ondata: () => { if (first) heard(); },
+      onframe: () => { first = true; drew(); },
+      onfail: (e, dropped) => {
+        lane = null;
+        if (dropped && (first || shown)) restart();
+        else { drop(); mjpeg('h264 preview dropped: ' + e); }
+      },
+    });
+  }
+  // the img decodes one JPEG at a time, and the newest that waits goes next
+  function put(jpeg) {
+    if (pending) { next = jpeg; return; }
+    pending = URL.createObjectURL(new Blob([jpeg], { type: 'image/jpeg' }));
+    img.src = pending;
+  }
+  function decoded(ok) {
+    if (ok) {
+      if (url) URL.revokeObjectURL(url);
+      url = pending;
+      if (img.naturalWidth !== w || img.naturalHeight !== h) {
+        w = img.naturalWidth; h = img.naturalHeight;
+        changed();
+      }
+    } else URL.revokeObjectURL(pending);
+    pending = '';
+    if (next) { const j = next; next = null; put(j); }
+  }
+  function playMjpeg() {
+    lane = attachMjpeg(base + '/stream?vid=' + vid, {
+      ondata: heard,
+      onjpeg: j => { drew(); put(j); },
+      onfail: () => { lane = null; restart(); },
+    });
+    heard();
+  }
   function mjpeg(reason) {
-    why = reason; h264 = null;
+    why = reason; h264 = false; shown = false; tries = 0;
     show(img);
-    img.onload = changed;
-    img.src = base + '/stream?vid=' + vid;
+    img.onload = () => decoded(true);
+    img.onerror = () => decoded(false);
     changed();
+    playMjpeg();
   }
   if ('VideoDecoder' in window && window.isSecureContext) {
+    h264 = true;
     show(canvas);
     canvas.width = canvas.height = 0;
-    h264 = attachH264(canvas, base + '/h264?vid=' + vid, {
-      onconfig: changed,
-      onfail: e => { if (!stopped) mjpeg('h264 preview dropped: ' + e); },
-    });
+    playH264();
     changed();
   } else {
     mjpeg(window.isSecureContext ? 'this browser has no WebCodecs VideoDecoder'
@@ -161,9 +279,12 @@ function playPreview(img, canvas, base, vid, onchange) {
   return {
     stop() {
       stopped = true;
-      if (h264) { h264.stop(); h264 = null; }
-      img.onload = null;
+      clearTimeout(retry);
+      drop();
+      img.onload = img.onerror = null;
       img.removeAttribute('src');
+      for (const u of [url, pending]) if (u) URL.revokeObjectURL(u);
+      url = pending = ''; next = null;
     },
     source() {
       if (canvas.style.display !== 'none') return { kind: 'h264', w: canvas.width, h: canvas.height };

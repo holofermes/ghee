@@ -3556,7 +3556,7 @@ function applyTheme(t){
 applyTheme(document.documentElement.dataset.theme || "light");
 $("#theme").addEventListener("click", ()=> applyTheme(document.documentElement.dataset.theme==="dark" ? "light" : "dark"));
 
-if ("serviceWorker" in navigator){ navigator.serviceWorker.register("sw.js").catch(()=>{}); }
+if ("serviceWorker" in navigator) navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(()=>{});
 boot();
 </script>
 </body>

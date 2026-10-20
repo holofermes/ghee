@@ -274,6 +274,10 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   strip along its edge.
 - A console page in a hidden tab stops its preview in every browser,
   instead of in Chrome alone.
+- Firefox for Android no longer refuses the console's requests under its
+  Local Network Access protection, which froze the preview. The console
+  registers no service worker, and its page removes the one that an
+  earlier console registered.
 
 ## 0.4.0 - 2026-08-06
 

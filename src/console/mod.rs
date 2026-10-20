@@ -18,7 +18,7 @@ pub mod store;
 
 /// The web assets, compiled in. A binary carries no package directory. Each
 /// name is the path under ghee/console/web/, which is what a URL asks for.
-pub const WEB: [(&str, &[u8]); 5] = [
+pub const WEB: [(&str, &[u8]); 4] = [
     (
         "index.html",
         include_bytes!("../../ghee/console/web/index.html"),
@@ -27,7 +27,6 @@ pub const WEB: [(&str, &[u8]); 5] = [
         "h264client.js",
         include_bytes!("../../ghee/console/web/h264client.js"),
     ),
-    ("sw.js", include_bytes!("../../ghee/console/web/sw.js")),
     (
         "manifest.json",
         include_bytes!("../../ghee/console/web/manifest.json"),

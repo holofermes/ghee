@@ -259,17 +259,12 @@ the payload:
 
 When no encoder can start, `/h264` answers 503.
 
-Both streams send something each second, so a reader that hears nothing
-for a few seconds holds a dead connection.
+Both streams send something at least once a second. A few seconds of
+silence means the connection is dead.
 
-To show the preview on a page of your own, load the console's
-`/h264client.js` and call `playPreview(img, canvas, base, vid)`. It plays
-`/h264` on the canvas when the browser decodes H264, and `/stream` on the
-img otherwise, and opens the stream again when its connection drops.
-`base` is the console's origin, or `""` when the page comes from the
-console's own. A page on another port of the console's host can read
-`/h264` and `/stream`: ghee names the page's `Origin` in
-`Access-Control-Allow-Origin`.
+To show the preview on a page of your own, load `/h264client.js` and call
+`playPreview`: it plays H264 and falls back to MJPEG on its own
+([h264client.js](../ghee/console/web/h264client.js#L186)).
 
 ## From Python
 

@@ -159,8 +159,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   dropped it silently.
 - On a Pi 1 to 4, the Pi's codec encodes the console's MJPEG preview from
   the GPU, with no readback, and the preview refreshes 30 times a second by
-  default instead of 15. At 135x240 and 15 frames a second, ghee takes 2.6%
-  of a Pi Zero 2 W's core, down from 18.9%, and 5.0% at 30.
+  default instead of 15. At 135x240 the preview takes 3.2% of a Pi Zero
+  2 W's core at 15 frames a second and 5.0% at 30, against 18.9% at 15
+  when the CPU encodes it.
 - The console's preview tries H264 again each time it starts, instead of
   keeping MJPEG for the page's life after one failure.
 - `/h264` sends a frame of type 4 each second that it has no frame to send,

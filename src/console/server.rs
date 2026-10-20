@@ -1428,7 +1428,7 @@ pub fn render_loop(
             let interval = skip_interval(
                 hz,
                 hub.nclients() + hub.fanout.nclients() as i64,
-                hub.preview_fps,
+                hub.preview_rate(),
                 period.unwrap_or(0.0),
             );
             match interval {
@@ -2017,7 +2017,8 @@ pub struct Options {
     /// The backlight level that the KMS display takes at the start, 0 to 1.
     pub brightness: Option<f64>,
     pub preview_max: i32,
-    pub preview_fps: f64,
+    /// The browser preview refresh cap, as `Hub::preview_fps` takes it.
+    pub preview_fps: Option<f64>,
     pub stream_max: i32,
     pub stream_hz: i32,
     pub bitrate: i64,
@@ -2077,7 +2078,7 @@ impl Default for Options {
             rotate: Rotation::Deg0,
             brightness: None,
             preview_max: 480,
-            preview_fps: 15.0,
+            preview_fps: None,
             stream_max: 0,
             stream_hz: 30,
             bitrate: 10_000_000,

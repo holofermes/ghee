@@ -771,7 +771,7 @@ fn serve(
         host: a.host.clone(),
         allowed_hosts: a.allow_hosts.clone(),
         preview_max: a.preview_max,
-        preview_fps: f64::from(a.preview_fps),
+        preview_fps: a.preview_fps.map(f64::from),
         stream_max: a.stream_max,
         stream_hz: a.stream_fps,
         bitrate: i64::from(a.bitrate),
@@ -1234,10 +1234,10 @@ struct ConsoleFlags {
 
     #[arg(
         long,
-        default_value_t = 15,
-        help = "browser preview refresh cap, the display stays full speed (default 15)"
+        help = "browser preview refresh cap, the display stays full speed \
+                (default 30 while the Pi's codec encodes the preview, else 15)"
     )]
-    preview_fps: i32,
+    preview_fps: Option<i32>,
 
     #[arg(
         long,
@@ -1474,7 +1474,7 @@ pub struct Ns {
     my_scenes: Option<std::path::PathBuf>,
     allow_uploads: bool,
     preview_max: i32,
-    preview_fps: i32,
+    preview_fps: Option<i32>,
     stream_max: i32,
     stream_fps: i32,
     bitrate: i32,
@@ -2369,7 +2369,7 @@ mod tests {
         assert_eq!(a.scene.as_deref(), Some("scenes/"));
         assert!(a.serve && !a.stats);
         assert_eq!((a.port, a.bitrate), (8090, 10_000_000));
-        assert_eq!((a.preview_max, a.preview_fps, a.stream_max), (480, 15, 0));
+        assert_eq!((a.preview_max, a.preview_fps, a.stream_max), (480, None, 0));
         assert_eq!(a.host, "127.0.0.1");
         assert_eq!((a.components, a.write_buffer), (4, 16));
         assert!(a.output.is_none() && a.h264.is_none() && a.filters.is_none());
@@ -2422,7 +2422,10 @@ mod tests {
         assert_eq!(a.state_dir, Some(std::path::PathBuf::from("/srv/state")));
         assert_eq!(a.edits_dir, Some(std::path::PathBuf::from("/srv/edits")));
         assert_eq!(a.allow_hosts, ["pi.tail.ts.net", "pi.local"]);
-        assert_eq!((a.preview_fps, a.preview_max, a.stream_max), (5, 120, 320));
+        assert_eq!(
+            (a.preview_fps, a.preview_max, a.stream_max),
+            (Some(5), 120, 320)
+        );
         assert_eq!((a.bitrate, a.rgb565), (123, true));
         assert_eq!(a.scene_args, argv(&["--text", "hi"]));
     }

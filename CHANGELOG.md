@@ -48,7 +48,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   `SceneController` gives the console its `ghee::live::Live` through
   `live()` instead of taking `on_param`. Set a `Console`'s frame size and
   its preview and stream settings on `console.hub`, and take the stream
-  types from `ghee::console::hub`. Set a `Loop`'s `timestep` and `pacer` on
+  types from `ghee::console::hub`. Give the preview's rate in
+  `Options.preview_fps` and `Hub::preview_fps` as an `Option`, None for
+  ghee's own. Set a `Loop`'s `timestep` and `pacer` on
   its `clock`. Take a `Result` from `Card::open`, pass the display's `Card`
   in the console's `Options.display` and its size as an `Option` in `size`,
   and give an `ArraySource`'s data as a `Feed`. Stop a console through the
@@ -155,8 +157,9 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
 - ghee logs a refused message from a scene program, once per mistake. 0.4.0
   dropped it silently.
 - On a Pi 1 to 4, the Pi's codec encodes the console's MJPEG preview from
-  the GPU, with no readback. At 135x240 and 15 frames a second, ghee takes
-  2.6% of a Pi Zero 2 W's core, down from 18.9%.
+  the GPU, with no readback, and the preview refreshes 30 times a second by
+  default instead of 15. At 135x240 and 15 frames a second, ghee takes 2.6%
+  of a Pi Zero 2 W's core, down from 18.9%, and 5.0% at 30.
 - The console's preview tries H264 again each time it starts, instead of
   keeping MJPEG for the page's life after one failure.
 - After dropped ticks, a tick's `dt` covers the whole gap since the last

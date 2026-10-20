@@ -42,6 +42,11 @@ use crate::stats::{monotonic, FrameRate, DEST_H264, DEST_MJPEG};
 /// JPEG quality for the MJPEG preview
 pub const PREVIEW_QUALITY: u8 = 75;
 
+/// The preview's refresh cap while the CPU encodes its JPEGs.
+const PREVIEW_FPS: f64 = 15.0;
+/// The preview's refresh cap while the Pi's codec encodes its JPEGs.
+const HW_PREVIEW_FPS: f64 = 30.0;
+
 /// The producer and a viewer run at the same rate, so a backlog never drains on
 /// its own. Past this many queued frames the fanout drops the client, and the
 /// client resyncs at the next keyframe.
@@ -233,8 +238,10 @@ pub struct Hub {
     pub h: i32,
     /// The longest side of the browser preview. The encoder thread downscales it.
     pub preview_max: i32,
-    /// The browser preview refresh cap. The display stays at full speed.
-    pub preview_fps: f64,
+    /// The browser preview refresh cap, <= 0 for every frame. None takes 30
+    /// a second while the Pi's codec encodes the preview, and 15 while the
+    /// CPU does. The display stays at full speed.
+    pub preview_fps: Option<f64>,
     /// The cap on the h264 stream's longest side. 0 means full size.
     pub stream_max: i32,
     /// The rate that the hardware H264 lane encodes at.
@@ -266,8 +273,8 @@ pub struct Hub {
     previewed: Mutex<f64>,
     /// The hardware JPEG lane encodes the preview, with no readback.
     hw_preview: AtomicBool,
-    /// When the hardware JPEG lane last encoded.
-    hw_previewed: Mutex<f64>,
+    /// When the hardware JPEG lane is next due.
+    hw_preview_at: Mutex<f64>,
     nclients: Mutex<i64>,
     /// The frames drawn.
     frame_rate: Mutex<FrameRate>,
@@ -304,7 +311,7 @@ impl Hub {
             w: 320,
             h: 240,
             preview_max: 480,
-            preview_fps: 15.0,
+            preview_fps: None,
             stream_max: 0,
             stream_hz: H264_FPS,
             bitrate: 10_000_000,
@@ -327,7 +334,7 @@ impl Hub {
             latest_ready: Condvar::new(),
             previewed: Mutex::new(0.0),
             hw_preview: AtomicBool::new(false),
-            hw_previewed: Mutex::new(0.0),
+            hw_preview_at: Mutex::new(f64::NEG_INFINITY),
             nclients: Mutex::new(0),
             frame_rate: Mutex::new(FrameRate::new()),
             fanout: H264Fanout::new(Arc::clone(&stream_rate)),
@@ -655,7 +662,7 @@ impl Hub {
         }
         let mut rates: Vec<f64> = Vec::new();
         if self.nclients() > 0 && !self.hw_preview.load(Ordering::SeqCst) {
-            rates.push(self.preview_fps); // <= 0 means every frame
+            rates.push(self.preview_rate()); // <= 0 means every frame
         }
         if self.software_h264() {
             rates.push(f64::from(H264_FPS));
@@ -675,12 +682,26 @@ impl Hub {
             || (self.hw_preview.load(Ordering::SeqCst) && self.hw_preview_due())
     }
 
+    /// The browser preview's refresh cap, <= 0 for every frame.
+    pub fn preview_rate(&self) -> f64 {
+        self.preview_fps
+            .unwrap_or(match self.hw_preview.load(Ordering::SeqCst) {
+                true => HW_PREVIEW_FPS,
+                false => PREVIEW_FPS,
+            })
+    }
+
     /// True when an MJPEG viewer watches and the hardware JPEG lane is due
     /// at the preview's rate.
     fn hw_preview_due(&self) -> bool {
         self.nclients() > 0
-            && (self.preview_fps <= 0.0
-                || monotonic() - *lock(&self.hw_previewed) >= 1.0 / self.preview_fps)
+            && (self.preview_rate() <= 0.0 || monotonic() >= *lock(&self.hw_preview_at))
+    }
+
+    /// The hardware JPEG lane encodes a frame now.
+    fn hw_previewed(&self) {
+        let mut at = lock(&self.hw_preview_at);
+        *at = next_due(*at, monotonic(), self.preview_rate());
     }
 
     /// The size of the preview's JPEGs: the frame, fit inside the cap on the
@@ -943,6 +964,18 @@ pub fn banner(
 }
 
 // ---------------------------------------------------------------- preview
+
+/// When a preview at `fps` is next due, after a frame taken at `now` with
+/// `at` due. The deadline moves a period at a time, and lags `now` by half a
+/// period at most, so a render at the preview's rate or slower gives the
+/// preview each of its frames, early or late.
+fn next_due(at: f64, now: f64, fps: f64) -> f64 {
+    if fps <= 0.0 {
+        return now;
+    }
+    let period = 1.0 / fps;
+    (at + period).max(now - period / 2.0)
+}
 
 /// Encode the preview JPEGs, off the host's thread. The host drops its
 /// readback here. This downscales a frame bigger than the preview cap, so the
@@ -1477,7 +1510,7 @@ impl HwLane {
             }
         }
         let jpeg = self.jpeg.as_mut().expect("the encoder was just opened");
-        *lock(&hub.hw_previewed) = monotonic();
+        hub.hw_previewed();
         match jpeg.encode_last() {
             Ok(Some(jpg)) => {
                 self.jpeg_starved = 0;
@@ -2162,6 +2195,44 @@ mod tests {
         hub.stop();
         hub.raw_ready.notify_all();
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn the_hardware_preview_keeps_its_rate_or_the_renders_whichever_is_lower() {
+        // (render rate, preview rate, frames the preview takes in 10 s)
+        for (render, fps, want) in [
+            (30.0, 30.0, 300),
+            (15.0, 30.0, 150),
+            (60.0, 30.0, 300),
+            (250.0, 30.0, 300),
+            (30.0, 15.0, 150),
+        ] {
+            let frames = (render * 10.0) as u64;
+            let jitter = (0.003_f64).min(0.25 / render);
+            let mut at = f64::NEG_INFINITY;
+            let mut taken = 0u64;
+            for k in 0..frames {
+                let t = k as f64 / render + jitter * (((k * 7919) % 9) as f64 / 4.0 - 1.0);
+                if t >= at {
+                    taken += 1;
+                    at = next_due(at, t, fps);
+                }
+            }
+            assert!(
+                taken.abs_diff(want) <= 2,
+                "a {render} fps render at a {fps} fps preview gave {taken} frames"
+            );
+        }
+    }
+
+    #[test]
+    fn a_preview_rate_that_the_host_sets_holds_on_either_lane() {
+        let mut hub = Hub::new();
+        hub.preview_fps = Some(5.0);
+        for hw in [false, true] {
+            hub.hw_preview.store(hw, Ordering::SeqCst);
+            assert_eq!(hub.preview_rate(), 5.0);
+        }
     }
 
     // the h264 fanout

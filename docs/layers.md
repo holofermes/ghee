@@ -250,9 +250,11 @@ At the default 64 MB, the first 1920x1080 frame hangs the GPU's firmware,
 and ghee's H264 and JPEG encoders stop with it until a reboot. Where you
 can't raise it, pass `--video-decoder cpu`.
 
-When the device is missing, or stops, the video shows yellow and black
-stripes, and stderr and `video_errors` in [`/stats`](http.md#stats) say why.
-ghee tries the device again every second, and the picture comes back with it.
+When the device is missing, or stops, the video draws black, and a small
+grey `no camera` shows for 2 seconds in every 10, at another spot each time,
+so an OLED panel keeps no pixel lit. stderr and `video_errors` in
+[`/stats`](http.md#stats) say why. ghee tries the device again every second,
+and the picture comes back with it.
 
 ## Shape layers
 

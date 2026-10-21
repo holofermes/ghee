@@ -505,8 +505,13 @@ struct Video {
     seq: u64,
     /// The size of the asset's pixels.
     size: (u32, u32),
-    /// True while the asset holds the stripes of a device with a problem.
-    striped: bool,
+    /// The pass pixels that the scene draws the frames at, (0, 0) for none.
+    drawn: (u32, u32),
+    /// The time that the device's problem began, None while it streams.
+    missing_since: Option<f64>,
+    /// What the asset shows of a device with a problem, as
+    /// video::no_frame_showing() gives it, None while it shows a frame.
+    missing: Option<Option<u64>>,
     /// The hardware decoder whose dma-bufs the asset imported, 0 for none.
     pipeline: u64,
     /// The frame that the asset shows, and the one before it, whose copy
@@ -3155,7 +3160,9 @@ impl Renderer {
             user: Capture::user(),
             seq: 0,
             size: (0, 0),
-            striped: false,
+            drawn: (0, 0),
+            missing_since: None,
+            missing: None,
             pipeline: 0,
             shown: [None, None],
         };
@@ -3329,7 +3336,7 @@ impl Renderer {
     fn video_needs(&self) {
         let scene = self.scene.borrow();
         let (sw, sh) = self.scene_size();
-        for v in self.videos.borrow().iter() {
+        for v in self.videos.borrow_mut().iter_mut() {
             let aspect = f64::from(v.size.0.max(1)) / f64::from(v.size.1.max(1));
             let mut need: Option<(u32, u32)> = None;
             let mut take = |(w, h): (u32, u32)| {
@@ -3352,14 +3359,15 @@ impl Renderer {
                     take((sw.max(1) as u32, sh.max(1) as u32));
                 }
             }
+            v.drawn = need.unwrap_or((0, 0));
             v.capture.need(v.user, need);
         }
     }
 
-    /// Put the newest frame of each video in its engine asset, or the
-    /// stripes of a device with a problem, and note the problems for
-    /// video_errors(). A frame of another aspect tells the captures their
-    /// sizes again.
+    /// Put the newest frame of each video in its engine asset, or for a
+    /// device with a problem video::no_frame() at the size the scene draws
+    /// it, and note the problems for video_errors(). A frame of another
+    /// aspect tells the captures their sizes again.
     fn pump_videos(&self) -> Result<()> {
         let mut problems = Vec::new();
         let mut reshaped = false;
@@ -3372,11 +3380,20 @@ impl Renderer {
                     reshaped |=
                         u64::from(w) * u64::from(f.height) != u64::from(h) * u64::from(f.width);
                     self.show_frame(v, f)?;
-                    v.striped = false;
-                } else if problem.is_some() && !v.striped {
-                    let (w, h) = v.size;
-                    self.put_video(v, w, h, &video::stripes(w, h))?;
-                    v.striped = true;
+                    v.missing_since = None;
+                    v.missing = None;
+                } else if problem.is_some() {
+                    let now = crate::stats::monotonic();
+                    let since = *v.missing_since.get_or_insert(now);
+                    let showing = video::no_frame_showing(now - since);
+                    if v.missing != Some(showing) {
+                        let (w, h) = match v.drawn {
+                            (0, 0) => v.size,
+                            drawn => drawn,
+                        };
+                        self.put_video(v, w, h, &video::no_frame(w, h, showing))?;
+                        v.missing = Some(showing);
+                    }
                 }
                 if let Some(p) = problem {
                     let line = format!("video {}: {p}", crate::scene::py_str_repr(v.device()));
@@ -12324,7 +12341,8 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn a_missing_device_shows_hazard_stripes_and_says_why() {
+    fn a_missing_device_draws_black_with_a_dim_label_2_s_in_10_and_says_why() {
+        let clock = crate::testing::Clock::at(100.0);
         let (_g, mut r) = gpu();
         let layers = json!([{"name": "v", "video": "/nonexistent/video7"}]);
         r.setup(&scene_of(
@@ -12339,19 +12357,29 @@ mod tests {
             r.video_errors(),
             vec!["video '/nonexistent/video7': No such file or directory".to_string()]
         );
-        let f = r.render(None).unwrap().to_vec();
         // 16:9 in 64x48: 64x36, from row 6 to row 42
-        let inside: Vec<[u8; 3]> = (8..40)
-            .flat_map(|y| (0..W).map(move |x| (x, y)))
-            .map(|(x, y)| rgb_of(&f, x, y))
-            .collect();
-        let near = |c: [u8; 3], want: [u8; 3]| (0..3).all(|i| c[i].abs_diff(want[i]) <= 8);
-        let yellow = inside.iter().filter(|c| near(**c, [255, 204, 0])).count();
-        let black = inside.iter().filter(|c| near(**c, [0, 0, 0])).count();
+        let inside = |r: &mut Renderer| -> Vec<[u8; 3]> {
+            let f = r.render(None).unwrap().to_vec();
+            (7..41)
+                .flat_map(|y| (0..W).map(move |x| (x, y)))
+                .map(|(x, y)| rgb_of(&f, x, y))
+                .collect()
+        };
+        let lit = |px: &[[u8; 3]]| px.iter().filter(|c| c.iter().any(|v| *v > 8)).count();
+        let shown = inside(&mut r);
         assert!(
-            yellow > inside.len() / 3 && black > inside.len() / 3,
-            "{yellow} {black}"
+            shown.iter().all(|c| c.iter().all(|v| *v <= 136)),
+            "{shown:?}"
         );
+        assert!(
+            (1..shown.len() / 10).contains(&lit(&shown)),
+            "{}",
+            lit(&shown)
+        );
+        clock.pass(3.0);
+        assert_eq!(lit(&inside(&mut r)), 0);
+        clock.pass(8.0);
+        assert!(lit(&inside(&mut r)) > 0);
     }
 
     #[test]

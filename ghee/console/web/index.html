@@ -2365,7 +2365,7 @@ function buildLayers(){
   // a video comes from a capture device of this host, each its own entry
   const videos = () => DEVICES.length
     ? DEVICES.map(x => ["video " + x.name, () => addLayer(p, "video", x.device)])
-    : [["video", null, true, "this host has no capture device"]];
+    : [["video", null, true]];
   if (!proc) row.appendChild(addMenu("+ layer ▾", () => [
     ["text", () => addLayer(p, "text")],
     ["image", () => addLayer(p, "image"), !imageAssets().length && !isMine(), "the scene has no image asset"],

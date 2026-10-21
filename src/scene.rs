@@ -316,7 +316,7 @@ pub(crate) const PASS_KEYS: [&str; 11] = [
 ];
 
 /// The keys of an asset. Only a .raw file takes the four after `sampling`,
-/// and a video asset takes `device` alone.
+/// and a video asset takes `device`, `width` and `height`.
 pub(crate) const ASSET_KEYS: [&str; 7] = [
     "file",
     "device",
@@ -1279,6 +1279,9 @@ pub struct Asset {
     pub file: String,
     /// The path of a video asset's capture device, None for a file.
     pub device: Option<String>,
+    /// A video asset's `width` and `height`, each None where the scene gives
+    /// none.
+    pub size: (Option<u32>, Option<u32>),
     /// The asset's `sampling`: GL_LINEAR when true, nearest by default.
     pub linear: bool,
     /// The declared layout of a .raw file. None for a decoded format.
@@ -1372,14 +1375,29 @@ impl Asset {
             };
             if let Some(k) = ASSET_KEYS
                 .iter()
-                .find(|k| **k != "device" && o.contains_key(**k))
+                .find(|k| !["device", "width", "height"].contains(k) && o.contains_key(**k))
             {
                 bail!("asset '{name}' takes no '{k}', a device is a video");
+            }
+            let mut size = [None; 2];
+            for (slot, k) in size.iter_mut().zip(["width", "height"]) {
+                let Some(v) = o.get(k).filter(|v| !v.is_null()) else {
+                    continue;
+                };
+                let n = to_int(v);
+                if !is_dim(&n) {
+                    bail!(
+                        "asset '{name}' {k} needs an int in 1..{MAX_DIM}, got {}",
+                        py_repr(v)
+                    );
+                }
+                *slot = n.as_u64().map(|n| n as u32);
             }
             return Ok(Asset {
                 name: name.to_string(),
                 file: String::new(),
                 device: Some(device),
+                size: (size[0], size[1]),
                 linear: true,
                 raw: None,
                 image: None,
@@ -1476,6 +1494,7 @@ impl Asset {
             name: name.to_string(),
             file,
             device: None,
+            size: (None, None),
             linear,
             raw,
             image: None,
@@ -1488,6 +1507,11 @@ impl Asset {
         let mut d = Map::new();
         if let Some(device) = &self.device {
             d.insert("device".to_string(), Value::from(device.clone()));
+            for (k, v) in [("width", self.size.0), ("height", self.size.1)] {
+                if let Some(v) = v {
+                    d.insert(k.to_string(), Value::from(v));
+                }
+            }
             return Value::Object(d);
         }
         d.insert("file".to_string(), Value::from(self.file.clone()));
@@ -3735,7 +3759,8 @@ mod tests {
             json!({"name": "v", "video": "/dev/v4l/by-id/usb-cam-video-index0", "x": 4.0,
                    "width": 32.0, "color": "#ff8000", "opacity": 0.5, "blend": "screen"}),
         ] {
-            let doc = video_scene(layer);
+            let mut doc = video_scene(layer);
+            doc["assets"]["cam"] = json!({"device": "/dev/video0", "width": 512, "height": 288});
             let sc = Scene::from_dict(&doc, None, None).unwrap();
             assert_eq!(
                 sc.to_dict()["passes"][0]["layers"],
@@ -3772,6 +3797,10 @@ mod tests {
             (
                 asset_scene(json!({"cam": {"device": "/dev/video0", "sampling": "linear"}})),
                 "asset 'cam' takes no 'sampling', a device is a video",
+            ),
+            (
+                asset_scene(json!({"cam": {"device": "/dev/video0", "width": 0}})),
+                "asset 'cam' width needs an int in 1..16384, got 0",
             ),
         ];
         for (doc, want) in cases {

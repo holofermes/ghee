@@ -77,12 +77,13 @@ A scene, a script or a Rust host written for 0.4.0 needs these changes.
   Operator 8, any `.ttf` or `.otf`, a list of fonts, and colour emoji.
 - Show a camera, or any capture device that streams MJPEG or YUYV, with a
   video layer, and read its frames in a shader through a video asset, whose
-  `<name>_live` says whether they arrive ([Video
-  layers](docs/layers.md#video-layers)). The console's `+ layer` offers each
-  device of the machine, `GET /devices` lists them, and `video_errors` in
-  `/stats` says why one shows no frame. On a Pi Zero to Pi 4 the Pi's
-  hardware decoder decodes MJPEG, which needs `gpu_mem=128` in `config.txt`
-  for 1920x1080, and `--video-decoder cpu` decodes on the CPU.
+  `<name>_live` says whether they arrive, and whose `width` and `height` set
+  the size they decode at ([Video layers](docs/layers.md#video-layers)). The
+  console's `+ layer` offers each device of the machine, `GET /devices`
+  lists them, and `video_errors` in `/stats` says why one shows no frame. On
+  a Pi Zero to Pi 4 the Pi's hardware decoder decodes MJPEG, which needs
+  `gpu_mem=128` in `config.txt` for 1920x1080, and `--video-decoder cpu`
+  decodes on the CPU.
 - Draw from Python with no GLSL, in a `with screen.draw() as d:` block
   ([Python](docs/python.md)).
 - Give `ghee.Layer` a Pillow image or a numpy array as its `image`, as

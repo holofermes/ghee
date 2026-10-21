@@ -3325,8 +3325,9 @@ impl Renderer {
 
     /// Tell each capture the size that the scene draws its frames at: the
     /// largest that a drawn video layer spans, and the frame's size when a
-    /// program samples its video asset. A video that nothing draws needs
-    /// none, and its capture closes the device.
+    /// program samples its video asset, or the size that the video asset
+    /// gives. A video that nothing draws needs none, and its capture closes
+    /// the device.
     fn video_needs(&self) {
         let scene = self.scene.borrow();
         let (sw, sh) = self.scene_size();
@@ -3347,11 +3348,27 @@ impl Renderer {
                     }
                 }
             }
+            let mut given = (None, None);
             if let Some(name) = &v.declared {
                 let tex = CString::new(format!("{name}_tex")).unwrap_or_default();
                 if unsafe { ffi::ghee_mp_reads(self.handle, tex.as_ptr()) } {
                     take((sw.max(1) as u32, sh.max(1) as u32));
                 }
+                given = scene
+                    .iter()
+                    .flat_map(|s| &s.assets)
+                    .find(|a| a.name == *name && a.from_filter.is_empty())
+                    .map_or((None, None), |a| a.size);
+            }
+            let ceil = |x: f64| x.ceil().max(1.0) as u32;
+            let given = match given {
+                (Some(w), Some(h)) => Some((w, h)),
+                (Some(w), None) => Some((w, ceil(f64::from(w) / aspect))),
+                (None, Some(h)) => Some((ceil(f64::from(h) * aspect), h)),
+                (None, None) => None,
+            };
+            if need.is_some() && given.is_some() {
+                need = given;
             }
             v.capture.need(v.user, need);
         }
@@ -12360,6 +12377,37 @@ mod tests {
         assert_eq!(seen(), ([0; 3], [0; 3]));
         cam.show(4, 2, &halves(4, 2, BLUE, BLUE));
         assert_eq!(seen(), (BLUE, [255; 3]));
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_video_asset_decodes_at_the_size_that_it_gives() {
+        let cam = Capture::fake("/test/sized");
+        cam.show(4, 2, &halves(4, 2, RED, BLUE));
+        let (_g, mut r) = gpu();
+        // the frames are 2:1
+        for (size, want) in [
+            (json!({"width": 512}), (512, 256)),
+            (json!({"height": 100}), (200, 100)),
+            (json!({"width": 300, "height": 100}), (300, 100)),
+        ] {
+            let mut asset = json!({"device": "/test/sized"});
+            asset
+                .as_object_mut()
+                .unwrap()
+                .extend(size.as_object().unwrap().clone());
+            let scene = Scene::from_dict(
+                &json!({"version": 1, "assets": {"cam": asset},
+                        "passes": [{"name": "main",
+                                    "fragment": "void main(){ gl_FragColor = texture2D(cam_tex, uv); }"}]}),
+                None,
+                None,
+            )
+            .unwrap();
+            r.setup(&scene).unwrap();
+            r.render(None).unwrap();
+            assert_eq!(cam.wanted(), Some(want), "{size}");
+        }
     }
 
     #[test]

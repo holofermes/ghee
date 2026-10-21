@@ -235,13 +235,14 @@ A path such as `/dev/video0` works too. In the console, `+ layer` offers each
 capture device of the machine by its name.
 
 ghee streams the device's smallest mode that covers the size the video draws
-at. On a Pi Zero to Pi 4, the Pi's hardware decoder decodes each MJPEG frame
-and scales it to that size, and the CPU never touches its pixels: on a Pi
-Zero W, a 1920x1080 camera took about 3 ms of CPU a frame. Elsewhere, and
-with `--video-decoder cpu`, the CPU decodes the frames, an MJPEG frame at a
-half, a quarter or an eighth of its size when that still covers it. A camera
-with a mode near the size you draw at costs the least there: on a Pi Zero W,
-one 1920x1080 MJPEG frame takes about 110 ms of CPU at an eighth of its size.
+at, or the size that its [asset](#videos-in-a-shader) gives. On a Pi Zero to
+Pi 4, the Pi's hardware decoder decodes each MJPEG frame and scales it to
+that size, and the CPU never touches its pixels: on a Pi Zero W, a 1920x1080
+camera took about 3 ms of CPU a frame. Elsewhere, and with
+`--video-decoder cpu`, the CPU decodes the frames, an MJPEG frame at a half,
+a quarter or an eighth of its size when that still covers it. A camera with a
+mode near the size you draw at costs the least there: on a Pi Zero W, one
+1920x1080 MJPEG frame takes about 110 ms of CPU at an eighth of its size.
 
 Careful: the Pi's decoder needs GPU memory. Set it in `config.txt` itself,
 `gpu_mem=128` for a 1920x1080 camera, measured on a Pi Zero W: the Pi reads
@@ -394,6 +395,19 @@ void main() {
   gl_FragColor = vec4(vec3(dot(c, vec3(0.299, 0.587, 0.114))), 1.0);
 }
 ```
+
+ghee decodes the frames at the size that the scene draws them at, the
+output's size for a pass that reads the asset. To read them sharper, for a
+shader that zooms in, give the asset a size:
+
+```json
+"assets": { "cam": { "device": "/dev/video0", "width": 512 } }
+```
+
+| Key | Values | Default | What it changes |
+| --- | --- | --- | --- |
+| `device` | the path of a capture device | required | the device |
+| `width`, `height` | pixels | the size that the scene draws the frames at | the least size that ghee decodes the frames at. Give one and the other keeps the aspect |
 
 ## Changing a layer at runtime
 

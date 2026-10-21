@@ -1163,12 +1163,16 @@ fn array_lines(a: &ArrayInput) -> Vec<String> {
 }
 
 /// The preamble declarations of one image or video asset: its sampler and
-/// its size.
+/// its size, and a video's live flag.
 fn asset_lines(a: &Asset) -> Vec<String> {
-    vec![
+    let mut l = vec![
         format!("uniform sampler2D {}_tex;", a.name),
         format!("uniform vec2 {}_size;", a.name),
-    ]
+    ];
+    if a.is_video() {
+        l.push(format!("uniform float {}_live;", a.name));
+    }
+    l
 }
 
 /// The names declared at file scope by the GLSL `lines` that ghee writes: a
@@ -5184,6 +5188,11 @@ mod tests {
                 json!({"assets": {"gain": {"file": "g.png"}}}),
                 json!({"params": {"gain_tex": f}}),
                 "asset 'gain' and param 'gain_tex' in pass 'a' both declare 'gain_tex'",
+            ),
+            (
+                json!({"params": {"cam_live": f}, "assets": {"cam": {"device": "/dev/video0"}}}),
+                json!({}),
+                "scene param 'cam_live' and asset 'cam' both declare 'cam_live'",
             ),
         ] {
             assert_eq!(named_err(extra, pass), format!("scene: {want}"));

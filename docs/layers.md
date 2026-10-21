@@ -250,11 +250,9 @@ At the default 64 MB, the first 1920x1080 frame hangs the GPU's firmware,
 and ghee's H264 and JPEG encoders stop with it until a reboot. Where you
 can't raise it, pass `--video-decoder cpu`.
 
-When the device is missing, or stops, the video draws black, and a small
-grey `no camera` shows for 2 seconds in every 10, at another spot each time,
-so an OLED panel keeps no pixel lit. stderr and `video_errors` in
-[`/stats`](http.md#stats) say why. ghee tries the device again every second,
-and the picture comes back with it.
+When the device is missing, or stops, the video draws black, and stderr and
+`video_errors` in [`/stats`](http.md#stats) say why. ghee tries the device
+again every second, and the picture comes back with it.
 
 ## Shape layers
 
@@ -378,7 +376,9 @@ A shader reads an asset in crisp blocks too. To read it smoothly, set
 ### Videos in a shader
 
 A video asset gives every pass the same two names, `<name>_tex` and
-`<name>_size`, which hold the newest frame of its device the right way up.
+`<name>_size`, which hold the newest frame of its device the right way up,
+and a third, `float <name>_live`: 1.0 while the frames arrive, and 0.0 while
+the device is missing or sends none, when `<name>_tex` holds black.
 `<name>_size` is the frame's size as ghee decodes it, which can be smaller
 than the device's. A video reads smoothly. This pass shows the `cam` asset in
 grey:

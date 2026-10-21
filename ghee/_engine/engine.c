@@ -77,11 +77,11 @@ struct timing_ring { double v[TIMING_RING]; int n, at; };
 #define VISIBLE_UNIFORM "ghee_0_visible"
 
 // An asset that a program reads, by its index in the engine's assets, and
-// the locations of its sampler and of its size, each -1 when the program
-// does not read it.
+// the locations of its sampler, of its size and of its live flag, each -1
+// when the program does not read it.
 struct mp_use {
     int asset;
-    GLint loc, size;
+    GLint loc, size, live;
 };
 
 // The uniform locations of one committed program, a pass's or a batch's,
@@ -105,11 +105,13 @@ struct mp_locs {
 #define MP_DMABUFS 8
 
 // One image asset: the host hands the pixels over once, they bind as a
-// sampler uniform <name>_tex, with <name>_size a vec2 of (width, height).
+// sampler uniform <name>_tex, with <name>_size a vec2 of (width, height) and
+// <name>_live a float of `live`.
 struct mp_asset {
     GLuint tex;
     char *name;                          // the asset's name, before the suffixes
     int w, h;
+    bool live;
     GLenum fmt, type;
     bool mip;                            // every mip level, down to 1x1
     // The dma-bufs that ghee_mp_set_asset_dmabuf imported, each once, by
@@ -1579,23 +1581,36 @@ static bool mp_add_use(GheeScene *g, struct mp_locs *loc, struct mp_use use) {
     return true;
 }
 
+// The use of asset `a` by program `prog` under `name`: the locations of
+// <name>_tex, <name>_size and <name>_live in it. false with the error set
+// when memory runs out.
+static bool mp_locate(GheeScene *g, GLuint prog, const char *name, int a, struct mp_use *u) {
+    static const char *const suffix[] = {"_tex", "_size", "_live"};
+    GLint *const at[] = {&u->loc, &u->size, &u->live};
+    u->asset = a;
+    for (int i = 0; i < 3; i++) {
+        char *full = suffixed(g, name, suffix[i]);
+        if (!full) return false;
+        *at[i] = glGetUniformLocation(prog, full);
+        free(full);
+    }
+    return true;
+}
+
+// Whether use `u` reads anything of its asset.
+static bool mp_reads(const struct mp_use *u) {
+    return u->loc >= 0 || u->size >= 0 || u->live >= 0;
+}
+
 // Add asset `a` to the uses of program `prog` when the program reads its
-// sampler or its size. false with the error set when memory runs out.
+// sampler, its size or its live flag. false with the error set when memory
+// runs out.
 static bool mp_use_asset(GheeScene *g, GLuint prog, int a, struct mp_locs *loc) {
     if (!prog) return true;
-    char *tex_name = suffixed(g, g->mp_asset[a].name, "_tex");
-    char *size_name = suffixed(g, g->mp_asset[a].name, "_size");
-    if (!tex_name || !size_name) {
-        free(tex_name);
-        free(size_name);
-        return false;
-    }
-    const GLint at = glGetUniformLocation(prog, tex_name);
-    const GLint size = glGetUniformLocation(prog, size_name);
-    free(tex_name);
-    free(size_name);
-    if (at < 0 && size < 0) return true;
-    return mp_add_use(g, loc, (struct mp_use){ a, at, size });
+    struct mp_use u;
+    if (!mp_locate(g, prog, g->mp_asset[a].name, a, &u)) return false;
+    if (!mp_reads(&u)) return true;
+    return mp_add_use(g, loc, u);
 }
 
 // Drop asset `a` from the uses of a program, and renumber the assets after
@@ -2150,23 +2165,15 @@ bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *a
     const int a = mp_asset_index(g, asset);
     if (a < 0) { set_error(g, "%s: asset '%s' is not set", l->name, asset); return false; }
     make_current(g);
-    char *tex_name = suffixed(g, name, "_tex");
-    char *size_name = suffixed(g, name, "_size");
-    if (!tex_name || !size_name) {
-        free(tex_name);
-        free(size_name);
-        return false;
-    }
-    const GLint at = glGetUniformLocation(l->program, tex_name);
-    const GLint size = glGetUniformLocation(l->program, size_name);
-    free(tex_name);
-    free(size_name);
-    if (at < 0 && size < 0) return true;
+    struct mp_use use;
+    if (!mp_locate(g, l->program, name, a, &use)) return false;
+    if (!mp_reads(&use)) return true;
     struct mp_locs *loc = &l->loc;
     for (int i = 0; i < loc->nuses; i++) {
         struct mp_use *u = &loc->uses[i];
-        if ((at >= 0 && u->loc == at) || (size >= 0 && u->size == size)) {
-            *u = (struct mp_use){ a, at, size };
+        if ((use.loc >= 0 && u->loc == use.loc) || (use.size >= 0 && u->size == use.size) ||
+            (use.live >= 0 && u->live == use.live)) {
+            *u = use;
             g->changed = true;
             g->bind_epoch++;
             return true;
@@ -2174,7 +2181,7 @@ bool ghee_mp_bind_asset(GheeScene *g, int batch, const char *name, const char *a
     }
     g->changed = true;
     g->bind_epoch++;
-    return mp_add_use(g, loc, (struct mp_use){ a, at, size });
+    return mp_add_use(g, loc, use);
 }
 
 // Whether batch l draws nothing: its program reads VISIBLE_UNIFORM, and the
@@ -2429,6 +2436,7 @@ bool ghee_mp_set_asset(GheeScene *g, const char *name, const void *data,
         idx = g->mp_nasset++;
         memset(&g->mp_asset[idx], 0, sizeof g->mp_asset[idx]);
         g->mp_asset[idx].name = held;
+        g->mp_asset[idx].live = true;
         bool used = true;
         for (int p = 0; used && p < g->mp_count; p++)
             used = mp_use_asset(g, g->mp_program[p], idx, &g->mp_loc[p]);
@@ -2667,6 +2675,19 @@ bool ghee_mp_set_asset_dmabuf(GheeScene *g, const char *name, int fd, int width,
     return true;
 }
 
+bool ghee_mp_set_asset_live(GheeScene *g, const char *name, bool live) {
+    const int idx = mp_asset_index(g, name);
+    if (idx < 0) {
+        set_error(g, "asset '%s' is not set", name);
+        return false;
+    }
+    if (g->mp_asset[idx].live == live) return true;
+    g->mp_asset[idx].live = live;
+    g->changed = true;
+    g->bind_epoch++;
+    return true;
+}
+
 void ghee_mp_forget_dmabufs(GheeScene *g, const char *name) {
     const int idx = mp_asset_index(g, name);
     if (idx < 0) return;
@@ -2765,6 +2786,7 @@ static void mp_bind(GheeScene *g, int p, const struct mp_locs *loc, int into,
         const struct mp_use *u = &loc->uses[i];
         const struct mp_asset *as = &g->mp_asset[u->asset];
         if (u->size >= 0) glUniform2f(u->size, (float)as->w, (float)as->h);
+        if (u->live >= 0) glUniform1f(u->live, as->live ? 1.0f : 0.0f);
         if (u->loc < 0) continue;
         glActiveTexture(GL_TEXTURE0 + unit);
         glBindTexture(GL_TEXTURE_2D, as->tex);

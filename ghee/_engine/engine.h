@@ -123,7 +123,8 @@ void ghee_mp_set_array(GheeScene *g, const char *name, const float *data, int co
 void ghee_mp_set_array_u8(GheeScene *g, const char *name, const uint8_t *data, int count, int rows);
 // An image asset: width x height pixels the host hands over once, bound as a
 // sampler uniform <name>_tex on every pass whose program reads it, with a vec2
-// <name>_size of (width, height). components 1, 3 or 4 = LUMINANCE, RGB,
+// <name>_size of (width, height) and a float <name>_live, 1 until
+// ghee_mp_set_asset_live sets it. components 1, 3 or 4 = LUMINANCE, RGB,
 // RGBA. is_f32 uploads floats and needs a GL with float textures. filter
 // GHEE_FILTER_LINEAR samples with GL_LINEAR, f32 pixels fall back to nearest
 // without ghee_data_texture_linear. GHEE_FILTER_MIPMAP samples 8-bit pixels
@@ -157,6 +158,9 @@ void ghee_mp_drop_asset(GheeScene *g, const char *name);
 // ghee_last_error set when EGL or GL refuses the buffer.
 bool ghee_mp_set_asset_dmabuf(GheeScene *g, const char *name, int fd, int width, int height,
                               int pitch);
+// Set the <name>_live of asset `name`: 1 when `live`, else 0. false with
+// ghee_last_error set for an asset that is not set.
+bool ghee_mp_set_asset_live(GheeScene *g, const char *name, bool live);
 // Let go of every dma-buf that asset `name` imported, whose descriptors may
 // then name other buffers.
 void ghee_mp_forget_dmabufs(GheeScene *g, const char *name);

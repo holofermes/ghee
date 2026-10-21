@@ -180,6 +180,7 @@ extern "C" {
         height: c_int,
         pitch: c_int,
     ) -> bool;
+    pub fn ghee_mp_set_asset_live(g: *mut GheeScene, name: *const c_char, live: bool) -> bool;
     pub fn ghee_mp_forget_dmabufs(g: *mut GheeScene, name: *const c_char);
     pub fn ghee_mp_reads(g: *mut GheeScene, name: *const c_char) -> bool;
     pub fn ghee_mp_add_batch(

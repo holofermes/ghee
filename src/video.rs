@@ -508,100 +508,6 @@ fn decode_yuyv(
     Ok((ow, oh, rgba))
 }
 
-/// How long a video with no frame shows its label, in every NO_FRAME_EVERY
-/// seconds.
-pub(crate) const NO_FRAME_SHOWN: f64 = 2.0;
-pub(crate) const NO_FRAME_EVERY: f64 = 10.0;
-
-/// The label of a video with no frame.
-const NO_FRAME_LABEL: &str = "no camera";
-
-/// The grey of that label: dim, and on at the half that a 1-bit panel's
-/// driver turns a grey pixel on from.
-const NO_FRAME_GREY: u8 = 128;
-
-/// What a video with no frame shows `t` seconds after its frames stopped:
-/// Some(n) while the label shows, in its nth showing, else None.
-pub(crate) fn no_frame_showing(t: f64) -> Option<u64> {
-    let n = (t.max(0.0) / NO_FRAME_EVERY).floor();
-    (t - n * NO_FRAME_EVERY < NO_FRAME_SHOWN).then_some(n as u64)
-}
-
-/// The pixels of the label, Pixel Operator 8 at `px`, a whole multiple of 8,
-/// as rows of coverage, the top row first: its width, its height and its
-/// rows.
-fn label_pixels(px: f64) -> Option<(usize, usize, Vec<u8>)> {
-    let font = std::sync::Arc::new(crate::text::PIXEL_FONT.to_vec());
-    let metrics = ttf_parser::Face::parse(crate::text::PIXEL_FONT, 0).ok()?;
-    let upem = f64::from(metrics.units_per_em());
-    let ascent = (f64::from(metrics.ascender()) * px / upem).ceil() as i64;
-    let descent = (f64::from(-metrics.descender()) * px / upem).ceil() as i64;
-    let mut face = crate::hinted::Face::open(font)?;
-    if !face.set_size(px) {
-        return None;
-    }
-    let mut glyphs = Vec::new();
-    let mut pen = 0i64;
-    for c in NO_FRAME_LABEL.chars() {
-        let gid = metrics.glyph_index(c)?.0;
-        glyphs.push((pen >> 6, face.bitmap(gid, true)?));
-        pen += face.advance(gid)?;
-    }
-    let (w, h) = (
-        (pen >> 6).max(1) as usize,
-        (ascent + descent).max(1) as usize,
-    );
-    let mut out = vec![0u8; w * h];
-    for (x0, b) in glyphs {
-        for row in 0..b.rows as i64 {
-            let y = ascent - i64::from(b.top) + row;
-            for col in 0..b.width as i64 {
-                let x = x0 + i64::from(b.left) + col;
-                if (0..w as i64).contains(&x) && (0..h as i64).contains(&y) {
-                    let v = b.pixels[(row * i64::from(b.width) + col) as usize];
-                    out[y as usize * w + x as usize] = v;
-                }
-            }
-        }
-    }
-    Some((w, h, out))
-}
-
-/// A video with no frame, `w` x `h` RGBA pixels with the bottom row first:
-/// black, which leaves an OLED's pixels off, and with `showing` Some(n) the
-/// label in a dim grey at a spot of its nth showing, another each time, so
-/// no pixel stays lit. The label is a sixteenth of the height high, in steps
-/// of 8 pixels, 8 at least.
-pub(crate) fn no_frame(w: u32, h: u32, showing: Option<u64>) -> Vec<u8> {
-    let (w, h) = (w as usize, h as usize);
-    let mut out: Vec<u8> = [0, 0, 0, 255].repeat(w * h);
-    let Some(n) = showing else {
-        return out;
-    };
-    let px = (h / 16 / 8 * 8).max(8) as f64;
-    let Some((lw, lh, label)) = label_pixels(px) else {
-        return out;
-    };
-    // A spot from n by a multiplicative hash, the label whole inside the
-    // picture where it fits.
-    let spread = |n: u64, room: usize| match room {
-        0 => 0,
-        r => (n.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 33) as usize % (r + 1),
-    };
-    let x0 = spread(n, w.saturating_sub(lw));
-    let y0 = spread(n.wrapping_add(0x5bd1_e995), h.saturating_sub(lh));
-    for y in 0..lh.min(h) {
-        for x in 0..lw.min(w) {
-            if label[y * lw + x] >= 128 {
-                // rows go bottom first
-                let at = ((h - 1 - (y0 + y)) * w + x0 + x) * 4;
-                out[at..at + 3].fill(NO_FRAME_GREY);
-            }
-        }
-    }
-    out
-}
-
 /// What a capture's thread and its renderers share.
 #[derive(Default)]
 struct State {
@@ -773,6 +679,11 @@ impl Capture {
         }));
         s.taken = false;
         s.problem = None;
+    }
+
+    /// Give the device the problem `why`, as a device that went away has.
+    pub(crate) fn fail(&self, why: &str) {
+        self.shared.state().problem = Some(why.to_string());
     }
 
     /// Show the frame that hardware decoder `hw` gave as `out` as the newest.
@@ -1109,52 +1020,6 @@ mod tests {
                 .all(|p| p[..3].iter().all(|c| (126..=129).contains(c))),
             "{rgba:?}"
         );
-    }
-
-    #[test]
-    fn a_video_with_no_frame_shows_its_label_2_s_in_every_10() {
-        let cases = [
-            (0.0, Some(0)),
-            (1.9, Some(0)),
-            (2.0, None),
-            (9.9, None),
-            (10.0, Some(1)),
-            (31.0, Some(3)),
-        ];
-        for (t, showing) in cases {
-            assert_eq!(no_frame_showing(t), showing, "{t}");
-        }
-    }
-
-    #[test]
-    fn a_video_with_no_frame_is_black_with_a_dim_label_at_another_spot_each_time() {
-        let (w, h) = (128, 64);
-        let lit = |px: &[u8]| -> Vec<usize> {
-            px.as_chunks::<4>()
-                .0
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| p[..3] != [0, 0, 0])
-                .map(|(i, _)| i)
-                .collect()
-        };
-        assert!(lit(&no_frame(w, h, None)).is_empty());
-        let first = no_frame(w, h, Some(0));
-        let a = lit(&first);
-        assert!(
-            !a.is_empty() && a.len() < (w * h / 10) as usize,
-            "{}",
-            a.len()
-        );
-        assert!(first
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .all(|p| p[0] <= NO_FRAME_GREY));
-        // no pixel stays lit through the showings that follow
-        let later: Vec<Vec<usize>> = (1..5).map(|n| lit(&no_frame(w, h, Some(n)))).collect();
-        assert!(a.iter().all(|i| later.iter().any(|l| !l.contains(i))));
-        assert!(later.iter().all(|l| *l != a));
     }
 
     #[test]

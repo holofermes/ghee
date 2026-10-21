@@ -1904,7 +1904,7 @@ function buildInputs(){
   if (!p.filter){
     textLayers().forEach(d => chip(d.name + "_cover", `float ${d.name}_cover(vec2 p, float font_size);  layer ${d.name}'s words`));
     imageAssets().forEach(n => chip(n + "_tex", `uniform sampler2D ${n}_tex;  asset ${n}'s picture`));
-    videoAssets().forEach(n => chip(n + "_tex", `uniform sampler2D ${n}_tex;  asset ${n}'s frames`));
+    videoAssets().forEach(n => chip(n + "_tex", `uniform sampler2D ${n}_tex;\nuniform float ${n}_live;  asset ${n}'s frames`));
   }
   (p.arrays || []).forEach(a => {
     chip(a.name, Array.isArray(a.size)

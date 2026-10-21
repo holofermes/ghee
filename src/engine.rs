@@ -505,13 +505,9 @@ struct Video {
     seq: u64,
     /// The size of the asset's pixels.
     size: (u32, u32),
-    /// The pass pixels that the scene draws the frames at, (0, 0) for none.
-    drawn: (u32, u32),
-    /// The time that the device's problem began, None while it streams.
-    missing_since: Option<f64>,
-    /// What the asset shows of a device with a problem, as
-    /// video::no_frame_showing() gives it, None while it shows a frame.
-    missing: Option<Option<u64>>,
+    /// The asset's `<name>_live`: false while the device has a problem, and
+    /// the asset holds black.
+    live: bool,
     /// The hardware decoder whose dma-bufs the asset imported, 0 for none.
     pipeline: u64,
     /// The frame that the asset shows, and the one before it, whose copy
@@ -3160,9 +3156,7 @@ impl Renderer {
             user: Capture::user(),
             seq: 0,
             size: (0, 0),
-            drawn: (0, 0),
-            missing_since: None,
-            missing: None,
+            live: true,
             pipeline: 0,
             shown: [None, None],
         };
@@ -3336,7 +3330,7 @@ impl Renderer {
     fn video_needs(&self) {
         let scene = self.scene.borrow();
         let (sw, sh) = self.scene_size();
-        for v in self.videos.borrow_mut().iter_mut() {
+        for v in self.videos.borrow().iter() {
             let aspect = f64::from(v.size.0.max(1)) / f64::from(v.size.1.max(1));
             let mut need: Option<(u32, u32)> = None;
             let mut take = |(w, h): (u32, u32)| {
@@ -3359,15 +3353,14 @@ impl Renderer {
                     take((sw.max(1) as u32, sh.max(1) as u32));
                 }
             }
-            v.drawn = need.unwrap_or((0, 0));
             v.capture.need(v.user, need);
         }
     }
 
-    /// Put the newest frame of each video in its engine asset, or for a
-    /// device with a problem video::no_frame() at the size the scene draws
-    /// it, and note the problems for video_errors(). A frame of another
-    /// aspect tells the captures their sizes again.
+    /// Put the newest frame of each video in its engine asset, or black for
+    /// a device with a problem, with `<name>_live` 0, and note the problems
+    /// for video_errors(). A frame of another aspect tells the captures
+    /// their sizes again.
     fn pump_videos(&self) -> Result<()> {
         let mut problems = Vec::new();
         let mut reshaped = false;
@@ -3375,25 +3368,27 @@ impl Renderer {
             let mut videos = self.videos.borrow_mut();
             for v in videos.iter_mut() {
                 let problem = v.capture.problem();
-                if let Some(f) = v.capture.newer(v.seq) {
+                let fresh = v.capture.newer(v.seq);
+                let live = fresh.is_some() || problem.is_none();
+                if let Some(f) = fresh {
                     let (w, h) = v.size;
                     reshaped |=
                         u64::from(w) * u64::from(f.height) != u64::from(h) * u64::from(f.width);
                     self.show_frame(v, f)?;
-                    v.missing_since = None;
-                    v.missing = None;
-                } else if problem.is_some() {
-                    let now = crate::stats::monotonic();
-                    let since = *v.missing_since.get_or_insert(now);
-                    let showing = video::no_frame_showing(now - since);
-                    if v.missing != Some(showing) {
-                        let (w, h) = match v.drawn {
-                            (0, 0) => v.size,
-                            drawn => drawn,
-                        };
-                        self.put_video(v, w, h, &video::no_frame(w, h, showing))?;
-                        v.missing = Some(showing);
+                }
+                if live != v.live {
+                    if !live {
+                        let (w, h) = v.size;
+                        self.put_video(v, w, h, &[0, 0, 0, 255].repeat((w * h) as usize))?;
                     }
+                    let cname = CString::new(v.asset.as_str())?;
+                    if !unsafe { ffi::ghee_mp_set_asset_live(self.handle, cname.as_ptr(), live) } {
+                        bail!(
+                            "{}",
+                            or_else(self.last_error(), &format!("asset '{}' refused", v.asset))
+                        );
+                    }
+                    v.live = live;
                 }
                 if let Some(p) = problem {
                     let line = format!("video {}: {p}", crate::scene::py_str_repr(v.device()));
@@ -12341,8 +12336,35 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn a_missing_device_draws_black_with_a_dim_label_2_s_in_10_and_says_why() {
-        let clock = crate::testing::Clock::at(100.0);
+    fn a_video_asset_tells_every_pass_whether_its_frames_arrive() {
+        let cam = Capture::fake("/test/live");
+        cam.show(4, 2, &halves(4, 2, RED, RED));
+        let (_g, mut r) = gpu();
+        // the left half shows the frames, the right half cam_live
+        let fragment = "void main(){ gl_FragColor = uv.x < 0.5 ? texture2D(cam_tex, uv) \
+                        : vec4(vec3(cam_live), 1.0); }";
+        let scene = Scene::from_dict(
+            &json!({"version": 1, "assets": {"cam": {"device": "/test/live"}},
+                    "passes": [{"name": "main", "fragment": fragment}]}),
+            None,
+            None,
+        )
+        .unwrap();
+        r.setup(&scene).unwrap();
+        let mut seen = || {
+            let f = r.render(None).unwrap();
+            (rgb_of(f, 8, 24), rgb_of(f, 48, 24))
+        };
+        assert_eq!(seen(), (RED, [255; 3]));
+        cam.fail("No such file or directory");
+        assert_eq!(seen(), ([0; 3], [0; 3]));
+        cam.show(4, 2, &halves(4, 2, BLUE, BLUE));
+        assert_eq!(seen(), (BLUE, [255; 3]));
+    }
+
+    #[test]
+    #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
+    fn a_missing_device_draws_black_and_says_why() {
         let (_g, mut r) = gpu();
         let layers = json!([{"name": "v", "video": "/nonexistent/video7"}]);
         r.setup(&scene_of(
@@ -12358,28 +12380,10 @@ mod tests {
             vec!["video '/nonexistent/video7': No such file or directory".to_string()]
         );
         // 16:9 in 64x48: 64x36, from row 6 to row 42
-        let inside = |r: &mut Renderer| -> Vec<[u8; 3]> {
-            let f = r.render(None).unwrap().to_vec();
-            (7..41)
-                .flat_map(|y| (0..W).map(move |x| (x, y)))
-                .map(|(x, y)| rgb_of(&f, x, y))
-                .collect()
-        };
-        let lit = |px: &[[u8; 3]]| px.iter().filter(|c| c.iter().any(|v| *v > 8)).count();
-        let shown = inside(&mut r);
-        assert!(
-            shown.iter().all(|c| c.iter().all(|v| *v <= 136)),
-            "{shown:?}"
-        );
-        assert!(
-            (1..shown.len() / 10).contains(&lit(&shown)),
-            "{}",
-            lit(&shown)
-        );
-        clock.pass(3.0);
-        assert_eq!(lit(&inside(&mut r)), 0);
-        clock.pass(8.0);
-        assert!(lit(&inside(&mut r)) > 0);
+        let f = r.render(None).unwrap().to_vec();
+        for (x, y) in (7..41).flat_map(|y| (0..W).map(move |x| (x, y))) {
+            assert_eq!(rgb_of(&f, x, y), [0; 3], "{x} {y}");
+        }
     }
 
     #[test]

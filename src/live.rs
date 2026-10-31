@@ -455,7 +455,8 @@ impl Live {
     /// Give the layer of the name of `look` that look, where each key that
     /// `look` leaves out and a console changed keeps the console's value,
     /// and each other key that it leaves out takes the scene's own value
-    /// for a layer of the scene's own. The keys of `look` lock. False when the layer had that look already.
+    /// for a layer of the scene's own. The keys of `look` lock. False when the
+    /// layer had that look already.
     pub fn update_layer(&mut self, renderer: &mut dyn RenderTarget, look: &Value) -> Result<bool> {
         let given = self.filled(&*renderer, look);
         let changed = renderer.update_layer(&given)?;
@@ -473,8 +474,9 @@ impl Live {
 
     /// Give the layers of `calls` their looks, where a key that a call leaves
     /// out takes the console's value, else the scene's own, as
-    /// update_layer() fills a look. The keys that each call passes lock. Returns the indexes of the calls that the
-    /// renderer leaves for update_layer().
+    /// update_layer() fills a look. The keys that each call passes lock.
+    /// Returns the indexes of the calls that the renderer leaves for
+    /// update_layer().
     pub fn update_calls(
         &mut self,
         renderer: &mut dyn RenderTarget,

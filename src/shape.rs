@@ -14,8 +14,8 @@
 //! luma and Pillow count them, so a point's centre is the pixel's centre, and
 //! `x`, `y` shift all of them. A circle of `radius` around `x`, `y`, as SVG
 //! places a circle by `cx`, `cy`, draws as the rect of side 2 * radius
-//! around that centre whose `border_radius` is the radius, its `border` too. The fragment shader antialiases every edge from the distance to the
-//! shape.
+//! around that centre whose `border_radius` is the radius, its `border` too.
+//! The fragment shader antialiases every edge from the distance to the shape.
 
 use anyhow::{bail, Result};
 use serde_json::{Map, Value};

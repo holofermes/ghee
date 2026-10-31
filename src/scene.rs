@@ -3448,9 +3448,10 @@ impl Scene {
     /// An absolute path reads as it stands. Any other path resolves in
     /// `base_dir`, then in the directories of set_asset_dirs(), then through
     /// `$GHEE_ASSETS`, colon-separated directories, in order, and the error
-    /// names the first path and those directories. Reach::Inside refuses a path outside `base_dir`. A
-    /// filter's asset is the filter's to load. The emoji font is the one that
-    /// crate::emoji finds from `base_dir`, under either reach.
+    /// names the first path and those directories. Reach::Inside refuses a
+    /// path outside `base_dir`. A filter's asset is the filter's to load. The
+    /// emoji font is the one that crate::emoji finds from `base_dir`, under
+    /// either reach.
     pub fn load_assets_in(&mut self, base_dir: &str, reach: Reach) -> Result<()> {
         self.load_assets_from(base_dir, reach, &asset_dirs(), crate::emoji::SYSTEM_DIR)
     }

@@ -408,9 +408,10 @@ fn py_float(raw: &str) -> Result<f64, String> {
 /// The value set_param expects, from a /set raw query string.
 ///
 /// A "color" is a CSS hex colour or a CSS colour name, which stays as
-/// written, or "r,g,b", which gives three floats. A "vecK" is K comma-separated floats. A "bool" is true or
-/// false (1 or 0), and the scene model demands a real bool. Anything else is
-/// one float. Malformed input errs.
+/// written, or "r,g,b", which gives three floats. A "vecK" is K
+/// comma-separated floats. A "bool" is true or false (1 or 0), and the scene
+/// model demands a real bool. Anything else is one float. Malformed input
+/// errs.
 pub fn parse_param_value(ptype: &str, raw: &str) -> Result<Value, String> {
     if ptype == "bool" {
         let key = raw.trim().to_lowercase();

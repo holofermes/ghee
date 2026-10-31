@@ -123,14 +123,15 @@ pub const FIT_MARGIN: f64 = 0.05;
 /// The texels per em of an MTSDF atlas, smallest first. A layer takes the
 /// first step at or above its pixels per em at build, and a layer with no
 /// `font_size` the step of the largest size at which a line fits its pass,
-/// so layers of near sizes share an atlas, up to a cap. Text under 32 px takes 32, since an atlas at a
-/// small text's own size strays further from its outline. The cap is the last
-/// step whose texels per em, times one plus twice the effects' reach in em,
-/// stay at 128 or under, the first step at least: plain text stops at 128,
-/// and a cell with a glow spans no more texels than a plain cell at 128. On a
-/// Pi Zero 2 W the first render with an empty cache, which generates the
-/// preload, takes about 9 s for plain text at 128 texels per em and 22 s with
-/// a 0.3 em glow at 128, and about 9 s with that glow at 64, its cap.
+/// so layers of near sizes share an atlas, up to a cap. Text under 32 px takes
+/// 32, since an atlas at a small text's own size strays further from its
+/// outline. The cap is the last step whose texels per em, times one plus twice
+/// the effects' reach in em, stay at 128 or under, the first step at least:
+/// plain text stops at 128, and a cell with a glow spans no more texels than a
+/// plain cell at 128. On a Pi Zero 2 W the first render with an empty cache,
+/// which generates the preload, takes about 9 s for plain text at 128 texels
+/// per em and 22 s with a 0.3 em glow at 128, and about 9 s with that glow at
+/// 64, its cap.
 pub const ATLAS_STEPS: [u32; 5] = [32, 48, 64, 96, 128];
 
 /// A colour, each channel 0 to 1, its alpha, and the form that the scene

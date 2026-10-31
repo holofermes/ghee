@@ -771,14 +771,12 @@ fn drawn_size(l: &VideoLayer, pass: [f64; 2], aspect: f64) -> (u32, u32) {
     (w.ceil().max(1.0) as u32, h.ceil().max(1.0) as u32)
 }
 
-/// Whether a pass whose fragment an edit changed goes on from its buffers.
-const EDITED_FRAGMENT_KEEPS_BUFFERS: bool = true;
-
 /// Whether `now`, the pass of `scene` under the name of `was`, is `was`, the
-/// pass of the running scene `ran` that `scene` edits. A pass that turns into
-/// a filter or out of one is another pass, and so is a pass that took the
-/// fragment of another pass of `ran` that gave it up, as a rename of A to B
-/// and of C to A leaves A.
+/// pass of the running scene `ran` that `scene` edits. A pass whose fragment
+/// an edit changed is `was`, and goes on from its buffers. A pass that turns
+/// into a filter or out of one is another pass, and so is a pass that took
+/// the fragment of another pass of `ran` that gave it up, as a rename of A to
+/// B and of C to A leaves A.
 fn same_pass(ran: &Scene, was: &Pass, scene: &Scene, now: &Pass) -> bool {
     if was.filter != now.filter {
         return false;
@@ -794,7 +792,7 @@ fn same_pass(ran: &Scene, was: &Pass, scene: &Scene, now: &Pass) -> bool {
                 .iter()
                 .any(|p| p.name == o.name && p.fragment == o.fragment)
     };
-    EDITED_FRAGMENT_KEEPS_BUFFERS && !ran.passes.iter().any(gave_up)
+    !ran.passes.iter().any(gave_up)
 }
 
 /// Render a frame, reading it back into `out` at pw x ph as ghee_mp_render
@@ -9274,10 +9272,8 @@ mod tests {
         }
     }
 
-    // The reference produced the values below for these inputs.
-
     #[test]
-    fn user_line_edges_match_the_reference() {
+    fn a_compile_error_names_the_authors_own_line() {
         let glsl = "#version 100\nprecision mediump float;\nfloat sat(float x){ return x; }\n\nvoid main(){\n  nope();\n}";
         let common = Some("float sat(float x){ return x; }");
         let code = "void main(){\n  nope();\n}";
@@ -9326,7 +9322,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(ghee_no_gpu, ignore = "needs a GL device")]
-    fn setup_error_strings_match_the_reference() {
+    fn setup_names_a_size_clash_and_a_bad_channel_before_the_budget() {
         let (_g, mut r) = gpu();
         // A 2D size prints as a pair. A 1D size prints as an int.
         let clash = json!([

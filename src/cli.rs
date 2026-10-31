@@ -1690,7 +1690,7 @@ fn smoke(args: &[&str]) -> Result<()> {
         bail!("scene build failed: {e}");
     }
     let frame = r.render(None)?;
-    println!("RUST_SMOKE_OK pixel={},{},{}", frame[0], frame[1], frame[2]);
+    println!("smoke ok, pixel {},{},{}", frame[0], frame[1], frame[2]);
     Ok(())
 }
 
@@ -2415,7 +2415,7 @@ mod tests {
     }
 
     #[test]
-    fn serve_takes_every_flag_it_always_took() {
+    fn serve_takes_the_console_and_render_flags() {
         let a = ns(&[
             "serve",
             "scenes/",

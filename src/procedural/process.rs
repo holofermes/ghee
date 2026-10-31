@@ -2087,7 +2087,7 @@ sleep 60
         let d = tmpdir("wire");
         let mark = format!("{d}/mark");
         let body = format!(
-            "printf '%s %s' \"$GHEE_WIRE\" \"${{GHEE_LOCKSTEP-unset}}\" > {mark}\n\
+            "printf '%s' \"$GHEE_WIRE\" > {mark}\n\
              printf '{{\"passes\":[{{\"name\":\"main\",\"fragment\":\"void main(){{}}\"}}]}}\\n'\n\
              sleep 5\n"
         );
@@ -2101,7 +2101,7 @@ sleep 60
         .unwrap();
         (f.term_after, f.kill_after) = (SOON, SOON);
         until(|| fs::read_to_string(&mark).is_ok_and(|m| !m.is_empty()));
-        assert_eq!(fs::read_to_string(&mark).unwrap(), "1 unset");
+        assert_eq!(fs::read_to_string(&mark).unwrap(), "1");
         drop(f);
     }
 

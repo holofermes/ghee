@@ -633,7 +633,7 @@ pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{ParamMap, ParamValue, Pass, Scene};
+    use crate::scene::{ParamValue, Pass, Scene};
     use serde_json::json;
 
     const FLAT: &str = "void main(){ gl_FragColor = vec4(vec3(0.5), 1.0); }";
@@ -1215,7 +1215,6 @@ mod tests {
         assert_eq!(amount.ty, "float");
         assert_eq!(amount.min, Some(json!(0.0)));
         assert!(sc.passes[1].params.get("levels").is_some());
-        let _ = ParamMap::new();
     }
 
     #[test]

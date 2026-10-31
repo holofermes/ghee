@@ -1435,10 +1435,10 @@ fn parse_set(host: &impl ConsoleHost, query: &Query) -> ConsoleResult<Result<Set
 }
 
 /// The param of the scene document `doc` that `pass` and `name` address, as
-/// Python's set_param addresses one: `pass` names the pass that holds it, and
-/// with no pass, `name` is the scene param, else the param of the first pass
-/// that declares it. Its place and its type, or the error that set_param
-/// gives for the same names.
+/// the Python package's set_param addresses one: `pass` names the pass that
+/// holds it, and with no pass, `name` is the scene param, else the param of
+/// the first pass that declares it. Its place and its type, or the error that
+/// set_param gives for the same names.
 pub fn param_of(doc: &Value, pass: Option<&str>, name: &str) -> Result<(Scope, String), String> {
     let passes = doc_passes(doc);
     let typed = |params: Option<&Value>| -> Option<String> {
@@ -1469,9 +1469,9 @@ pub fn param_of(doc: &Value, pass: Option<&str>, name: &str) -> Result<(Scope, S
 }
 
 /// Every name that addresses a param of the scene document `doc`, in the
-/// order that Python lists them: each scene param, then each param of each
-/// pass as `pass.name`, and by its name alone where no name before it is the
-/// same.
+/// order that the Python package's set_param lists them: each scene param,
+/// then each param of each pass as `pass.name`, and by its name alone where no
+/// name before it is the same.
 fn param_wires(doc: &Value) -> Vec<String> {
     let names = |params: Option<&Value>| -> Vec<String> {
         params
@@ -2425,7 +2425,7 @@ mod tests {
     }
 
     #[test]
-    fn a_set_of_an_undeclared_param_names_it_as_python_does() {
+    fn a_set_of_an_undeclared_param_names_its_address_and_the_declared_ones() {
         let wires = "tint, title, main.k, k, main.on, on, main.n, n, main.c, c, main.v, v";
         for (pass, name, wire) in [
             (None, "nope", "nope"),

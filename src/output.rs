@@ -891,7 +891,7 @@ mod tests {
         let mut seq = ImageSequence::with_opts(&at(&dir, "p.####.png"), 0, None, 2);
         for f in &want {
             let mut buf = seq.acquire(f.shape()).unwrap();
-            buf.data.copy_from_slice(&f.data); // stands in for render_into(out=buf)
+            buf.data.copy_from_slice(&f.data); // stands in for Renderer::render_into
             seq.submit(buf).unwrap();
         }
         assert!(seq.allocated <= 3); // depth + 1 is the memory bound

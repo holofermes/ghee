@@ -16,8 +16,8 @@ env:
 
 jobs:
   native:
-    # A release that is not v* (the press tag) skips the whole chain: every
-    # other job needs this one.
+    # A release whose tag is not v* skips the whole chain: every other job
+    # needs this one.
     if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     # ubuntu-22.04 pins the x86_64 glibc floor at 2.35, so the retagged
     # manylinux wheel installs on Debian bookworm and up
@@ -191,8 +191,8 @@ jobs:
           uvx wheel tags --platform-tag manylinux_2_35_x86_64 --remove all/*linux_x86_64.whl
           uvx wheel tags --platform-tag manylinux_2_36_aarch64 --remove all/*linux_aarch64.whl
           mv all/*manylinux*.whl dist/
-      # The sdist rides along, or an arch with no wheel resolves the old
-      # 0.2.0 python package instead of building 0.3.0 from source.
+      # The sdist rides along, or an arch with no wheel resolves an older
+      # release instead of building this one from source.
       - uses: actions/checkout@v4
         with:
           path: src

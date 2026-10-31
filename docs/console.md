@@ -15,7 +15,7 @@ ghee serve --demo
 ghee prints the address, and you open it in a browser:
 
 ```
-ghee console: http://127.0.0.1:8090/ 12 scenes ['assets', 'bars', 'feedback', 'lens', ...]
+ghee console: http://127.0.0.1:8090/ 12 scenes ['assets', 'bars', 'feedback', 'lens', ...] (scenes=..., my scenes=..., preview 320x240 rgba)
 ```
 
 To open it from your laptop while ghee runs on a Pi, see [From another
@@ -127,9 +127,9 @@ ssh -L 8090:localhost:8090 pi@raspberrypi.local
 Then open `http://localhost:8090/` on your computer.
 
 To open it to your network instead, pass `--host 0.0.0.0`, and open one of
-the addresses that the console prints when it starts. Note that over plain
-`http` from another computer, the browser shows the MJPEG stream. To use the
-H264 video, you must use `https` or `localhost`.
+the addresses that the console prints when it starts. Over plain `http`
+from another computer, the browser shows the MJPEG stream. To use the H264
+video, you must use `https` or `localhost`.
 
 Careful: the console has no password, and anyone who reaches it can change
 your scenes and run any shader. Open it only on a network you trust.

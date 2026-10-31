@@ -248,16 +248,16 @@ systemd user unit. Save this as
 Description=status screen
 
 [Service]
-ExecStart=/home/pi/status/.venv/bin/python /home/pi/status/status.py
+ExecStart=%h/status/.venv/bin/python %h/status/status.py
 Restart=on-failure
 
 [Install]
 WantedBy=default.target
 ```
 
-This unit runs the program with the Python of its venv. With ghee from the
-deb, run it with the system Python instead:
-`ExecStart=/usr/bin/python3 /home/pi/status/status.py`.
+This unit runs `~/status/status.py` with the Python of its venv. With ghee
+from the deb, run it with the system Python instead:
+`ExecStart=/usr/bin/python3 %h/status/status.py`.
 
 Start it now and at every boot, also before you log in:
 

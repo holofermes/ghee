@@ -247,7 +247,7 @@ Each message is a header and its payload:
 
 | Field | Size | Value |
 | --- | --- | --- |
-| kind | 1 byte | 0 to 10 |
+| kind | 1 byte | 0 to 6 |
 | name length | 1 byte | 0 to 255 |
 | name | the name length | UTF-8 |
 | count | 4 bytes | an unsigned little-endian integer |

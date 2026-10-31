@@ -46,6 +46,7 @@ such as a Pi on the same Debian release.
 ```
 cargo test --release
 cargo run --release -- golden --manifest tools/fixtures/golden/manifest.json
+(cd python && maturin build --release --compatibility linux)
 uv run --no-cache --with python/target/wheels/ghee_render-*.whl --with pytest \
     pytest python/tests
 ```
@@ -57,6 +58,8 @@ need ffmpeg, and `--cfg ghee_no_gpu_memory` for the test that reads the GL
 driver's buffer memory, which vc4 and NVIDIA's driver do not report. The
 tests of a connected display, of the hardware H264 encoder and of the
 hardware MJPEG decoder run on a host that has one, under `--cfg
-ghee_display`, `--cfg ghee_hw_h264` and `--cfg ghee_hw_mjpeg`. The
-golden check renders every scene in the manifest, and compares the sha256 of
+ghee_display`, `--cfg ghee_hw_h264` and `--cfg ghee_hw_mjpeg`. On a host
+whose display is an SPI or I2C panel, add `--cfg ghee_panel` as well, to
+run the test that ghee waits for the panel to take each frame. The golden
+check renders every scene in the manifest, and compares the sha256 of
 each frame against the pinned reference in `tools/fixtures/golden/`.

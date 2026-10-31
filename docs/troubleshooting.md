@@ -4,8 +4,8 @@
 node with `--dri` or `$GHEE_DRI`, and add your user to the `video` group, plus
 `render` on a desktop.
 
-**`--h264` or the console stream says there is no ffmpeg on PATH.** That board
-has no Broadcom encoder, so ghee encodes with ffmpeg and libx264:
+**`--h264` or the console stream says there is no ffmpeg on PATH.** On a
+Pi 5 or a desktop computer, ghee encodes with ffmpeg and libx264:
 `sudo apt install ffmpeg`.
 
 **`--display kms` cannot take DRM master.** ghee needs the card to itself,

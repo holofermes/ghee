@@ -2439,7 +2439,7 @@ mod tests {
             "--edits-dir",
             "/srv/edits",
             "--allow-hosts",
-            "pi.tail.ts.net,pi.local",
+            "pi.example.net,pi.local",
             "--",
             "--text",
             "hi",
@@ -2450,7 +2450,7 @@ mod tests {
         );
         assert_eq!(a.state_dir, Some(std::path::PathBuf::from("/srv/state")));
         assert_eq!(a.edits_dir, Some(std::path::PathBuf::from("/srv/edits")));
-        assert_eq!(a.allow_hosts, ["pi.tail.ts.net", "pi.local"]);
+        assert_eq!(a.allow_hosts, ["pi.example.net", "pi.local"]);
         assert_eq!(
             (a.preview_fps, a.preview_max, a.stream_max),
             (Some(5), 120, 320)

@@ -2322,9 +2322,9 @@ mod tests {
         lock(&console.active).loaded = switch;
     }
 
-    /// A store of clocks, one pass main with the params cols and rows, and
+    /// A store of the scene grid, one pass main with the params cols and rows, and
     /// its state directory.
-    fn clocks(
+    fn grid(
         tag: &str,
     ) -> (
         crate::testing::TempDir,
@@ -2336,7 +2336,7 @@ mod tests {
             "fragment": "void main(){ gl_FragColor = vec4(1.0); }",
             "params": {"cols": {"type": "int", "value": 7},
                        "rows": {"type": "int", "value": 13}}}]});
-        fs::write(d.join("clocks.scene.json"), doc.to_string()).unwrap();
+        fs::write(d.join("grid.scene.json"), doc.to_string()).unwrap();
         let states = crate::testing::TempDir::new(&format!("console-{tag}-state"));
         let mut store = SceneStore::new(&d, Vec::new());
         store.state_dir = Some(std::path::PathBuf::from(&*states));
@@ -2344,9 +2344,9 @@ mod tests {
         (d, states, Arc::new(Console::new(store)))
     }
 
-    /// The state file of clocks in the directory `d`.
-    fn clocks_file(d: &str, states: &str) -> std::path::PathBuf {
-        std::path::Path::new(states).join(format!("scenes{d}/clocks.json"))
+    /// The state file of grid in the directory `d`.
+    fn grid_file(d: &str, states: &str) -> std::path::PathBuf {
+        std::path::Path::new(states).join(format!("scenes{d}/grid.json"))
     }
 
     /// One request of a page: its status, its body and its ETag.
@@ -2399,47 +2399,47 @@ mod tests {
 
     #[test]
     fn two_params_save_alone_and_back_to_defaults_removes_the_state_file() {
-        let (d, states, console) = clocks("two-params");
-        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
-        ready(&console, "clocks", opened);
+        let (d, states, console) = grid("two-params");
+        let (opened, _) = console.store.open("grid", None, (32, 24)).unwrap();
+        ready(&console, "grid", opened);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let (_, _, first) = ask(&api, "GET", "/scene", "", "");
         for q in [
-            "scene=clocks&pass=main&name=cols&value=5",
-            "scene=clocks&name=main.rows&value=4",
+            "scene=grid&pass=main&name=cols&value=5",
+            "scene=grid&name=main.rows&value=4",
         ] {
             assert_eq!(ask(&api, "POST", "/set", q, "").0, 200);
         }
-        let (_, scene, etag) = ask(&api, "GET", "/scene", "name=clocks", "");
+        let (_, scene, etag) = ask(&api, "GET", "/scene", "name=grid", "");
         assert_eq!(json_of(&scene)["passes"][0]["params"]["cols"]["value"], 5);
         assert!(etag.is_some() && etag != first, "{etag:?} {first:?}");
-        let (_, defaults, _) = ask(&api, "GET", "/scene", "name=clocks&defaults=1", "");
+        let (_, defaults, _) = ask(&api, "GET", "/scene", "name=grid&defaults=1", "");
         assert_eq!(
             json_of(&defaults)["passes"][0]["params"]["cols"]["value"],
             7
         );
         let values = serde_json::json!({"passes": {"main": {"params": {"cols": 5, "rows": 4}}}});
-        let edits = json_of(&ask(&api, "GET", "/edits", "name=clocks", "").1);
+        let edits = json_of(&ask(&api, "GET", "/edits", "name=grid", "").1);
         assert_eq!(
             (&edits["values"], &edits["items"], &edits["unsaved"]),
             (&values, &serde_json::json!([]), &Value::from(true))
         );
-        assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
-        let file = clocks_file(&d, &states);
+        assert_eq!(ask(&api, "POST", "/save", "name=grid", "").0, 200);
+        let file = grid_file(&d, &states);
         assert_eq!(
             json_of(&fs::read_to_string(&file).unwrap()),
-            serde_json::json!({"version": 1, "scene": format!("{d}/clocks.scene.json"),
+            serde_json::json!({"version": 1, "scene": format!("{d}/grid.scene.json"),
                                "values": values})
         );
         let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
         assert_eq!(edits["unsaved"], false);
-        assert_eq!(ask(&api, "POST", "/reset", "name=clocks", "").0, 200);
+        assert_eq!(ask(&api, "POST", "/reset", "name=grid", "").0, 200);
         let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
         assert_eq!(
             (&edits["values"], &edits["unsaved"]),
             (&serde_json::json!({}), &Value::from(true))
         );
-        assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
+        assert_eq!(ask(&api, "POST", "/save", "name=grid", "").0, 200);
         assert!(!file.exists());
     }
 
@@ -2463,33 +2463,33 @@ mod tests {
         }
     }
 
-    /// A console over the clocks of clocks() in `d` and its state directory
-    /// `states`, as a new ghee starts it, with clocks loaded.
-    fn clocks_again(d: &str, states: &str) -> ConsoleAPI<RenderLoopHost> {
+    /// A console over the grid of grid() in `d` and its state directory
+    /// `states`, as a new ghee starts it, with grid loaded.
+    fn grid_again(d: &str, states: &str) -> ConsoleAPI<RenderLoopHost> {
         let mut store = SceneStore::new(d, Vec::new());
         store.state_dir = Some(std::path::PathBuf::from(states));
         store.edits_dir = store.state_dir.clone();
         let console = Arc::new(Console::new(store));
-        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
-        ready(&console, "clocks", opened);
+        let (opened, _) = console.store.open("grid", None, (32, 24)).unwrap();
+        ready(&console, "grid", opened);
         ConsoleAPI::new(RenderLoopHost::new(console))
     }
 
     #[test]
     fn unsaved_edits_wait_after_a_stop_until_a_page_restores_or_drops_them() {
         for answer in ["restore", "drop"] {
-            let (d, states, _) = clocks(&format!("draft-{answer}"));
-            let api = clocks_again(&d, &states);
-            let q = "scene=clocks&pass=main&name=cols&value=5";
+            let (d, states, _) = grid(&format!("draft-{answer}"));
+            let api = grid_again(&d, &states);
+            let q = "scene=grid&pass=main&name=cols&value=5";
             assert_eq!(ask(&api, "POST", "/set", q, "").0, 200);
             api.host.console.write_drafts(true);
-            let draft = std::path::Path::new(&*states).join(format!("scenes{d}/clocks.draft.json"));
+            let draft = std::path::Path::new(&*states).join(format!("scenes{d}/grid.draft.json"));
             assert_eq!(
                 json_of(&fs::read_to_string(&draft).unwrap()),
-                serde_json::json!({"version": 1, "scene": format!("{d}/clocks.scene.json"),
+                serde_json::json!({"version": 1, "scene": format!("{d}/grid.scene.json"),
                     "values": {"passes": {"main": {"params": {"cols": 5}}}}})
             );
-            let api = clocks_again(&d, &states);
+            let api = grid_again(&d, &states);
             let cols = |api: &ConsoleAPI<RenderLoopHost>| {
                 json_of(&ask(api, "GET", "/scene", "", "").1)["passes"][0]["params"]["cols"]
                     ["value"]
@@ -2500,7 +2500,7 @@ mod tests {
                 (cols(&api), &edits["draft"]),
                 (Value::from(7), &Value::from(true))
             );
-            let q = format!("name=clocks&answer={answer}");
+            let q = format!("name=grid&answer={answer}");
             assert_eq!(ask(&api, "POST", "/draft", &q, "").0, 200);
             let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
             match answer {
@@ -2523,11 +2523,11 @@ mod tests {
 
     #[test]
     fn a_save_or_a_working_copy_that_matches_the_state_file_again_removes_the_draft() {
-        let (d, states, _) = clocks("draft-gone");
-        let api = clocks_again(&d, &states);
-        let draft = std::path::Path::new(&*states).join(format!("scenes{d}/clocks.draft.json"));
+        let (d, states, _) = grid("draft-gone");
+        let api = grid_again(&d, &states);
+        let draft = std::path::Path::new(&*states).join(format!("scenes{d}/grid.draft.json"));
         let set = |cols: i32| {
-            let q = format!("scene=clocks&pass=main&name=cols&value={cols}");
+            let q = format!("scene=grid&pass=main&name=cols&value={cols}");
             assert_eq!(ask(&api, "POST", "/set", &q, "").0, 200);
             api.host.console.write_drafts(true);
             draft.exists()
@@ -2535,7 +2535,7 @@ mod tests {
         assert!(set(5));
         assert!(!set(7));
         assert!(set(5));
-        assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
+        assert_eq!(ask(&api, "POST", "/save", "name=grid", "").0, 200);
         assert!(!draft.exists());
     }
 
@@ -2544,16 +2544,16 @@ mod tests {
         let mine = "void main(){ gl_FragColor = vec4(0.5); }";
         let default = "void main(){ gl_FragColor = vec4(1.0); }";
         for answer in ["keep", "default"] {
-            let (d, states, console) = clocks(answer);
-            let file = clocks_file(&d, &states);
+            let (d, states, console) = grid(answer);
+            let file = grid_file(&d, &states);
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             let saved = serde_json::json!({"version": 1,
                 "values": {"passes": {"main": {"params": {"cols": 5}}}},
                 "items": [{"item": "fragment", "pass": "main", "base": "0123456789abcdef",
                            "value": mine}]});
             fs::write(&file, saved.to_string()).unwrap();
-            let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
-            ready(&console, "clocks", opened);
+            let (opened, _) = console.store.open("grid", None, (32, 24)).unwrap();
+            ready(&console, "grid", opened);
             let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
             let fragment = |api: &ConsoleAPI<RenderLoopHost>| {
                 json_of(&ask(api, "GET", "/scene", "", "").1)["passes"][0]["fragment"].clone()
@@ -2565,7 +2565,7 @@ mod tests {
                 serde_json::json!([{"item": "fragment", "pass": "main"}])
             );
             assert_eq!(edits["unsaved"], false);
-            let q = format!("name=clocks&item=fragment&pass=main&answer={answer}");
+            let q = format!("name=grid&item=fragment&pass=main&answer={answer}");
             assert_eq!(ask(&api, "POST", "/aside", &q, "").0, 200);
             let written = json_of(&fs::read_to_string(&file).unwrap());
             let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
@@ -2592,7 +2592,7 @@ mod tests {
         }
     }
 
-    /// clocks of clocks(), and the console's own scenes in a directory of
+    /// grid of grid(), and the console's own scenes in a directory of
     /// their own.
     fn with_mine(
         tag: &str,
@@ -2601,7 +2601,7 @@ mod tests {
         crate::testing::TempDir,
         Arc<Console>,
     ) {
-        let (d, states, console) = clocks(tag);
+        let (d, states, console) = grid(tag);
         let m = crate::testing::TempDir::new(&format!("console-{tag}-mine"));
         let mut store = SceneStore::with_mine(&d, Some(&m), Vec::new());
         store.state_dir = console.store.state_dir.clone();
@@ -2613,18 +2613,18 @@ mod tests {
     #[test]
     fn a_new_scene_copies_the_working_copy_and_saves_whole_with_no_state_file() {
         let (_d, m, console) = with_mine("own-new");
-        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
-        ready(&console, "clocks", opened);
+        let (opened, _) = console.store.open("grid", None, (32, 24)).unwrap();
+        ready(&console, "grid", opened);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let set = |scene: &str, value: u32| {
             let q = format!("scene={scene}&pass=main&name=cols&value={value}");
             ask(&api, "POST", "/set", &q, "").0
         };
-        assert_eq!(set("clocks", 5), 200);
-        let made = ask(&api, "POST", "/new", "name=copy&from=clocks", "");
+        assert_eq!(set("grid", 5), 200);
+        let made = ask(&api, "POST", "/new", "name=copy&from=grid", "");
         assert_eq!((made.0, made.1.as_str()), (200, r#"{"name":"copy"}"#));
         let scenes = json_of(&ask(&api, "GET", "/scenes", "", "").1);
-        assert_eq!(scenes["scenes"], serde_json::json!(["clocks", "copy"]));
+        assert_eq!(scenes["scenes"], serde_json::json!(["grid", "copy"]));
         assert_eq!(scenes["mine"], serde_json::json!(["copy"]));
         let (opened, _) = console.store.open("copy", None, (32, 24)).unwrap();
         assert_eq!(
@@ -2658,7 +2658,7 @@ mod tests {
 
     #[test]
     fn an_own_scene_keeps_its_unsaved_edits_in_a_draft_until_a_save() {
-        let (d, states, _) = clocks("own-draft");
+        let (d, states, _) = grid("own-draft");
         let m = crate::testing::TempDir::new("console-own-draft-mine");
         let again = || {
             let mut store = SceneStore::with_mine(&d, Some(&m), Vec::new());
@@ -2666,14 +2666,14 @@ mod tests {
             let console = Arc::new(Console::new(store));
             let name = match console.store.is_mine("art") {
                 true => "art",
-                false => "clocks",
+                false => "grid",
             };
             let (opened, _) = console.store.open(name, None, (32, 24)).unwrap();
             ready(&console, name, opened);
             ConsoleAPI::new(RenderLoopHost::new(console))
         };
         let api = again();
-        assert_eq!(ask(&api, "POST", "/new", "name=art&from=clocks", "").0, 200);
+        assert_eq!(ask(&api, "POST", "/new", "name=art&from=grid", "").0, 200);
         let api = again();
         let q = "scene=art&pass=main&name=cols&value=3";
         assert_eq!(ask(&api, "POST", "/set", q, "").0, 200);
@@ -2768,17 +2768,17 @@ mod tests {
         assert_eq!((renamed.0, renamed.1.as_str()), (200, r#"{"name":"two"}"#));
         assert_eq!(console.stats()["active"], "two");
         assert!(m.join("two/two.scene.json").is_file());
-        assert_eq!(ask(&api, "POST", "/rename", "name=clocks&to=x", "").0, 403);
+        assert_eq!(ask(&api, "POST", "/rename", "name=grid&to=x", "").0, 403);
         assert_eq!(ask(&api, "POST", "/delete", "name=two", "").0, 200);
-        assert_eq!(console.stats()["active"], "clocks");
+        assert_eq!(console.stats()["active"], "grid");
         assert!(!m.join("two").exists());
     }
 
     /// A saved image layer whose asset the scene lacks.
     #[test]
     fn saved_edits_that_make_no_scene_wait_in_the_state_file_until_dropped() {
-        let (d, states, console) = clocks("broken");
-        let file = clocks_file(&d, &states);
+        let (d, states, console) = grid("broken");
+        let file = grid_file(&d, &states);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         let layers = serde_json::json!({"item": "layers", "pass": "main",
             "base": state::hash_json(&serde_json::json!([])),
@@ -2786,8 +2786,8 @@ mod tests {
         let saved = serde_json::json!({"version": 1,
             "values": {"passes": {"main": {"params": {"cols": 5}}}}, "items": [layers]});
         fs::write(&file, saved.to_string()).unwrap();
-        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
-        ready(&console, "clocks", opened);
+        let (opened, _) = console.store.open("grid", None, (32, 24)).unwrap();
+        ready(&console, "grid", opened);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let scene = json_of(&ask(&api, "GET", "/scene", "", "").1);
         assert_eq!(scene["passes"][0]["params"]["cols"]["value"], 5);
@@ -2802,9 +2802,9 @@ mod tests {
                 .starts_with("layer 'image' image 'plaster'"),
             "{edits}"
         );
-        let set = "scene=clocks&pass=main&name=cols&value=6";
+        let set = "scene=grid&pass=main&name=cols&value=6";
         assert_eq!(ask(&api, "POST", "/set", set, "").0, 200);
-        assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
+        assert_eq!(ask(&api, "POST", "/save", "name=grid", "").0, 200);
         let written = json_of(&fs::read_to_string(&file).unwrap());
         assert_eq!(written["items"], serde_json::json!([layers]));
         assert_eq!(written["values"]["passes"]["main"]["params"]["cols"], 6);
@@ -2813,7 +2813,7 @@ mod tests {
                 &api,
                 "POST",
                 "/aside",
-                &format!("name=clocks&item=edits&answer={a}"),
+                &format!("name=grid&item=edits&answer={a}"),
                 "",
             )
         };
@@ -2835,23 +2835,23 @@ mod tests {
     fn a_new_edit_of_a_shader_set_aside_answers_it_and_saves_alone() {
         let mine = "void main(){ gl_FragColor = vec4(0.5); }";
         let newer = "void main(){ gl_FragColor = vec4(0.25); }";
-        let (d, states, console) = clocks("newer");
-        let file = clocks_file(&d, &states);
+        let (d, states, console) = grid("newer");
+        let file = grid_file(&d, &states);
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         let saved = serde_json::json!({"version": 1,
             "items": [{"item": "fragment", "pass": "main", "base": "0123456789abcdef",
                        "value": mine}]});
         fs::write(&file, saved.to_string()).unwrap();
-        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
-        ready(&console, "clocks", opened);
+        let (opened, _) = console.store.open("grid", None, (32, 24)).unwrap();
+        ready(&console, "grid", opened);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let mut doc = json_of(&ask(&api, "GET", "/scene", "", "").1);
         doc["passes"][0]["fragment"] = Value::from(newer);
-        let posted = ask(&api, "POST", "/scene", "name=clocks", &doc.to_string());
+        let posted = ask(&api, "POST", "/scene", "name=grid", &doc.to_string());
         assert_eq!(posted.0, 200, "{}", posted.1);
         let edits = json_of(&ask(&api, "GET", "/edits", "", "").1);
         assert_eq!(edits["aside"], serde_json::json!([]));
-        assert_eq!(ask(&api, "POST", "/save", "name=clocks", "").0, 200);
+        assert_eq!(ask(&api, "POST", "/save", "name=grid", "").0, 200);
         let written = json_of(&fs::read_to_string(&file).unwrap());
         let items = written["items"].as_array().unwrap();
         assert_eq!(items.len(), 1, "{written}");
@@ -2868,14 +2868,14 @@ mod tests {
     /// scene's ETag, and each edit answers the ETag that it makes.
     #[test]
     fn an_edit_whose_if_match_names_an_older_etag_answers_412() {
-        let (_d, _states, console) = clocks("stale");
-        let (opened, _) = console.store.open("clocks", None, (32, 24)).unwrap();
-        ready(&console, "clocks", opened);
+        let (_d, _states, console) = grid("stale");
+        let (opened, _) = console.store.open("grid", None, (32, 24)).unwrap();
+        ready(&console, "grid", opened);
         let api = ConsoleAPI::new(RenderLoopHost::new(Arc::clone(&console)));
         let read = format!("\"{}\"", rev_of(&api));
         assert_eq!(console.stats()["rev"], rev_of(&api));
         let set = |name: &str, value: u32, tags: Option<&str>| {
-            let q = format!("scene=clocks&pass=main&name={name}&value={value}");
+            let q = format!("scene=grid&pass=main&name={name}&value={value}");
             ask_if(&api, "POST", "/set", &q, "", tags)
         };
         // a page's edits in turn, each with the ETag of the answer before

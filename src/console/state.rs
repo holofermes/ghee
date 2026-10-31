@@ -358,8 +358,8 @@ pub fn file_of(dir: &Path, scene: &str, demo: Option<&str>) -> PathBuf {
     dir.join("scenes").join(format!("{stem}.json"))
 }
 
-/// The draft beside the state file `path`: `clocks.draft.json` beside
-/// `clocks.json`.
+/// The draft beside the state file `path`: `grid.draft.json` beside
+/// `grid.json`.
 pub fn draft_of(path: &Path) -> PathBuf {
     path.with_extension("draft.json")
 }
@@ -1120,12 +1120,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The default shader of clocks. Its first 16 hex digits of SHA-256,
+    /// The default shader of grid. Its first 16 hex digits of SHA-256,
     /// from sha256sum, are 758cc820f81e647b.
     const SHADER: &str = "void main(){ gl_FragColor = vec4(1.0); }";
 
-    /// A scene clocks: one pass main with the params cols and rows.
-    fn clocks() -> Value {
+    /// A scene grid: one pass main with the params cols and rows.
+    fn grid() -> Value {
         json!({"version": 1, "passes": [{"name": "main", "fragment": SHADER,
             "params": {"cols": {"type": "int", "value": 7},
                        "rows": {"type": "int", "value": 13}}}]})
@@ -1136,16 +1136,16 @@ mod tests {
         let dir = Path::new("/home/user/.local/state/ghee");
         for (scene, demo, want) in [
             (
-                "/home/user/scenes/clocks/clocks.scene.json",
+                "/home/user/scenes/grid/grid.scene.json",
                 None,
-                "scenes/home/user/scenes/clocks/clocks.json",
+                "scenes/home/user/scenes/grid/grid.json",
             ),
-            ("/srv/stage/stage.py", None, "scenes/srv/stage/stage.json"),
-            ("/srv/stage/run", None, "scenes/srv/stage/run.json"),
+            ("/srv/show/show.py", None, "scenes/srv/show/show.json"),
+            ("/srv/show/run", None, "scenes/srv/show/run.json"),
             (
-                "/cache/examples/wavy.scene.json",
-                Some("wavy"),
-                "demo/wavy.json",
+                "/cache/examples/bars.scene.json",
+                Some("bars"),
+                "demo/bars.json",
             ),
         ] {
             assert_eq!(file_of(dir, scene, demo), dir.join(want), "{scene}");
@@ -1173,16 +1173,16 @@ mod tests {
 
     #[test]
     fn two_params_moved_save_as_their_values_alone_and_load_back() {
-        let mut moved = clocks();
+        let mut moved = grid();
         moved["passes"][0]["params"]["cols"]["value"] = json!(5);
         moved["passes"][0]["params"]["rows"]["value"] = json!(4);
-        let file = json!({"version": 1, "scene": "/s/clocks/clocks.scene.json",
+        let file = json!({"version": 1, "scene": "/s/grid/grid.scene.json",
             "values": {"passes": {"main": {"params": {"cols": 5, "rows": 4}}}}});
         assert_eq!(
-            diff(&clocks(), &moved, false).to_file("/s/clocks/clocks.scene.json"),
+            diff(&grid(), &moved, false).to_file("/s/grid/grid.scene.json"),
             file
         );
-        let loaded = apply(&clocks(), &Edits::from_file(&file).unwrap(), "clocks");
+        let loaded = apply(&grid(), &Edits::from_file(&file).unwrap(), "grid");
         assert_eq!(loaded.doc, moved);
         assert!(loaded.notes.is_empty() && loaded.aside.is_empty());
     }
@@ -1190,22 +1190,22 @@ mod tests {
     #[test]
     fn a_state_file_that_cannot_be_written_leaves_no_temporary_file() {
         let dir = crate::testing::TempDir::new("state-unwritten");
-        let path = dir.join("clocks.json");
+        let path = dir.join("grid.json");
         fs::create_dir(&path).unwrap();
         let file = json!({"version": 1,
             "values": {"passes": {"main": {"params": {"cols": 5}}}}});
         let edits = Edits::from_file(&file).unwrap();
-        write(&path, "/s/clocks/clocks.scene.json", &edits).unwrap_err();
+        write(&path, "/s/grid/grid.scene.json", &edits).unwrap_err();
         let left: Vec<_> = fs::read_dir(&*dir)
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
-        assert_eq!(left, ["clocks.json"]);
+        assert_eq!(left, ["grid.json"]);
     }
 
     #[test]
     fn a_value_whose_param_is_gone_is_skipped_with_one_line() {
-        let mut renamed = clocks();
+        let mut renamed = grid();
         let rows = renamed["passes"][0]["params"]
             .as_object_mut()
             .unwrap()
@@ -1214,10 +1214,10 @@ mod tests {
         renamed["passes"][0]["params"]["lines"] = rows;
         let file = json!({"version": 1,
             "values": {"passes": {"main": {"params": {"cols": 5, "rows": 4}}}}});
-        let loaded = apply(&renamed, &Edits::from_file(&file).unwrap(), "clocks");
+        let loaded = apply(&renamed, &Edits::from_file(&file).unwrap(), "grid");
         assert_eq!(
             loaded.notes,
-            ["clocks: pass 'main' has no param 'rows', its saved value is skipped"]
+            ["grid: pass 'main' has no param 'rows', its saved value is skipped"]
         );
         assert_eq!(loaded.doc["passes"][0]["params"]["cols"]["value"], 5);
     }
@@ -1225,9 +1225,9 @@ mod tests {
     #[test]
     fn a_shader_edit_waits_when_its_default_changed() {
         let mine = "void main(){ gl_FragColor = vec4(0.5); }";
-        let mut edited = clocks();
+        let mut edited = grid();
         edited["passes"][0]["fragment"] = json!(mine);
-        let edits = diff(&clocks(), &edited, false);
+        let edits = diff(&grid(), &edited, false);
         assert_eq!(
             edits.items,
             [Item {
@@ -1238,21 +1238,21 @@ mod tests {
                 value: json!(mine),
             }]
         );
-        assert_eq!(apply(&clocks(), &edits, "clocks").doc, edited);
-        let mut deployed = clocks();
+        assert_eq!(apply(&grid(), &edits, "grid").doc, edited);
+        let mut deployed = grid();
         deployed["passes"][0]["fragment"] = json!("void main(){ gl_FragColor = vec4(0.25); }");
-        let loaded = apply(&deployed, &edits, "clocks");
+        let loaded = apply(&deployed, &edits, "grid");
         assert_eq!(loaded.doc, deployed);
         assert_eq!(loaded.aside, edits.items);
         assert_eq!(
             loaded.notes,
-            ["clocks: pass 'main''s shader changed since its saved edit, which waits for the console"]
+            ["grid: pass 'main''s shader changed since its saved edit, which waits for the console"]
         );
     }
 
     #[test]
     fn a_list_edit_names_the_default_layers_and_hashes_their_names() {
-        let mut d = clocks();
+        let mut d = grid();
         d["passes"][0]["layers"] = json!([{"name": "title", "text": "hi", "x": 1}]);
         let mut w = d.clone();
         w["passes"][0]["layers"] = json!([
@@ -1273,14 +1273,14 @@ mod tests {
         // a deploy that moves the default layer keeps the list edit and the value
         let mut deployed = d.clone();
         deployed["passes"][0]["layers"][0]["x"] = json!(2);
-        assert_eq!(apply(&deployed, &edits, "clocks").doc, w);
+        assert_eq!(apply(&deployed, &edits, "grid").doc, w);
         // a procedural scene keeps its program's lists
         assert!(diff(&d, &w, true).items.is_empty());
     }
 
     #[test]
     fn a_null_in_the_values_removes_the_key() {
-        let mut d = clocks();
+        let mut d = grid();
         d["passes"][0]["layers"] = json!([{"name": "title", "text": "hi", "font_size": 20,
             "glow": {"blur": 0.2}}]);
         let mut w = d.clone();
@@ -1294,12 +1294,12 @@ mod tests {
                 .as_object()
                 .unwrap()
         );
-        assert_eq!(apply(&d, &edits, "clocks").doc, w);
+        assert_eq!(apply(&d, &edits, "grid").doc, w);
     }
 
     #[test]
     fn an_asset_saves_whole_by_its_name_and_a_null_removes_one() {
-        let mut d = clocks();
+        let mut d = grid();
         d["assets"] = json!({"logo": {"file": "logo.png"}});
         let mut w = d.clone();
         w["assets"] = json!({"plaster": {"file": "plaster.png", "sampling": "linear"}});
@@ -1309,14 +1309,14 @@ mod tests {
             json!({"assets": {"plaster": {"file": "plaster.png", "sampling": "linear"},
                               "logo": null}})
         );
-        assert_eq!(apply(&d, &edits, "clocks").doc, w);
+        assert_eq!(apply(&d, &edits, "grid").doc, w);
         assert!(diff(&d, &d, false).is_empty());
     }
 
     #[test]
     fn a_pass_s_sampling_saves_and_loads_back() {
         let with = |v: Option<&str>| {
-            let mut s = clocks();
+            let mut s = grid();
             if let Some(v) = v {
                 s["passes"][0]["sampling"] = json!(v);
             }
@@ -1333,7 +1333,7 @@ mod tests {
         ] {
             let edits = diff(&with(d), &with(w), false);
             assert_eq!(Value::Object(edits.values.clone()), want, "{d:?} {w:?}");
-            let loaded = apply(&with(d), &edits, "clocks").doc;
+            let loaded = apply(&with(d), &edits, "grid").doc;
             let got = loaded["passes"][0].get("sampling").and_then(Value::as_str);
             assert_eq!(
                 got.unwrap_or("linear"),

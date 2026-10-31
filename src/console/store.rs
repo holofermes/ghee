@@ -1443,22 +1443,22 @@ mod tests {
     #[test]
     fn a_package_directory_loads_the_scene_file_inside_it() {
         let d = tmpdir("package");
-        fs::create_dir_all(format!("{d}/clocks")).unwrap();
+        fs::create_dir_all(format!("{d}/grid")).unwrap();
         write_text(
-            &format!("{d}/clocks/clocks.glsl"),
+            &format!("{d}/grid/grid.glsl"),
             "void main(){ gl_FragColor = vec4(0.5); }",
         );
         write_text(
-            &format!("{d}/clocks/clocks.scene.json"),
-            r#"{"version": 1, "passes": [{"name": "main", "fragment": {"file": "clocks.glsl"}}]}"#,
+            &format!("{d}/grid/grid.scene.json"),
+            r#"{"version": 1, "passes": [{"name": "main", "fragment": {"file": "grid.glsl"}}]}"#,
         );
         let mut store = SceneStore::new(&d, Vec::new());
-        store.scenes = vec![("clocks".to_string(), format!("{d}/clocks"))];
+        store.scenes = vec![("grid".to_string(), format!("{d}/grid"))];
         assert_eq!(
-            store.file("clocks").unwrap(),
-            format!("{d}/clocks/clocks.scene.json")
+            store.file("grid").unwrap(),
+            format!("{d}/grid/grid.scene.json")
         );
-        let scene = store.resolve("clocks", SIZE).unwrap();
+        let scene = store.resolve("grid", SIZE).unwrap();
         assert!(scene.passes[0].fragment.contains("0.5"));
     }
 
@@ -1660,15 +1660,15 @@ mod tests {
     fn the_scan_lists_a_scene_folder_one_level_down() {
         let d = tmpdir("folders");
         write_text(&format!("{d}/flat{SCENE_SUFFIX}"), SCENE);
-        fs::create_dir_all(format!("{d}/clocks")).unwrap();
-        write_text(&format!("{d}/clocks/clocks{SCENE_SUFFIX}"), SCENE);
+        fs::create_dir_all(format!("{d}/grid")).unwrap();
+        write_text(&format!("{d}/grid/grid{SCENE_SUFFIX}"), SCENE);
         fs::create_dir_all(format!("{d}/fonts")).unwrap();
         write_text(&format!("{d}/fonts/other{SCENE_SUFFIX}"), SCENE);
         let store = SceneStore::new(&d, Vec::new());
-        assert_eq!(store.names(), ["clocks", "flat"]);
+        assert_eq!(store.names(), ["flat", "grid"]);
         assert_eq!(
-            store.file("clocks").unwrap(),
-            format!("{d}/clocks/clocks{SCENE_SUFFIX}")
+            store.file("grid").unwrap(),
+            format!("{d}/grid/grid{SCENE_SUFFIX}")
         );
     }
 

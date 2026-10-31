@@ -2963,7 +2963,7 @@ mod tests {
             (Some("127.0.0.1.rebind.example"), false),
             (Some("localhost.rebind.example:8090"), false),
             (Some("[::1].example"), false),
-            (Some("192.168.1.5:8090"), false),
+            (Some("192.0.2.5:8090"), false),
             (Some("localhost:80x"), false),
             (None, false),
         ] {
@@ -2998,13 +2998,13 @@ mod tests {
 
     #[test]
     fn a_loopback_console_answers_the_names_that_it_is_given_too() {
-        let api = api().answering(vec!["pi.tail.ts.net".to_string()]);
+        let api = api().answering(vec!["pi.example.net".to_string()]);
         for (host, ok) in [
-            ("pi.tail.ts.net", true),
-            ("PI.tail.ts.net:443", true),
+            ("pi.example.net", true),
+            ("PI.example.net:443", true),
             ("localhost:8090", true),
-            ("pi.tail.ts.net.rebind.example", false),
-            ("other.ts.net", false),
+            ("pi.example.net.rebind.example", false),
+            ("other.example.net", false),
         ] {
             let headers = Headers::from([("Host", host)]);
             assert_eq!(
@@ -3013,18 +3013,18 @@ mod tests {
                 "{host}"
             );
         }
-        let headers = Headers::from([("Host", "other.ts.net")]);
+        let headers = Headers::from([("Host", "other.example.net")]);
         let r = api.precheck("GET", "/stats", &headers).unwrap();
         assert_eq!(
             body(&r),
             "this console listens on loopback and answers a Host of localhost, \
-             127.0.0.1, [::1] or pi.tail.ts.net, got 'other.ts.net'"
+             127.0.0.1, [::1] or pi.example.net, got 'other.example.net'"
         );
     }
 
     #[test]
     fn a_console_open_to_its_network_answers_any_host() {
-        for addr in ["0.0.0.0", "192.168.1.20", "::"] {
+        for addr in ["0.0.0.0", "192.0.2.20", "::"] {
             let api = api().listening_on(addr);
             let headers = Headers::from([("Host", "pi.local:8080")]);
             assert!(api.precheck("GET", "/stats", &headers).is_none(), "{addr}");
@@ -3264,8 +3264,8 @@ mod tests {
         let page = "http://127.0.0.1:8096";
         assert_eq!(read(page, "127.0.0.1:8090"), Some(page.to_string()));
         assert_eq!(
-            read("https://pi.example.ts.net", "pi.example.ts.net"),
-            Some("https://pi.example.ts.net".to_string())
+            read("https://pi.example.net", "pi.example.net"),
+            Some("https://pi.example.net".to_string())
         );
         assert_eq!(read("http://evil.example:8090", "127.0.0.1:8090"), None);
         assert_eq!(read("http://localhost:8096", "127.0.0.1:8090"), None);

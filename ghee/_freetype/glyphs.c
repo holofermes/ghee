@@ -7,7 +7,8 @@
 #include "glyphs.h"
 
 /* A face of its own library: FreeType shares nothing between libraries, so
- * two faces never contend. `mono` holds the last 1-bit bitmap as bytes. */
+ * two faces never contend. `mono` holds the last bitmap that came as 1-bit,
+ * or as grey with a pitch other than its width, at one byte a pixel. */
 struct GheeFtFace {
     FT_Library lib;
     FT_Face face;

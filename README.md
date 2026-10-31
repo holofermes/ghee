@@ -3,7 +3,7 @@
 ghee runs your GLSL headless on the GPU and puts the frames on an SPI/I2C
 panel, HDMI, image files, or an H264 stream. Multi-pass, any Raspberry Pi.
 
-![a four-pass particle scene, procedural text, and the bundled dither filter, looping](https://raw.githubusercontent.com/holofermes/ghee/main/media/hero.webp)
+![the word ghee in an 8-pixel font over flowing water, photographed on a 256x64 grey OLED](https://raw.githubusercontent.com/holofermes/ghee/main/media/hero.webp)
 
 ## What it does
 

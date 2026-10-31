@@ -872,7 +872,7 @@ static GheeScene *create_impl(int width, int height, int components, const char 
             }
         }
     }
-    if (!config) {   // offscreen, or no 565 visual on this driver: 888 as before
+    if (!config) {   // offscreen, or no 565 visual on this driver: XRGB8888
         if (!eglChooseConfig(g->display, configAttribs, configs, 1, &numConfigs) || numConfigs < 1) {
             snprintf(early_err, sizeof(early_err), "eglChooseConfig failed: 0x%X", eglGetError());
             goto fail;
@@ -1150,8 +1150,7 @@ GheeScene *ghee_display_create_on(int card, int width, int height, const char *d
     static char eb[ERROR_BUFFER_SIZE];
     GheeScene *g = create_impl(width, height, 4, dri_device, card, 1, rgb565, err);
     if (!g) return NULL;
-    // Without master every page flip is refused, which used to show up as a
-    // per-frame error and a display that never updates.
+    // Without master the kernel refuses every page flip.
     if (drmSetMaster(g->drm_fd)) {
         snprintf(eb, sizeof(eb), "cannot take DRM master on %s: %s",
                  dri_device ? dri_device : DEFAULT_DRI_DEVICE, strerror(errno));
@@ -4065,8 +4064,8 @@ void ghee_mp_reset(GheeScene *g) {
 // Whether GL on this card runs on hardware. A display-only card (a panel
 // under a kernel display driver) still gets hardware GL when Mesa pairs it
 // with the render node, so software here means no usable render node exists.
-// A probe, so it stays quiet. Bring-up trouble reports 1: the display path
-// then runs as before and reports its own error.
+// A probe, so it stays quiet. Bring-up trouble reports 1, and the display
+// path then opens the display and reports its own error.
 int ghee_display_renders(const char *dri_device) {
     const char *dev = dri_device ? dri_device : DEFAULT_DRI_DEVICE;
     const int fd = open(dev, O_RDWR | O_CLOEXEC);

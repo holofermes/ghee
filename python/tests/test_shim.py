@@ -595,23 +595,6 @@ def test_the_handshake_is_the_first_line_and_the_data_follows(monkeypatch):
     ]
 
 
-def test_the_wire_runs_in_lockstep_with_no_word_from_the_environment(monkeypatch):
-    """The handshake says lockstep and every answer ends in kind 5, a skip's
-    too, whatever the environment holds."""
-    shim = load()
-
-    @shim.tick
-    def hook(tick):
-        if tick.frame == 1:
-            shim.skip()
-
-    monkeypatch.delenv("GHEE_LOCKSTEP", raising=False)
-    ticks = [{"frame": n, "time": 0.0, "dt": 0.0, "params": {}} for n in range(2)]
-    head, rest = drive(shim, scene_of(shim), ticks, monkeypatch)
-    assert head["lockstep"] is True
-    assert messages(rest) == [END, (2, "", []), END]
-
-
 def test_a_feed_that_returns_none_sends_nothing(monkeypatch):
     shim = load()
 

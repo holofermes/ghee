@@ -383,12 +383,12 @@ HOST_SCENE = {
                 {"name": "state", "size": 2},
             ],
             "params": {
-                "hotColor": {"type": "vec3", "value": [1.0, 0.0, 0.0]},
-                "visLines": {"type": "float", "value": 1.0},
+                "tint": {"type": "vec3", "value": [1.0, 0.0, 0.0]},
+                "lines": {"type": "float", "value": 1.0},
             },
             "fragment": (
-                "void main(){ gl_FragColor = vec4(hotColor * (text_sample2(uv)"
-                " * visLines + state_at(0)), 1.0); }"
+                "void main(){ gl_FragColor = vec4(tint * (text_sample2(uv)"
+                " * lines + state_at(0)), 1.0); }"
             ),
         },
     ],
@@ -401,10 +401,10 @@ def test_a_host_feeds_a_mask_a_state_and_per_pass_params():
         h.feed("text", mask)
         h.feed("state", array.array("f", [0.0, 0.0]))
         h.set_param("snap", 1.0, in_pass="hold")
-        h.set_param("hotColor", [1.0, 0.0, 0.0], in_pass="main")
+        h.set_param("tint", [1.0, 0.0, 0.0], in_pass="main")
         h.frame()
         assert pixel(h) == (255, 0, 0, 255)
-        h.set_param("visLines", 0.0, in_pass="main")
+        h.set_param("lines", 0.0, in_pass="main")
         h.feed("state", array.array("f", [0.5, 0.0]))
         h.frame()
         assert abs(pixel(h)[0] - 128) <= 2

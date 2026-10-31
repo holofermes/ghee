@@ -962,8 +962,8 @@ ghee.run()
 
 
 def test_a_scene_script_under_ghee_draws_the_frames_that_a_screen_draws(tmp_path):
-    """The script's drawing reaches ghee as its looks, kinds 6, 7 and 8, and
-    live sets, and ghee draws each frame as a screen's drawing does."""
+    """The script's drawing reaches ghee as kind 6 patches and live sets, and
+    ghee draws each frame as a screen's drawing does."""
     if not CLI.exists():
         pytest.skip(f"no {CLI} to run the scene")
     path = tmp_path / "busy.py"

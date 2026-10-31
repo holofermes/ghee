@@ -1,4 +1,4 @@
-# The tests wait for their events with no deadline of their own, so a test
-# that hangs ends here.
+# The deadline of every wait in a test: a test waits on its conditions with
+# no deadline of its own, and nextest ends one that runs for an hour.
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 60 }

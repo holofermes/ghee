@@ -81,8 +81,9 @@ def cache_home(tmp_path_factory):
 
 @pytest.fixture(autouse=True)
 def hang():
-    """The tests wait for their events with no deadline of their own, so a
-    test that hangs prints every thread's stack and ends its process here."""
+    """The deadline of every wait in a test: a test waits on its conditions
+    with no deadline of its own, and one that runs for an hour prints every
+    thread's stack and ends its process here."""
     faulthandler.dump_traceback_later(3600, exit=True)
     yield
     faulthandler.cancel_dump_traceback_later()

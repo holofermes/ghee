@@ -4,11 +4,11 @@
 # ///
 """Time ghee and the Python drawing libraries on one status screen.
 
-Each library draws the stats demo's screen: the time, the load as a share of
-the cores with a bar beside it, and a blinking HOT past 90%. The layout is
-the demo's 128x32 one, scaled by width / 128 and centred vertically. The
-clock and the load change on every frame. The runner starts one process for
-each library and size, and runs it in one of two modes.
+Each library draws the status screen of docs/python.md: the time, the load
+as a share of the cores with a bar beside it, and a blinking HOT past 90%.
+The layout is that screen's 128x32 one, scaled by width / 128 and centred
+vertically. The clock and the load change on every frame. The runner starts
+one process for each library and size, and runs it in one of two modes.
 
 Into memory, the default: each library draws its frame into memory, ghee
 reading it back from the GPU. The process measures:
@@ -29,10 +29,10 @@ offscreen driver.
 Onto the glass, with --glass CARD: each library puts its frames on the SPI
 or I2C panel of that DRM card. ghee scans out to the card, ghee_drop with
 drop=True, and Pillow and pygame write each frame whole to the card's fbdev,
-which flushes it to the panel at once. The runner times every bus transfer to the panel from the
-kernel's tracepoints, through `sudo -n`, and runs each library --repeats
-times, the libraries in turn (ABAB), each run a fresh process. Around the
-runs it:
+which flushes it to the panel at once. The runner times every bus transfer
+to the panel from the kernel's tracepoints, through `sudo -n`, and runs each
+library --repeats times, the libraries in turn (ABAB), each run a fresh
+process. Around the runs it:
 
 - sets every CPU policy's governor to performance, and puts the old one back
   at the end, on an error or Ctrl-C too;
@@ -63,10 +63,9 @@ It measures for each run:
   a second, the same latency, and the CPU time of every task on the system
   and of the library's process.
 
---cadence second changes the screen once a second with HOT hidden, the stats
-demo's own pace, and --cadence never leaves it as it is. The latency then
-runs from the moment the screen changes to the end of the transfer that
-carries the change.
+--cadence second changes the screen once a second with HOT hidden, and
+--cadence never leaves it as it is. The latency then runs from the moment
+the screen changes to the end of the transfer that carries the change.
 
 With --perpixel, --glass runs per-pixel programs in place of the status
 screen, and --check draws each pair of them headless at the same steps and

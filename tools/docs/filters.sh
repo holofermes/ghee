@@ -66,7 +66,7 @@ open(dst, "wb").write(out)
 PY
 }
 
-# png NAME-OP SIZE: the first grey frame of $tmp/NAME-OP.gray, three times its size
+# png NAME-OP SIZE OUT: the first grey frame of $tmp/NAME-OP.gray, three times its size
 png() {
     ffmpeg -v error -y -f rawvideo -pix_fmt gray -s "$2" -i "$tmp/$1.gray" -frames:v 1 \
         -vf scale=iw*3:ih*3:flags=neighbor "$out/$3.png"

@@ -1584,7 +1584,7 @@ fn read_stream(
 
 /// kind: u8, name_len: u8, name: UTF-8, count: u32 LE, values: count x f32 LE.
 /// Kind 4 carries count u8 bytes instead, and the value is byte / 255.
-/// Kinds 3 and 6 to 10 carry count bytes of UTF-8 text.
+/// Kinds 3 and 6 carry count bytes of UTF-8 text.
 /// Kind 2 (clean) and kind 5 (the end of a tick's answer) are the single byte.
 fn messages(
     out: &mut impl BufRead,

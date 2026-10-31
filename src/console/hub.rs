@@ -1461,10 +1461,8 @@ impl HwLane {
         }
         if self.enc.is_none() && !hub.hardware_dead() {
             let (w, h) = hub.stream_size();
-            // The stream encodes at its own rate, not the display's. A panel
-            // that asks for 63Hz asks the encoder for a rate it refuses at
-            // this size, and the input port then fails to enable: the whole
-            // stream drops to software for a rate that no viewer needed.
+            // The encoder refuses some rates at some sizes, so the stream
+            // encodes at stream_hz.
             let hz = hub.stream_hz.max(1);
             let bitrate = stream_bitrate(w, h, hz, hub.bitrate) as i32;
             match HardwareH264::new(renderer, w, h, hz, bitrate) {
@@ -1685,7 +1683,7 @@ impl Shot {
 
 /// One stream connection, and when its client last reported in. A connection
 /// with no vid never expires, because nothing pings for it. That keeps
-/// `curl /h264` and a page older than the heartbeat streaming.
+/// `curl /h264` streaming.
 pub struct Viewer {
     vid: String,
     last: Mutex<f64>,

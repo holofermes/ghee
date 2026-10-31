@@ -137,7 +137,8 @@ pub fn scene_name(path: &str) -> String {
     }
 }
 
-/// Load a scene package. The path names a directory, a .scene.json, or a .py.
+/// Load a scene package. The path names a directory, a .scene.json, or an
+/// executable.
 ///
 /// `args` are the command-line tokens after `--`.
 /// A scene that declares nothing takes no tokens.
@@ -205,7 +206,7 @@ mod tests {
     /// A .py scene runs as a process. Without the executable bit it renders nothing.
     #[test]
     fn a_scene_py_without_the_executable_bit_says_so() {
-        let d = tmpdir("controller");
+        let d = tmpdir("not-executable");
         let path = format!("{d}/demo.py");
         fs::write(&path, SCENE_PY).unwrap();
         let e = load_scene(&path, &no_args(), true).unwrap_err();

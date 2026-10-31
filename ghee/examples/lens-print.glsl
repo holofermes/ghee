@@ -115,16 +115,16 @@ float ink_at(vec2 q, float px) {
 }
 
 // The page lays out from its top left, y down. The top half holds the page as
-// it lies and the bottom half the page as the lens shows it. Each pixel holds its ink, then its paper's shares of `paper`
-// (times 0.9) and of `foxing`. The page lies still, so the top half keeps the
-// last frame's pixels. It sets anew each pixel that holds no paper yet, as in
-// a new buffer, and one band of 8 rows a frame, which brings in new words.
-// While the view scrolls, the top half's rows hold the page's rows in a ring,
-// row r the view's page row that is r modulo the height, and the rows that
-// scrolled in since the last frame are set anew. The view shows the page
-// between two of those rows, so the bottom half's last row, which the lens
-// never reaches on a scrolling strip, holds the page row after the ring's
-// last.
+// it lies and the bottom half the page as the lens shows it. Each pixel holds
+// its ink, then its paper's shares of `paper` (times 0.9) and of `foxing`. The
+// page lies still, so the top half keeps the last frame's pixels. It sets anew
+// each pixel that holds no paper yet, as in a new buffer, and one band of 8
+// rows a frame, which brings in new words. While the view scrolls, the top
+// half's rows hold the page's rows in a ring, row r the view's page row that
+// is r modulo the height, and the rows that scrolled in since the last frame
+// are set anew. The view shows the page between two of those rows, so the
+// bottom half's last row, which the lens never reaches on a scrolling strip,
+// holds the page row after the ring's last.
 void main() {
   vec2 px = vec2(gl_FragCoord.x, iResolution.y - gl_FragCoord.y);
   float width = iResolution.x;

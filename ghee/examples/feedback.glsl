@@ -2,7 +2,7 @@
 // reads its own last frame keeps their trails.
 //
 // The pass `state` holds one particle per texel, 192 in a 16 by 12 grid, and
-// moves each along the curl of a noise field (feedback-flow.glsl). `prev`
+// moves each along the curl of a stream function (feedback-flow.glsl). `prev`
 // keeps last frame's positions, `life` each particle's age, and `attr` the
 // step each one took and how bright it is.
 //

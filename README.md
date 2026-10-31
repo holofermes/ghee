@@ -124,7 +124,7 @@ written and ported to a ghee shader:
 
 MIT. The text shader ports Eric Lengyel's Slug, also MIT. ghee builds
 FreeType 2.14.3 from `vendor/freetype` under the FreeType License.
-[NOTICE](NOTICE) carries both notices, and
+[NOTICE](NOTICE) carries their notices and those of the bundled fonts, and
 [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES) the licenses of the Rust crates
 that ghee compiles in.
 

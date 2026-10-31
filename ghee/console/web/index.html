@@ -1253,8 +1253,8 @@ TOASTS.addEventListener("click", e => {
 });
 
 // A stale scene is one the server compiled before its files changed: what is
-// rendering is older than what a reload would give. A dead server is the other
-// thing a silent poll used to hide, so it gets its own line.
+// rendering is older than what a reload would give. A dead server gets a
+// notice of its own.
 const OFFLINE_AFTER = 3;   // consecutive /stats failures
 let pollFails = 0, staleScene = false;
 const offline = () => pollFails >= OFFLINE_AFTER;
@@ -2361,11 +2361,11 @@ function buildLayers(){
   if (box.hidden) return;
   const row = el("div", "lyrow");
   row.appendChild(el("span", null, "layers"));
-  // a program owns which layers its scene has, and their order
   // a video comes from a capture device of this host, each its own entry
   const videos = () => DEVICES.length
     ? DEVICES.map(x => ["video " + x.name, () => addLayer(p, "video", x.device)])
     : [["video", null, true]];
+  // a program owns which layers its scene has, and their order
   if (!proc) row.appendChild(addMenu("+ layer ▾", () => [
     ["text", () => addLayer(p, "text")],
     ["image", () => addLayer(p, "image"), !imageAssets().length && !isMine(), "the scene has no image asset"],
@@ -3526,8 +3526,8 @@ $("#addToggle").addEventListener("click", ()=> $("#addRow").classList.toggle("sh
 $("#pAdd").addEventListener("click", ()=>{
   const name = $("#pName").value.trim(); if(!name) return;
   const type = $("#pType").value;
-  // "scene" writes into the working scene's top-level params (every pass);
-  // "this pass" keeps the current pass-scoped behavior
+  // "scene" writes into the working scene's top-level params (every pass),
+  // "this pass" into the open pass's params
   const into = $("#pPlace").value === "scene"
     ? (work.params = work.params || {})
     : (work.passes[curPass].params = work.passes[curPass].params || {});
@@ -3619,6 +3619,7 @@ function applyTheme(t){
 applyTheme(document.documentElement.dataset.theme || "light");
 $("#theme").addEventListener("click", ()=> applyTheme(document.documentElement.dataset.theme==="dark" ? "light" : "dark"));
 
+// a browser that kept an earlier console's sw.js serves this page from its cache
 if ("serviceWorker" in navigator) navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(()=>{});
 boot();
 </script>

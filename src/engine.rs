@@ -2523,7 +2523,7 @@ impl Renderer {
     }
 
     /// render() reading back a GPU-scaled frame into a fresh buffer.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn render_scaled(
         &mut self,
         provider: Option<Provider<'_>>,

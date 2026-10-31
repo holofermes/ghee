@@ -301,7 +301,7 @@ impl OwnedFrame {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn shape(&self) -> (i32, i32, i32) {
         (self.height, self.width, self.components)
     }

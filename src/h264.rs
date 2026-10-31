@@ -450,10 +450,6 @@ impl SoftwareH264 {
         (Some(au), is_key)
     }
 
-    /// The pipe takes no mid-stream control. A viewer joins at the next GOP.
-    #[allow(dead_code)]
-    pub fn force_keyframe(&mut self) {}
-
     /// Close input and yield every remaining access unit.
     pub fn drain(&mut self, timeout: Duration) -> SoftwareDrain<'_> {
         self.stdin = None;
@@ -541,14 +537,6 @@ pub enum Encoder {
 }
 
 impl Encoder {
-    #[allow(dead_code)]
-    pub fn force_keyframe(&mut self) {
-        match self {
-            Encoder::Hardware(e) => e.force_keyframe(),
-            Encoder::Software(e) => e.force_keyframe(),
-        }
-    }
-
     pub fn drain(&mut self) -> Drain<'_> {
         match self {
             Encoder::Hardware(e) => Drain::Hardware(e.drain()),

@@ -836,13 +836,13 @@ impl<H: ConsoleHost> ConsoleAPI<H> {
         );
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn with_post_only(mut self, paths: &[&str]) -> ConsoleAPI<H> {
         self.post_only = paths.iter().map(|p| (*p).to_string()).collect();
         self
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn with_max_body(mut self, max_body: usize) -> ConsoleAPI<H> {
         self.max_body = max_body;
         self

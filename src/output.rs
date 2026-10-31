@@ -301,7 +301,7 @@ pub struct ImageSequence {
 
 impl ImageSequence {
     /// The defaults: start 0, no save options, depth 16.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new(pattern: &str) -> ImageSequence {
         ImageSequence::with_opts(pattern, 0, None, 16)
     }

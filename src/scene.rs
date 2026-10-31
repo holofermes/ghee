@@ -1033,7 +1033,7 @@ impl ParamMap {
         self.0.iter().map(|(_, p)| p)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -1110,11 +1110,6 @@ impl ArrayInput {
             name: name.to_string(),
             size: stored,
         })
-    }
-
-    #[allow(dead_code)]
-    pub fn is_2d(&self) -> bool {
-        matches!(self.size, ArraySize::Grid(_, _))
     }
 
     pub fn from_dict(d: &Value) -> Result<ArrayInput> {
@@ -1734,7 +1729,7 @@ impl Pass {
     }
 
     /// True when a channel reads this pass's own buffer.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn reads_self(&self) -> bool {
         self.channels
             .iter()
@@ -3503,7 +3498,7 @@ impl Scene {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn save(&self, path: &str) -> Result<()> {
         fs::write(path, serde_json::to_string_pretty(&self.to_dict())?)?;
         Ok(())

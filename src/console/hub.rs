@@ -69,7 +69,7 @@ pub const FRAME_TIMEOUT: f64 = 4.0;
 /// so a congested link never drops a viewer.
 ///
 /// The cadence the console page pings at.
-#[allow(dead_code)]
+#[cfg(test)]
 pub const PING_INTERVAL: f64 = 3.0;
 /// Three intervals, so two lost pings are not a departure.
 pub const VIEWER_DEADLINE: f64 = 10.0;
@@ -1218,7 +1218,7 @@ impl H264Fanout {
         self.stream.load(Ordering::SeqCst)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn stream_fps(&self) -> f64 {
         lock(&self.rate).value(None)
     }
@@ -1755,7 +1755,7 @@ impl Heartbeat {
         !v.vid.is_empty() && (monotonic() - *lock(&v.last)) > self.deadline
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn is_empty(&self) -> bool {
         lock(&self.by_vid).is_empty()
     }

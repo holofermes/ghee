@@ -287,8 +287,6 @@ enum Job {
 /// cap is the memory bound on a small board. A depth of the whole frame count
 /// keeps the render clear of every wait. The writer drains at the end.
 pub struct ImageSequence {
-    #[allow(dead_code)]
-    pub pattern: String,
     pub index: i64,
     cap: usize,
     allocated: usize,
@@ -321,7 +319,6 @@ impl ImageSequence {
             std::thread::spawn(move || run(&inbox, &recycle, &err, &pattern, &opts))
         };
         ImageSequence {
-            pattern: pattern.to_string(),
             index: start,
             cap: depth + 1,
             allocated: 0,

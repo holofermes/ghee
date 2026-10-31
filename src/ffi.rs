@@ -1,7 +1,6 @@
 //! Bindings for the C engine (ghee/_engine/engine.h).
 //!
 //! Each item matches one header declaration, in header order.
-#![allow(dead_code)]
 
 use core::ffi::{c_char, c_int, c_void};
 

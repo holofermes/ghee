@@ -6234,7 +6234,6 @@ impl Renderer {
         }
     }
 
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         unsafe { ffi::ghee_mp_reset(self.handle) };
         self.mp = Vec::new();

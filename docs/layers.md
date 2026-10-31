@@ -238,14 +238,14 @@ ghee streams the device's smallest mode that covers the size the video draws
 at, or the size that its [asset](#videos-in-a-shader) gives. On a Pi Zero to
 Pi 4, the Pi's hardware decoder decodes each MJPEG frame and scales it to
 that size, and the CPU never touches its pixels: on a Pi Zero W, a 1920x1080
-camera took about 3 ms of CPU a frame. Elsewhere, and with
+camera takes about 3 ms of CPU a frame. Elsewhere, and with
 `--video-decoder cpu`, the CPU decodes the frames, an MJPEG frame at a half,
 a quarter or an eighth of its size when that still covers it. A camera with a
 mode near the size you draw at costs the least there: on a Pi Zero W, one
 1920x1080 MJPEG frame takes about 110 ms of CPU at an eighth of its size.
 
 Careful: the Pi's decoder needs GPU memory. Set it in `config.txt` itself,
-`gpu_mem=128` for a 1920x1080 camera, measured on a Pi Zero W: the Pi reads
+`gpu_mem=128` for a 1920x1080 camera on a Pi Zero W: the Pi reads
 `gpu_mem` before it boots, and never from a file that `config.txt` includes.
 At the default 64 MB, the first 1920x1080 frame hangs the GPU's firmware,
 and ghee's H264 and JPEG encoders stop with it until a reboot. Where you
@@ -422,11 +422,12 @@ screen.frame()
 ```
 
 Change an effect's settings the same way:
-`screen.layers.title.glow.strength = 0.4`. You can also change these values from the [console](console.md), a
-[procedural scene](procedural.md) or `POST /set` ([HTTP API](http.md)). Set `x`,
-`y`, `color`, a rect's size or a circle's radius to `None` to put it back to
-its default. To read a key, read it the same way: `screen.layers.title.x`
-gives its value, or None at its default.
+`screen.layers.title.glow.strength = 0.4`. You can also change these values
+from the [console](console.md), a [procedural scene](procedural.md) or
+`POST /set` ([HTTP API](http.md)). Set `x`, `y`, `color`, a rect's size or
+a circle's radius to `None` to put it back to its default. To read a key,
+read it the same way: `screen.layers.title.x` gives its value, or None at
+its default.
 
 Most changes show on the next frame, such as position, colour or opacity.
 Changing a key such as `font_size`, or adding an effect, makes ghee build the

@@ -100,9 +100,9 @@ dtoverlay=vc4-kms-v3d,cma-96
 ```
 
 Raspberry Pi OS sets aside 256 MiB, which leaves a 512 MiB Pi short of
-memory: on a Zero 2 W, ghee's first frame took 4 to 6 s, and 0.9 s with
-`cma-96`. On a Zero 2 W with `cma-96`, the heaviest bundled demo measured,
-`feedback` at 1920x1080, took 73 MiB.
+memory: on a Zero 2 W, ghee's first frame takes 4 to 6 s, and 0.9 s with
+`cma-96`. On a Zero 2 W with `cma-96`, the bundled `feedback` demo at
+1920x1080 takes 73 MiB of the 96.
 
 ### On V3D
 
@@ -113,8 +113,8 @@ render ends.
 ### For a camera
 
 A [video layer](layers.md#video-layers) on a Pi Zero to Pi 4 decodes in the
-Pi's hardware decoder, which needs `gpu_mem=128` in `config.txt` itself for a
-1920x1080 camera, measured on a Pi Zero W. A file that `config.txt` includes
+Pi's hardware decoder. On a Pi Zero W, a 1920x1080 camera needs
+`gpu_mem=128` in `config.txt` itself. A file that `config.txt` includes
 can't set it. At the default 64 MB, the first frame hangs the GPU's firmware
 until a reboot, H264 and JPEG encoding with it. Without the memory, pass
 `--video-decoder cpu`.

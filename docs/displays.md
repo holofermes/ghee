@@ -44,8 +44,8 @@ ghee render --demo bars --display kms -o frame.####.png
 
 To set how many frames `ghee render` draws, on any output, use `--frames`.
 Without it, image files and raw frames get one frame, and a display, a
-stream or the console runs until Ctrl-C. With no display, ghee draws at 320x240. To draw at another size,
-use `--size WxH`.
+stream or the console runs until Ctrl-C. With no display, ghee draws at
+320x240. To draw at another size, use `--size WxH`.
 
 ## Image files
 
@@ -156,7 +156,6 @@ time it's ready, and drops older ones. Set `--fps` too, or ghee draws as
 fast as it can and keeps a CPU core busy ([Frames](python.md#frames) has
 Python's side).
 
-
 ### Rotate and brightness
 
 If your display is rotated, use `--rotate 90`, `180` or `270`. ghee turns
@@ -170,10 +169,10 @@ scene of the word `hello` at 128x64:
 
 To set a panel's brightness, use `--brightness LEVEL`, from 0 to 1. On an
 SSD1306, SH1106 or SSD1322, that's the contrast. A backlight that is only
-on or off turns off below 0.5 and on from 0.5. On a display with no backlight, such as most HDMI screens,
-ghee prints `the display on /dev/dri/card2 has no backlight device` and
-draws on. This shows the `stats` scene upside down on an SSD1306, at half
-its contrast:
+on or off turns off below 0.5 and on from 0.5. On a display with no
+backlight, such as most HDMI screens, ghee prints
+`the display on /dev/dri/card2 has no backlight device` and draws on. This
+shows the `stats` scene upside down on an SSD1306, at half its contrast:
 
 ```shell
 ghee render --demo stats --display kms --rotate 180 --brightness 0.5
@@ -246,9 +245,8 @@ the Pi's address on port 8090. Read [Console](console.md) first, on who can
 then reach it.
 
 On `localhost` or over `https`, the console shows an H264 video. Over plain
-`http` from another computer, it shows a JPEG preview. To set the H264 video's or the JPEG preview's size
-and frame rate, see `ghee serve --help`.
-
+`http` from another computer, it shows a JPEG preview. To set the H264
+video's or the JPEG preview's size and frame rate, see `ghee serve --help`.
 
 Each Pi's own limits, such as the largest frame that it can draw, are on
 [Raspberry Pi](pi.md).
